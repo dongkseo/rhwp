@@ -708,6 +708,14 @@ window.addEventListener('message', async (e) => {
         await initPromise;
         reply(Array.from(wasm.exportHwp()));
         break;
+      case 'exportHwpx':
+        await initPromise;
+        reply(Array.from(wasm.exportHwpx()));
+        break;
+      case 'exportHwpVerify':
+        await initPromise;
+        reply(JSON.parse(wasm.exportHwpVerify()));
+        break;
       default:
         reply(undefined, `Unknown method: ${method}`);
     }

@@ -10,6 +10,23 @@ use super::super::page_layout::LayoutRect;
 use super::super::height_measurer::MeasuredTable;
 use super::super::composer::{compose_paragraph, ComposedParagraph};
 use super::super::style_resolver::ResolvedStyleSet;
+
+/// [Task #548] paragraph 의 line N 에 적용되는 effective margin_left.
+/// paragraph_layout.rs 의 line_indent 산식과 동일 (단일 룰).
+/// - positive indent: line 0 에만 +indent 적용 (첫줄 들여쓰기)
+/// - negative indent (hanging): line N≥1 에 +|indent| 적용
+/// - indent=0: 모든 line 에 margin_left 만 적용
+fn effective_margin_left_line(margin_left: f64, indent: f64, line_n: usize) -> f64 {
+    let line_indent = if indent > 0.0 {
+        if line_n == 0 { indent } else { 0.0 }
+    } else if indent < 0.0 {
+        if line_n == 0 { 0.0 } else { indent.abs() }
+    } else {
+        0.0
+    };
+    margin_left + line_indent
+}
+
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::{LayoutEngine, CellContext, CellPathEntry};
 use super::border_rendering::{build_row_col_x, collect_cell_borders, render_cell_diagonal, render_edge_borders, render_transparent_borders};
@@ -1394,6 +1411,14 @@ impl LayoutEngine {
                 };
 
                 let has_table_ctrl = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
+                // [Task #573] inline TAC 표(treat_as_char=true) 와 block 표(treat_as_char=false)
+                // 를 분리. 인라인 TAC 표가 있는 셀 paragraph 의 surrounding text (예: "ㄷ. ",
+                // "이다.") 가 layout_composed_paragraph 호출 미진입으로 미렌더되던 결함 정정.
+                // block 표는 별도 layout_table 호출로 배치되므로 텍스트 흐름 외부 — 기존
+                // ELSE 분기 로직 유지. inline TAC 표는 layout_composed_paragraph 의 run_tacs
+                // 에서 텍스트와 함께 배치되어야 함.
+                let has_block_table_ctrl = para.controls.iter().any(|c|
+                    matches!(c, Control::Table(t) if !t.common.treat_as_char));
 
                 let para_y_before_compose = para_y;
 
@@ -1443,7 +1468,7 @@ impl LayoutEngine {
                 };
                 let total_inline_width: f64 = tac_line_widths.iter().cloned().fold(0.0f64, f64::max);
 
-                if !has_table_ctrl {
+                if !has_block_table_ctrl {
                     let is_last_para = cp_idx + 1 == composed_paras.len();
                     // 분할 중첩 표: 셀 하단을 초과하는 줄은 렌더링하지 않음
                     let end_line = if row_filter.is_some() {
@@ -1494,6 +1519,17 @@ impl LayoutEngine {
                     .get(para.para_shape_id as usize)
                     .map(|s| s.alignment)
                     .unwrap_or(Alignment::Left);
+                // [Task #548] paragraph margin_left + first-line indent 를 inline shape
+                // 위치에 반영. paragraph_layout 텍스트 경로와 동일한 effective_margin_left
+                // 산식을 적용해 텍스트와 shape 위치 일관성 보장.
+                let para_margin_left_px = styles.para_styles
+                    .get(para.para_shape_id as usize)
+                    .map(|s| s.margin_left)
+                    .unwrap_or(0.0);
+                let para_indent_px = styles.para_styles
+                    .get(para.para_shape_id as usize)
+                    .map(|s| s.indent)
+                    .unwrap_or(0.0);
 
                 let mut prev_tac_text_pos: usize = 0;
                 // LINE_SEG 기반 줄별 TAC 이미지 배치를 위한 상태
@@ -1503,6 +1539,7 @@ impl LayoutEngine {
                 let mut current_tac_line: usize = 0;
                 let mut inline_x = {
                     let line_w = tac_line_widths.first().copied().unwrap_or(total_inline_width);
+                    let line_margin = effective_margin_left_line(para_margin_left_px, para_indent_px, 0);
                     match para_alignment {
                         Alignment::Center | Alignment::Distribute => {
                             inner_area.x + (inner_area.width - line_w).max(0.0) / 2.0
@@ -1510,7 +1547,7 @@ impl LayoutEngine {
                         Alignment::Right => {
                             inner_area.x + (inner_area.width - line_w).max(0.0)
                         }
-                        _ => inner_area.x,
+                        _ => inner_area.x + line_margin,
                     }
                 };
                 let mut tac_img_y = para_y_before_compose;
@@ -1553,6 +1590,9 @@ impl LayoutEngine {
                                         // 줄이 바뀜: inline_x 리셋, y를 LINE_SEG vpos 기준으로 이동
                                         current_tac_line = target_line;
                                         let line_w = tac_line_widths.get(target_line).copied().unwrap_or(0.0);
+                                        // [Task #548] target_line 의 effective_margin_left 적용
+                                        let line_margin = effective_margin_left_line(
+                                            para_margin_left_px, para_indent_px, target_line);
                                         inline_x = match para_alignment {
                                             Alignment::Center | Alignment::Distribute => {
                                                 inner_area.x + (inner_area.width - line_w).max(0.0) / 2.0
@@ -1560,7 +1600,7 @@ impl LayoutEngine {
                                             Alignment::Right => {
                                                 inner_area.x + (inner_area.width - line_w).max(0.0)
                                             }
-                                            _ => inner_area.x,
+                                            _ => inner_area.x + line_margin,
                                         };
                                         if let Some(seg) = para.line_segs.get(target_line) {
                                             tac_img_y = para_y_before_compose + hwpunit_to_px(seg.vertical_pos, self.dpi);
@@ -1591,15 +1631,31 @@ impl LayoutEngine {
                                 // 본문배치 속성(가로/세로 기준, 정렬, 오프셋) 적용
                                 let pic_w = hwpunit_to_px(pic.common.width as i32, self.dpi);
                                 let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
+                                // [Task #577] TopAndBottom + vert_rel_to=Para 인 셀 내부 이미지는
+                                // anchor 라인이 이미지에 의해 displaced 되므로, layout_composed_paragraph
+                                // 가 advance 시킨 para_y 가 아닌 anchor 시점(para_y_before_compose)을 기준
+                                // 으로 해야 cell-clip 영역 내부에 정확히 배치된다. (exam_science 2번 보기 ⑤
+                                // 등 5개 이미지에서 line_height(약 15.32px) 만큼 아래로 밀려 잘림.)
+                                let anchor_y = if matches!(
+                                    pic.common.text_wrap,
+                                    crate::model::shape::TextWrap::TopAndBottom
+                                ) && matches!(
+                                    pic.common.vert_rel_to,
+                                    crate::model::shape::VertRelTo::Para
+                                ) {
+                                    para_y_before_compose
+                                } else {
+                                    para_y
+                                };
                                 let cell_area = LayoutRect {
-                                    y: para_y,
-                                    height: (inner_area.height - (para_y - inner_area.y)).max(0.0),
+                                    y: anchor_y,
+                                    height: (inner_area.height - (anchor_y - inner_area.y)).max(0.0),
                                     ..inner_area
                                 };
                                 let (pic_x, pic_y) = self.compute_object_position(
                                     &pic.common, pic_w, pic_h,
                                     &cell_area, &inner_area, &inner_area, &inner_area,
-                                    para_y, para_alignment,
+                                    anchor_y, para_alignment,
                                 );
                                 let pic_area = LayoutRect {
                                     x: pic_x,
@@ -1615,6 +1671,49 @@ impl LayoutEngine {
                         Control::Shape(shape) => {
                             if shape.common().treat_as_char {
                                 let shape_w = hwpunit_to_px(shape.common().width as i32, self.dpi);
+                                // [Task #500] Picture 분기와 정합: target_line 산출 + 줄 변경 시
+                                // inline_x/tac_img_y 리셋. multi-line paragraph 에서 사각형이
+                                // ls[1]+ 에 있을 때 paragraph 첫 줄 좌표가 잘못 사용되던 결함 정정.
+                                let target_line = if all_runs_empty && para.line_segs.len() > 1 {
+                                    let li = tac_seq_index.min(para.line_segs.len() - 1);
+                                    tac_seq_index += 1;
+                                    li
+                                } else {
+                                    composed.tac_controls.iter()
+                                        .find(|&&(_, _, ci)| ci == ctrl_idx)
+                                        .map(|&(abs_pos, _, _)| {
+                                            composed.lines.iter().enumerate()
+                                                .rev()
+                                                .find(|(_, line)| abs_pos >= line.char_start)
+                                                .map(|(li, _)| li)
+                                                .unwrap_or(0)
+                                        })
+                                        .unwrap_or(0)
+                                };
+                                if target_line > current_tac_line {
+                                    current_tac_line = target_line;
+                                    let line_w = tac_line_widths.get(target_line).copied().unwrap_or(0.0);
+                                    // [Task #548] target_line 의 effective_margin_left 적용
+                                    let line_margin = effective_margin_left_line(
+                                        para_margin_left_px, para_indent_px, target_line);
+                                    inline_x = match para_alignment {
+                                        Alignment::Center | Alignment::Distribute => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0) / 2.0
+                                        }
+                                        Alignment::Right => {
+                                            inner_area.x + (inner_area.width - line_w).max(0.0)
+                                        }
+                                        _ => inner_area.x + line_margin,
+                                    };
+                                    if let Some(seg) = para.line_segs.get(target_line) {
+                                        // [Task #520] LineSeg.vertical_pos 는 셀 origin 기준 절대값.
+                                        // para_y_before_compose 에 이미 ls[0].vpos 가 누적되어 있어
+                                        // 상대 오프셋만 더해야 한다 (Picture 분기와 동일).
+                                        let first_vpos = para.line_segs.first().map(|f| f.vertical_pos).unwrap_or(0);
+                                        tac_img_y = para_y_before_compose
+                                            + hwpunit_to_px(seg.vertical_pos - first_vpos, self.dpi);
+                                    }
+                                }
                                 // Shape 앞의 텍스트 너비 계산: tac_controls에서 이 Shape의 text_pos와
                                 // 이전 Shape의 text_pos 차이에 해당하는 텍스트 너비를 inline_x에 반영
                                 if let Some(&(tac_pos, _, _)) = composed.tac_controls.iter().find(|&&(_, _, ci)| ci == ctrl_idx) {
@@ -1729,7 +1828,7 @@ impl LayoutEngine {
                             // 빈 runs 셀 + TAC 수식: paragraph_layout(Task #287 경로)이 이미
                             // 렌더 후 set_inline_shape_position 호출. 중복 emit 방지(Issue #301).
                             let already_rendered_inline = tree
-                                .get_inline_shape_position(section_index, cp_idx, ctrl_idx)
+                                .get_inline_shape_position(section_index, cp_idx, ctrl_idx, cell_context.as_ref())
                                 .is_some();
                             if has_text_in_para || already_rendered_inline {
                                 // paragraph_layout 경로에서 이미 렌더됨
@@ -1791,26 +1890,36 @@ impl LayoutEngine {
                             });
                             if is_tac_table {
                                 // TAC 표: inline_x를 사용하여 수평 배치
+                                // [Task #573] layout_composed_paragraph 의 run_tacs 가
+                                // 인라인 TAC 표를 이미 렌더하고 set_inline_shape_position
+                                // 등록했다면 중복 emit 방지 (Equation 의 L1800 가드와 동일 패턴).
+                                let already_rendered_inline = tree
+                                    .get_inline_shape_position(section_index, cp_idx, ctrl_idx, cell_context.as_ref())
+                                    .is_some();
                                 let tac_w = hwpunit_to_px(nested_table.common.width as i32, self.dpi);
-                                let ctrl_area = LayoutRect {
-                                    x: inline_x,
-                                    y: para_y_before_compose,
-                                    width: tac_w,
-                                    height: (inner_area.height - (para_y_before_compose - inner_area.y)).max(0.0),
-                                };
-                                let table_h = self.layout_table(
-                                    tree, &mut cell_node, nested_table,
-                                    section_index, styles, &ctrl_area, para_y_before_compose,
-                                    bin_data_content, None, depth + 1,
-                                    None, para_alignment,
-                                    nested_ctx,
-                                    0.0, 0.0, Some(inline_x), None, None,
-                                );
-                                inline_x += tac_w;
-                                // para_y는 TAC 표 높이만큼 갱신 (같은 문단 내 다음 표도 같은 y)
-                                let new_bottom = para_y_before_compose + table_h;
-                                if new_bottom > para_y {
-                                    para_y = new_bottom;
+                                if already_rendered_inline {
+                                    inline_x += tac_w;
+                                } else {
+                                    let ctrl_area = LayoutRect {
+                                        x: inline_x,
+                                        y: para_y_before_compose,
+                                        width: tac_w,
+                                        height: (inner_area.height - (para_y_before_compose - inner_area.y)).max(0.0),
+                                    };
+                                    let table_h = self.layout_table(
+                                        tree, &mut cell_node, nested_table,
+                                        section_index, styles, &ctrl_area, para_y_before_compose,
+                                        bin_data_content, None, depth + 1,
+                                        None, para_alignment,
+                                        nested_ctx,
+                                        0.0, 0.0, Some(inline_x), None, None,
+                                    );
+                                    inline_x += tac_w;
+                                    // para_y는 TAC 표 높이만큼 갱신 (같은 문단 내 다음 표도 같은 y)
+                                    let new_bottom = para_y_before_compose + table_h;
+                                    if new_bottom > para_y {
+                                        para_y = new_bottom;
+                                    }
                                 }
                             } else {
                                 // 비-TAC 표: 기존 수직 배치

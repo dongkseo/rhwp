@@ -1968,7 +1968,20 @@ impl LayoutEngine {
                         .any(|c| matches!(c, Control::Table(t) if t.common.treat_as_char
                             && crate::renderer::height_measurer::is_tac_table_inline(t, seg_width, &para.text, &para.controls)));
 
-                    if has_inline_tables {
+                    // [Task #565] 인라인 표 + 다른 인라인 컨트롤(수식/treat_as_char Picture/Shape)
+                    // 이 같이 있는 문단은 layout_inline_table_paragraph 가 인라인 수식 등을
+                    // 처리하지 않아 shape_layout fallback (col_area.x, para_y) 으로 9개 수식이
+                    // 동일 좌표에 겹친다 (exam_science.hwp 12/15/18/19번). 일반
+                    // layout_paragraph 로 보내 인라인 표 + 인라인 수식이 같은 line/x 체계
+                    // (run_tacs / inline_x) 로 정상 배치되도록 한다.
+                    let has_other_inline_ctrls = para.controls.iter().any(|c| match c {
+                        Control::Equation(_) => true,
+                        Control::Picture(p) => p.common.treat_as_char,
+                        Control::Shape(s) => s.common().treat_as_char,
+                        _ => false,
+                    });
+
+                    if has_inline_tables && !has_other_inline_ctrls {
                         // 인라인 표 문단도 번호 카운터 전진 필요
                         self.apply_paragraph_numbering(
                             composed.get(*para_index), para, styles, outline_numbering_id,
@@ -2276,16 +2289,17 @@ impl LayoutEngine {
                 let tbl_is_square = matches!(t.common.text_wrap, crate::model::shape::TextWrap::Square);
                 // インラインTAC表: paragraph_layoutで計算された位置を使用
                 let inline_pos = if is_tac {
-                    tree.get_inline_shape_position(page_content.section_index, para_index, control_index)
+                    tree.get_inline_shape_position(page_content.section_index, para_index, control_index, None)
                 } else {
                     None
                 };
                 let tbl_inline_x = if let Some((ix, _)) = inline_pos {
                     Some(ix)
-                } else if !is_tac && tbl_is_square {
-                    // [Issue #480] Square wrap 표는 paragraph 영역 (col_area + margin) 기준으로 정렬.
-                    // 이전 동작(col_area 기준)은 paragraph margin/indent 가 있는 경우 표가
-                    // 단 사이 갭으로 떨어지는 문제 발생 (예: 페이지 14 [A] 박스).
+                } else if !is_tac && tbl_is_square
+                    && matches!(t.common.horz_rel_to, crate::model::shape::HorzRelTo::Para) {
+                    // [Issue #480 / #590] horz_rel_to=Para 인 Square wrap 표만 paragraph 영역
+                    // (col_area + margin) 기준으로 정렬. horz_rel_to=Column/Page/Paper 는
+                    // compute_table_x_position 의 기본 분기에서 명세대로 처리한다.
                     // (Task #295: halign=Right 표가 좌측에 잘못 배치되는 문제 수정)
                     let tbl_w = hwpunit_to_px(t.common.width as i32, self.dpi);
                     let area_x = col_area.x + effective_margin;
@@ -2493,6 +2507,17 @@ impl LayoutEngine {
                         y_offset += ps.spacing_after;
                     }
                 }
+                // [Task #521] TAC 표 outer_margin_bottom 적용 (한컴 명세 정합).
+                // layout_partial_table_item:2642-2647 와 동일 처리. lh = cell_h +
+                // outer_margin_bottom 으로 한컴이 정의하므로, layout_table 가
+                // cell_h 만 advance 한 후 outer_margin_bottom 을 별도 적용해야
+                // 다음 paragraph 가 정합 (exam_eng p2 18번 ① 위치 -8 px shortfall).
+                let outer_margin_bottom_px = if let Some(Control::Table(t)) = para.controls.get(control_index) {
+                    hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi)
+                } else { 0.0 };
+                if outer_margin_bottom_px > 0.0 {
+                    y_offset += outer_margin_bottom_px;
+                }
                 return (y_offset, true);
             }
             // ── 같은 문단의 인라인 TAC 표 렌더링 ──
@@ -2511,7 +2536,7 @@ impl LayoutEngine {
                                 .unwrap_or(Alignment::Left);
                             // paragraph_layout에서 계산된 인라인 좌표 사용
                             let inline_pos = tree.get_inline_shape_position(
-                                page_content.section_index, para_index, ci);
+                                page_content.section_index, para_index, ci, None);
                             let (inline_x, inline_y) = if let Some((ix, iy)) = inline_pos {
                                 (Some(ix), iy)
                             } else {
@@ -2798,7 +2823,7 @@ impl LayoutEngine {
                         // 여기서 또 push 하면 이중 emit 이 된다. 등록된 경우 push 를 스킵하고
                         // result_y 만 갱신한다.
                         let already_registered = tree.get_inline_shape_position(
-                            page_content.section_index, para_index, control_index,
+                            page_content.section_index, para_index, control_index, None,
                         ).is_some();
                         if !has_real_text && !already_registered {
                             let bin_data_id = pic.image_attr.bin_data_id;
@@ -2831,6 +2856,7 @@ impl LayoutEngine {
                                     effect: pic.image_attr.effect,
                                     brightness: pic.image_attr.brightness,
                                     contrast: pic.image_attr.contrast,
+                                    transform: utils::extract_shape_transform(&pic.shape_attr),
                                     ..ImageNode::new(bin_data_id, image_data)
                                 }),
                                 BoundingBox::new(pic_x, pic_y, pic_w, pic_h),
@@ -2850,7 +2876,7 @@ impl LayoutEngine {
                             }
                             // 후속 InFrontOfText 객체의 para_y 기준이 되도록 위치 등록
                             tree.set_inline_shape_position(
-                                page_content.section_index, para_index, control_index, pic_x, pic_y,
+                                page_content.section_index, para_index, control_index, None, pic_x, pic_y,
                             );
                             // [Task #462] LINE_SEG 의 lh+ls 를 advance 로 사용 — 이미지 박스
                             // 높이만 사용하면 leading + line_spacing 이 누락되어 다음 문단이
@@ -2954,10 +2980,8 @@ impl LayoutEngine {
                             // 정상 PageItem::FullParagraph 경로 (layout_composed_paragraph 의
                             // has_picture_shape_square_wrap 분기, paragraph_layout.rs:822/973)
                             // 가 LINE_SEG.cs/sw 기반으로 그림 옆 (좁은) + 그림 아래 (넓은)
-                            // 모두 처리. Table Square wrap (호스트 = 표 + 빈 텍스트) 과 달리
-                            // Picture Square wrap 의 호스트는 본문 텍스트를 가지므로 본 wrap
-                            // host 호출은 중복 emit (광범위 시각 결함, 7 샘플 37 페이지 영향).
-                            // 정정으로 호출 제거. (Table 케이스의 layout.rs:2555 호출은 유지.)
+                            // 모두 처리. Task #460 보완6의 wrap_precomputed IR 플래그로
+                            // FullParagraph path가 cs offset을 정확히 적용하므로 별도 호출 불필요.
                         }
                     }
                 }
@@ -3344,8 +3368,8 @@ impl LayoutEngine {
             // layout_shape_item:3106 (PageItem::Shape 처리 시) 에서 수행. 본 패스에서
             // 별도 호출은 동일 paragraph 의 wrap-around 텍스트가 두 다른 col_w 정렬로
             // distinct x 위치에 중복 emit 되어 (광범위 시각 결함, 7 샘플 37 페이지 영향)
-            // 제거. typeset 경로 fallback 가정은 layout_shape_item 가 typeset 경로
-            // 에서도 활성화되어 의미 없음.
+            // 제거. Task #460 보완6의 wrap_precomputed IR 플래그로 FullParagraph path가
+            // cs offset을 정확히 적용하므로 별도 호출 불필요.
         }
     }
 

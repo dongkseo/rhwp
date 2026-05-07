@@ -1017,7 +1017,6 @@ mod tests {
     ///
     /// 본 테스트는 fix 적용 전 RED, fix 적용 후 GREEN.
     #[test]
-    #[ignore = "Task #548 RED — fix 적용 전 실패 expected"]
     fn test_548_cell_inline_shape_first_line_indent_p8() {
         let Some(core) = load_document("samples/21_언어_기출_편집가능본.hwp") else {
             return;
@@ -1043,9 +1042,11 @@ mod tests {
             let y = match parse_attr("y") { Some(v) => v, None => continue };
             let w = match parse_attr("width") { Some(v) => v, None => continue };
             let h = match parse_attr("height") { Some(v) => v, None => continue };
+            // 본 devel 의 #479 미적용 trailing-ls 모델로 셀 y 위치가 컨트리뷰터 fork
+            // (y≈685-690) 대비 다름. 본 devel 측정 y≈698.43 → 범위 [690, 710] 으로 조정.
             if (w - 30.23).abs() < 0.5
                 && (h - 18.89).abs() < 0.5
-                && y > 685.0 && y < 690.0
+                && y > 690.0 && y < 710.0
             {
                 puko_x = Some(x);
                 break;
@@ -1062,6 +1063,160 @@ mod tests {
              일치해야 함. 버그(수정 전): puko_x=131.04 (-24.6 px, table_layout \
              inline_x 가 effective_margin_left + first_line_indent 미적용).",
             puko_x, pdf_puko_x
+        );
+    }
+
+    /// Task #521: exam_eng p2 18번 박스 (TAC 표) 하단 ↔ ① 첫 답안 gap 정합 검증.
+    ///
+    /// 페이지 2 우측 단 18번 문제 (pi=104) 의 TAC 표 (1×1, 이메일 박스, h=76.2mm,
+    /// outer_margin_bottom=2.1mm=600 HU) 직후 ① 첫 답안 (pi=105) 위치.
+    ///
+    /// HWP IR ls[0] lh=22207 = cell h (21607) + outer_margin_bottom (600) 으로
+    /// lh 정의. layout_table_item TAC after-spacing 분기 (layout.rs:2491-2497) 가
+    /// outer_margin_bottom 미적용 → 다음 paragraph 가 8 px 위로 시프트.
+    ///
+    /// PDF 한컴 2010: 박스 bottom → ① 첫 답안 gap ≈ 20 px
+    /// 수정 전: gap = 12.27 px (-7.7 px shortfall)
+    /// 수정 후: gap = 20.27 px (PDF ±2 px 정합)
+    #[test]
+    fn test_521_tac_table_outer_margin_bottom_p2() {
+        let Some(core) = load_document("samples/exam_eng.hwp") else {
+            return;
+        };
+        let svg = core.render_page_svg_native(1).unwrap_or_default();
+        assert!(!svg.is_empty(), "페이지 2 SVG 가 비어있음");
+
+        // 박스 (table border rect) bottom y 찾기
+        // 우측 단 (x ≈ 597), top y ≈ 244, height ≈ 288 → bottom ≈ 532
+        let mut box_bottom: Option<f64> = None;
+        for chunk in svg.split("<rect ").skip(1) {
+            let close = match chunk.find("/>") { Some(p) => p, None => continue };
+            let attrs = &chunk[..close];
+            let parse_attr = |name: &str| -> Option<f64> {
+                let key = format!("{}=\"", name);
+                let p = attrs.find(&key)? + key.len();
+                let q = attrs[p..].find('"')?;
+                attrs[p..p+q].parse::<f64>().ok()
+            };
+            let x = match parse_attr("x") { Some(v) => v, None => continue };
+            let y = match parse_attr("y") { Some(v) => v, None => continue };
+            let h = match parse_attr("height") { Some(v) => v, None => continue };
+            // 박스: x ≈ 597 (col 1), y in [240, 250], h in [285, 290]
+            if x > 595.0 && x < 600.0 && y > 240.0 && y < 250.0 && h > 285.0 && h < 290.0 {
+                box_bottom = Some(y + h);
+                break;
+            }
+        }
+        let box_bottom = box_bottom.expect("페이지 2 우측 단 18번 박스 (TAC 표) rect 를 찾지 못함");
+
+        // ① 첫 답안 baseline y 찾기 (우측 단, box bottom 직후)
+        let mut answer_y: Option<f64> = None;
+        for chunk in svg.split("<text ").skip(1) {
+            let close = match chunk.find('>') { Some(p) => p, None => continue };
+            let attrs = &chunk[..close];
+            let key = "transform=\"translate(";
+            let p = match attrs.find(key) { Some(p) => p + key.len(), None => continue };
+            let q = match attrs[p..].find(')') { Some(q) => q, None => continue };
+            let coords = &attrs[p..p+q];
+            let parts: Vec<&str> = coords.split(',').collect();
+            if parts.len() != 2 { continue; }
+            let x: f64 = match parts[0].trim().parse() { Ok(v) => v, Err(_) => continue };
+            let y: f64 = match parts[1].trim().parse() { Ok(v) => v, Err(_) => continue };
+            let body_start = close + 1;
+            let body_end = chunk[body_start..].find("</text>").map(|i| body_start + i).unwrap_or(close);
+            let body = &chunk[body_start..body_end];
+            // 우측 단 (x > 580), box bottom 직후 (y > box_bottom + 5), '①' 문자
+            if x > 580.0 && y > box_bottom + 5.0 && y < box_bottom + 30.0 && body == "①" {
+                answer_y = Some(y);
+                break;
+            }
+        }
+        let answer_y = answer_y.expect("페이지 2 우측 단 18번 ① 첫 답안을 찾지 못함");
+
+        // gap 검증
+        let gap = answer_y - box_bottom;
+        let pdf_expected_gap: f64 = 20.0;
+
+        assert!(
+            (gap - pdf_expected_gap).abs() < 2.0,
+            "박스 bottom y={:.2} → ① y={:.2} gap={:.2} 가 PDF 기대값 {:.2} (±2 px) 와 \
+             일치해야 함. 버그(수정 전): gap=12.27 (-7.7 px shortfall, \
+             layout_table_item TAC after-spacing 의 outer_margin_bottom 미적용).",
+            box_bottom, answer_y, gap, pdf_expected_gap
+        );
+    }
+
+    /// Task #574: exam_science.hwp 페이지 1 쪽번호 "1" 이 CharShape.bold=false 인데도
+    /// SVG 에서 font-weight="bold" 강제 적용되는 결함 정정 검증.
+    ///
+    /// 본질: `is_heavy_display_face` (`src/renderer/style_resolver.rs:601`) 의 hardcoded
+    /// list 에 HY견명조 가 잘못 포함됨. HY견명조 는 한컴 일반 두께 명조 폰트이며,
+    /// HY헤드라인M / HY견고딕 같은 진짜 heavy display face 와 다름.
+    ///
+    /// 케이스: 본문 [6] 표 셀 paragraph[0] Shape (사각형, InFrontOfText) TextBox
+    /// 내부 literal text "1". CharShape cs_id=0 (size=3300, bold=false, color=#000000,
+    /// ratio=90%, font_id[0]=8 → HY견명조).
+    ///
+    /// 수정 전: SVG `<text font-size="44" font-weight="bold" fill="#000000">1</text>`.
+    /// 수정 후: `font-weight="bold"` 미적용 — CharShape.bold=false 권위 회복.
+    #[test]
+    fn test_574_page_number_not_force_bold_for_hy_kyun_myeongjo() {
+        let Some(core) = load_document("samples/exam_science.hwp") else {
+            return;
+        };
+        let svg = core.render_page_svg_native(0).unwrap_or_default();
+        assert!(!svg.is_empty(), "exam_science 페이지 1 SVG 가 비어있음");
+
+        // 페이지 우상단 (x≈924, y≈115) 의 font-size=44 + HY견명조 텍스트 "1" 식별.
+        // 해당 텍스트는 CharShape.bold=false 이므로 font-weight="bold" 가 없어야 한다.
+        let mut found_page_number = false;
+        for chunk in svg.split("<text").skip(1) {
+            let close = match chunk.find('>') { Some(p) => p, None => continue };
+            let header = &chunk[..close];
+            let body_end = chunk.find("</text>").unwrap_or(chunk.len());
+            let body = &chunk[close + 1..body_end];
+
+            // 본 페이지의 쪽번호 "1" 식별 조건:
+            // (1) 텍스트 = "1"
+            // (2) font-size=44 (33pt)
+            // (3) HY견명조 폰트 패밀리 체인
+            // (4) translate(x≈924, y≈115)
+            if body.trim() != "1" { continue; }
+            if !header.contains("font-size=\"44\"") { continue; }
+            if !header.contains("HY견명조") { continue; }
+
+            let trans_pat = "transform=\"translate(";
+            let Some(tp) = header.find(trans_pat) else { continue };
+            let trans_args_start = tp + trans_pat.len();
+            let trans_rest = &header[trans_args_start..];
+            let Some(close_paren) = trans_rest.find(')') else { continue };
+            let trans_args = &trans_rest[..close_paren];
+            let mut parts = trans_args.split(',');
+            let x: f64 = match parts.next().and_then(|s| s.trim().parse().ok()) {
+                Some(v) => v, None => continue,
+            };
+            let y: f64 = match parts.next().and_then(|s| s.trim().parse().ok()) {
+                Some(v) => v, None => continue,
+            };
+
+            // 우상단 영역 가드 (페이지 1 측정값 기준)
+            if !(900.0..=950.0).contains(&x) || !(100.0..=130.0).contains(&y) { continue; }
+
+            found_page_number = true;
+            assert!(
+                !header.contains("font-weight=\"bold\""),
+                "Task #574: 쪽번호 '1' (x={:.1}, y={:.1}, HY견명조, font-size=44) 가 \
+                 font-weight=\"bold\" 강제 적용됨. CharShape cs_id=0 의 bold=false \
+                 가 무시되는 is_heavy_display_face 결함. header=[{}]",
+                x, y, header,
+            );
+            break;
+        }
+
+        assert!(
+            found_page_number,
+            "Task #574: 페이지 1 우상단 쪽번호 '1' (font-size=44, HY견명조, x≈924, y≈115) \
+             SVG 요소를 찾지 못함 — 식별 가드 갱신 필요"
         );
     }
 }

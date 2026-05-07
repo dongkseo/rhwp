@@ -489,15 +489,22 @@ impl TypesetEngine {
                 if (para_cs == st.wrap_around_cs && para_sw == st.wrap_around_sw)
                     || (any_seg_matches && (is_empty_para || st.wrap_around_any_seg))
                     || sw0_match {
-                    // 어울림 문단: 표 옆에 기록 + height 소비 없음
-                    st.current_column_wrap_around_paras.push(
-                        crate::renderer::pagination::WrapAroundPara {
-                            para_index: para_idx,
-                            table_para_index: st.wrap_around_table_para,
-                            has_text: !is_empty_para,
-                        }
-                    );
-                    continue;
+                    // wrap_precomputed=true: 파서가 LineSeg cs/sw를 사전 계산한 문단.
+                    // layout_wrap_around_paras는 vertical_pos 기반 y 계산을 하므로
+                    // vertical_pos=0인 사전 계산 문단에서 잘못된 y가 나온다.
+                    // FullParagraph path에서 LineSeg cs/sw로 직접 처리하도록 흡수 스킵.
+                    if !para.wrap_precomputed {
+                        // 어울림 문단: 표 옆에 기록 + height 소비 없음
+                        st.current_column_wrap_around_paras.push(
+                            crate::renderer::pagination::WrapAroundPara {
+                                para_index: para_idx,
+                                table_para_index: st.wrap_around_table_para,
+                                has_text: !is_empty_para,
+                            }
+                        );
+                        continue;
+                    }
+                    // pre-computed: fall through to normal FullParagraph rendering
                 } else {
                     // 매칭 실패 → wrap zone 종료, 정상 처리 진행
                     st.wrap_around_cs = -1;

@@ -56,6 +56,35 @@ pub(crate) fn is_real_strike_shape(shape: &str) -> bool {
     )
 }
 
+/// header.xml의 `<hh:head version="X.Y">` 속성에서 hwpml 스키마 버전을 추출한다.
+///
+/// HWP3 → HWPX 변환본은 한컴이 hwpml="1.4"로 저장하는 반면, 한컴 한글로 직접
+/// 작성한 HWPX는 hwpml="1.5" 이상이다 (Task #554 진단 결과: 6/6 fixture 100% 정확).
+///
+/// 본 함수는 헤더 root element 만 읽고 즉시 반환하므로 비용이 매우 낮다.
+pub fn parse_hwpx_hwpml_version(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let name = e.name();
+                if local_name(name.as_ref()) == b"head" {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"version" {
+                            return Some(attr_str(&attr));
+                        }
+                    }
+                    return None;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 /// header.xml을 파싱하여 DocInfo와 DocProperties를 생성한다.
 pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxError> {
     let mut doc_info = DocInfo::default();

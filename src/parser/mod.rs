@@ -193,7 +193,43 @@ fn parse_hwp_with_cfb(mut cfb: cfb_reader::CfbReader, _raw_data: &[u8]) -> Resul
     // 자동 번호 할당 (문서 전체에서 순차적으로)
     assign_auto_numbers(&mut doc);
 
+    // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
+    apply_hwp3_origin_fixup(&mut doc);
+
     Ok(doc)
+}
+
+/// [Task #554] HWP3 → HWP5/HWPX 변환본 식별 휴리스틱 + 페이지 여백 보정
+///
+/// 한컴이 HWP3 → HWP5 로 변환할 때 한글97의 "마지막 줄 tolerance" (1600 HU)
+/// 동작이 누락되어 페이지 수가 +1 ~ +4 증가한다. 변환본을 식별 후 모든
+/// SectionDef.page_def.margin_bottom 을 1600 HU 줄여 한글97 페이지네이션과 정합.
+///
+/// ## 식별 휴리스틱 (Task #554 진단 결과)
+///
+/// 한컴은 HWP3 → HWP5 변환 시 ParaShape/CharShape 를 거의 재사용하지 않고 매우
+/// 적은 수만 생성하여 paragraph 대비 비율이 극도로 낮다. 직접 작성본은 작성자가
+/// 다양한 스타일을 사용하므로 비율이 paragraph 와 비슷하거나 더 높다.
+///
+/// - **`ParaShape/Paragraph < 0.05` AND `CharShape/Paragraph < 0.15`** → 변환본
+/// - **`Paragraph > 50`** 가드: 매우 짧은 문서는 비율이 왜곡되므로 제외
+///
+/// 27 fixture 검증에서 100% 정확 분류 (Stage 1 보고서 §3.2 참조).
+fn apply_hwp3_origin_fixup(doc: &mut Document) {
+    let total_paragraphs: usize = doc.sections.iter()
+        .map(|s| s.paragraphs.len())
+        .sum();
+    if total_paragraphs <= 50 {
+        return;
+    }
+    let ps_ratio = doc.doc_info.para_shapes.len() as f64 / total_paragraphs as f64;
+    let cs_ratio = doc.doc_info.char_shapes.len() as f64 / total_paragraphs as f64;
+    if ps_ratio < 0.05 && cs_ratio < 0.15 {
+        for section in doc.sections.iter_mut() {
+            section.section_def.page_def.margin_bottom =
+                section.section_def.page_def.margin_bottom.saturating_sub(1600);
+        }
+    }
 }
 
 /// CfbReader로 섹션들 파싱
@@ -312,6 +348,9 @@ fn parse_hwp_with_lenient(lenient: cfb_reader::LenientCfbReader, _raw_data: &[u8
     };
 
     assign_auto_numbers(&mut doc);
+
+    // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
+    apply_hwp3_origin_fixup(&mut doc);
 
     Ok(doc)
 }

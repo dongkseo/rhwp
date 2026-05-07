@@ -98,10 +98,16 @@ impl Tokenizer {
     /// 붙어 쓰일 수 있고(예: `rmK`, `itl`, `boldX`), 키워드 길이만큼만 소비된 뒤
     /// 나머지는 별개 토큰이 된다. 키워드 직후가 식별자 종료(공백/기호/EOF)인
     /// 경우에는 분리하지 않는다.
+    ///
+    /// [Task #576] times/sim 연산자 키워드도 변수와 인접 시 분리.
+    /// HWP 수식 script 에서 "{a timesm}" → "a × m", "rm X simZ" → "X ~ Z"
+    /// 의미. 광범위 sweep (158 fixture / 563 unique scripts) 결과 결함 발현
+    /// 키워드는 times/sim 만 (대소문자 4 개). alpha/over/sqrt 등은 항상 공백
+    /// 구분되어 prefix-split 불필요 — 그리스 문자 prefix 충돌 회귀 위험 0.
     fn read_command(&mut self) -> Token {
         let start = self.pos;
 
-        for kw in ["bold", "it", "rm"] {
+        for kw in ["bold", "it", "rm", "times", "sim", "TIMES", "SIM"] {
             if self.matches_at(kw) {
                 let after = self.peek(kw.len());
                 if matches!(after, Some(c) if c.is_ascii_alphanumeric()) {
@@ -171,6 +177,22 @@ impl Tokenizer {
         Token::new(TokenType::Quoted, value, start)
     }
 
+    /// LaTeX 명령어 읽기 (\frac, \sqrt 등)
+    fn read_latex_command(&mut self) -> Token {
+        let start = self.pos;
+        self.pos += 1; // 백슬래시 건너뛰기
+        let mut value = String::new();
+        while let Some(ch) = self.current() {
+            if ch.is_ascii_alphabetic() {
+                value.push(ch);
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        Token::new(TokenType::Command, value, start)
+    }
+
     /// 다중 문자 기호 읽기 (<=, >=, !=, ==, <<, >>, <<<, >>>)
     fn try_read_multi_char_symbol(&mut self) -> Option<Token> {
         let start = self.pos;
@@ -237,6 +259,11 @@ impl Tokenizer {
         // 따옴표 문자열
         if ch == '"' {
             return self.read_quoted();
+        }
+
+        // LaTeX 명령어: \frac, \sqrt, \pm 등
+        if ch == '\\' && self.peek(1).map_or(false, |c| c.is_ascii_alphabetic()) {
+            return self.read_latex_command();
         }
 
         // 다중 문자 기호
@@ -470,5 +497,65 @@ mod tests {
         // 기존 명령은 회귀 없음
         let tokens = tokenize("OVER MATRIX SQRT alpha beta");
         assert_eq!(values(&tokens), vec!["OVER", "MATRIX", "SQRT", "alpha", "beta"]);
+    }
+
+    #[test]
+    fn test_latex_command_prefix() {
+        let tokens = tokenize(r"\frac{1}{2}");
+        assert_eq!(types(&tokens), vec![
+            TokenType::Command,
+            TokenType::LBrace,
+            TokenType::Number,
+            TokenType::RBrace,
+            TokenType::LBrace,
+            TokenType::Number,
+            TokenType::RBrace,
+        ]);
+        assert_eq!(values(&tokens), vec!["frac", "{", "1", "}", "{", "2", "}"]);
+    }
+
+    // Task #576: times/sim 연산자 키워드 prefix 분리
+
+    #[test]
+    fn test_task576_times_lowercase_prefix_split() {
+        let tokens = tokenize("a timesm");
+        assert_eq!(values(&tokens), vec!["a", "times", "m"]);
+    }
+
+    #[test]
+    fn test_task576_sim_lowercase_prefix_split() {
+        let tokens = tokenize("rm X simZ");
+        assert_eq!(values(&tokens), vec!["rm", "X", "sim", "Z"]);
+    }
+
+    #[test]
+    fn test_task576_times_uppercase_prefix_split() {
+        let tokens = tokenize("1TIMES10");
+        assert_eq!(values(&tokens), vec!["1", "TIMES", "10"]);
+    }
+
+    #[test]
+    fn test_task576_sim_uppercase_prefix_split() {
+        let tokens = tokenize("rmA SIMC");
+        assert_eq!(values(&tokens), vec!["rm", "A", "SIM", "C"]);
+    }
+
+    #[test]
+    fn test_task576_alpha_no_split() {
+        // 회귀 차단: alpha 는 그 자체 keyword 이므로 분리되면 안 됨
+        let tokens = tokenize("alpha");
+        assert_eq!(values(&tokens), vec!["alpha"]);
+        // alphabet 은 일반 식별자 — 분리되지 않아야 함
+        let tokens = tokenize("alphabet");
+        assert_eq!(values(&tokens), vec!["alphabet"]);
+    }
+
+    #[test]
+    fn test_task576_times_followed_by_space() {
+        // 키워드 다음 공백/기호 오면 분리 불필요 (기존 동작 보존)
+        let tokens = tokenize("a times b");
+        assert_eq!(values(&tokens), vec!["a", "times", "b"]);
+        let tokens = tokenize("rmA SIM C");
+        assert_eq!(values(&tokens), vec!["rm", "A", "SIM", "C"]);
     }
 }

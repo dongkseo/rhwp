@@ -72,6 +72,12 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
     let header_xml = reader.read_file("Contents/header.xml")?;
     let (mut doc_info, doc_properties) = header::parse_hwpx_header(&header_xml)?;
 
+    // [Task #554] HWP3 → HWPX 변환본 식별: hwpml 스키마 버전 = "1.4"
+    // 변환본은 한글97의 "마지막 줄 tolerance" (1600 HU) 가 누락되어 페이지 수가
+    // 늘어나므로, 본 시점에 식별하여 page_def.margin_bottom 보정 (post-process)에 사용.
+    let hwpml_version = header::parse_hwpx_hwpml_version(&header_xml);
+    let is_hwp3_origin = hwpml_version.as_deref() == Some("1.4");
+
     // BinData 목록을 DocInfo에 등록
     for (i, item) in package_info.bin_data_items.iter().enumerate() {
         let ext = item.href.rsplit('.').next().unwrap_or("dat").to_string();
@@ -93,6 +99,15 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
                 eprintln!("경고: {} 파싱 실패: {}", section_href, e);
                 sections.push(Section::default());
             }
+        }
+    }
+
+    // [Task #554] HWP3 변환본 보정: 한글97의 마지막 줄 tolerance 모방
+    // 모든 SectionDef.page_def 의 margin_bottom 을 1600 HU 줄여 한글97 페이지네이션과 정합.
+    if is_hwp3_origin {
+        for section in sections.iter_mut() {
+            section.section_def.page_def.margin_bottom =
+                section.section_def.page_def.margin_bottom.saturating_sub(1600);
         }
     }
 
