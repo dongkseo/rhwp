@@ -58,6 +58,8 @@ enum RenderNodeType: Decodable {
     case equation(EquationNode)
     case formObject(FormObjectNode)
     case footnoteMarker(FootnoteMarkerNode)
+    case placeholder(PlaceholderNode)
+    case rawSvg(RawSvgNode)
     case unknown
 
     init(from decoder: Decoder) throws {
@@ -93,6 +95,8 @@ enum RenderNodeType: Decodable {
         if let v = try? keyed.decode(EquationNode.self, forKey: .init("Equation")) { self = .equation(v); return }
         if let v = try? keyed.decode(FormObjectNode.self, forKey: .init("FormObject")) { self = .formObject(v); return }
         if let v = try? keyed.decode(FootnoteMarkerNode.self, forKey: .init("FootnoteMarker")) { self = .footnoteMarker(v); return }
+        if let v = try? keyed.decode(PlaceholderNode.self, forKey: .init("Placeholder")) { self = .placeholder(v); return }
+        if let v = try? keyed.decode(RawSvgNode.self, forKey: .init("RawSvg")) { self = .rawSvg(v); return }
         self = .unknown
     }
 }
@@ -303,16 +307,64 @@ struct ImageNode: Decodable {
     let originalSize: [Double]?
     let transform: ShapeTransform
     let crop: [Int32]?
+    /// HWPUNIT 단위 원본 크기 (Task #430, crop 좌표 변환용)
+    let originalSizeHu: [UInt32]?
+    /// 이미지 효과 (Task #195)
+    let effect: ImageEffect
+    /// 밝기 보정 -100..+100 (Task #195)
+    let brightness: Int8
+    /// 대비 보정 -100..+100 (Task #195)
+    let contrast: Int8
+    /// 텍스트 흐름 방식 (Task #516, BehindText/InFrontOfText 레이어 분리용)
+    let textWrap: TextWrap?
 
     enum CodingKeys: String, CodingKey {
-        case transform, crop
+        case transform, crop, effect, brightness, contrast
         case binDataId = "bin_data_id"
         case sectionIndex = "section_index"
         case paraIndex = "para_index"
         case controlIndex = "control_index"
         case fillMode = "fill_mode"
         case originalSize = "original_size"
+        case originalSizeHu = "original_size_hu"
+        case textWrap = "text_wrap"
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        binDataId = try c.decode(UInt16.self, forKey: .binDataId)
+        sectionIndex = try c.decodeIfPresent(Int.self, forKey: .sectionIndex)
+        paraIndex = try c.decodeIfPresent(Int.self, forKey: .paraIndex)
+        controlIndex = try c.decodeIfPresent(Int.self, forKey: .controlIndex)
+        fillMode = try c.decodeIfPresent(String.self, forKey: .fillMode)
+        originalSize = try c.decodeIfPresent([Double].self, forKey: .originalSize)
+        transform = try c.decode(ShapeTransform.self, forKey: .transform)
+        crop = try c.decodeIfPresent([Int32].self, forKey: .crop)
+        // 신규 필드 — 기본값으로 회귀 차단
+        originalSizeHu = try c.decodeIfPresent([UInt32].self, forKey: .originalSizeHu)
+        effect = (try? c.decode(ImageEffect.self, forKey: .effect)) ?? .realPic
+        brightness = (try? c.decode(Int8.self, forKey: .brightness)) ?? 0
+        contrast = (try? c.decode(Int8.self, forKey: .contrast)) ?? 0
+        textWrap = try? c.decodeIfPresent(TextWrap.self, forKey: .textWrap)
+    }
+}
+
+/// 이미지 효과 (Task #195)
+enum ImageEffect: String, Decodable {
+    case realPic = "RealPic"
+    case grayScale = "GrayScale"
+    case blackWhite = "BlackWhite"
+    case pattern8x8 = "Pattern8x8"
+}
+
+/// 텍스트 흐름 방식 (Task #516)
+enum TextWrap: String, Decodable {
+    case square = "Square"
+    case tight = "Tight"
+    case through = "Through"
+    case topAndBottom = "TopAndBottom"
+    case behindText = "BehindText"
+    case inFrontOfText = "InFrontOfText"
 }
 
 struct GroupNode: Decodable {
@@ -366,6 +418,24 @@ struct FootnoteMarkerNode: Decodable {
     }
 }
 
+/// 차트/OLE placeholder 렌더 노드 (Task #195)
+struct PlaceholderNode: Decodable {
+    let fillColor: UInt32
+    let strokeColor: UInt32
+    let label: String
+
+    enum CodingKeys: String, CodingKey {
+        case label
+        case fillColor = "fill_color"
+        case strokeColor = "stroke_color"
+    }
+}
+
+/// 미리 렌더된 SVG 조각 (Task #195 단계 8 — OOXML 차트 등)
+struct RawSvgNode: Decodable {
+    let svg: String
+}
+
 // MARK: - 스타일 타입
 
 struct TextStyle: Decodable {
@@ -387,6 +457,8 @@ struct TextStyle: Decodable {
     let inlineTabs: [[UInt16]]
     let extraWordSpacing: Double
     let extraCharSpacing: Double
+    /// dash leader 글자당 추가 간격 (Task #352)
+    let extraDashAdvance: Double
     let outlineType: UInt8
     let shadowType: UInt8
     let shadowColor: UInt32
@@ -418,6 +490,7 @@ struct TextStyle: Decodable {
         case inlineTabs = "inline_tabs"
         case extraWordSpacing = "extra_word_spacing"
         case extraCharSpacing = "extra_char_spacing"
+        case extraDashAdvance = "extra_dash_advance"
         case outlineType = "outline_type"
         case shadowType = "shadow_type"
         case shadowColor = "shadow_color"
@@ -430,6 +503,45 @@ struct TextStyle: Decodable {
         case underlineColor = "underline_color"
         case strikeColor = "strike_color"
         case shadeColor = "shade_color"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fontFamily = try c.decode(String.self, forKey: .fontFamily)
+        fontSize = try c.decode(Double.self, forKey: .fontSize)
+        color = try c.decode(UInt32.self, forKey: .color)
+        bold = try c.decode(Bool.self, forKey: .bold)
+        italic = try c.decode(Bool.self, forKey: .italic)
+        underline = try c.decode(String.self, forKey: .underline)
+        strikethrough = try c.decode(Bool.self, forKey: .strikethrough)
+        letterSpacing = try c.decode(Double.self, forKey: .letterSpacing)
+        ratio = try c.decode(Double.self, forKey: .ratio)
+        defaultTabWidth = try c.decode(Double.self, forKey: .defaultTabWidth)
+        tabStops = try c.decode([TabStopInfo].self, forKey: .tabStops)
+        autoTabRight = try c.decode(Bool.self, forKey: .autoTabRight)
+        availableWidth = try c.decode(Double.self, forKey: .availableWidth)
+        lineXOffset = try c.decode(Double.self, forKey: .lineXOffset)
+        tabLeaders = try c.decode([TabLeaderInfo].self, forKey: .tabLeaders)
+        inlineTabs = try c.decode([[UInt16]].self, forKey: .inlineTabs)
+        extraWordSpacing = try c.decode(Double.self, forKey: .extraWordSpacing)
+        extraCharSpacing = try c.decode(Double.self, forKey: .extraCharSpacing)
+        // 신규 (Task #352) — JSON에 없으면 0으로 폴백
+        extraDashAdvance = (try? c.decode(Double.self, forKey: .extraDashAdvance)) ?? 0
+        outlineType = try c.decode(UInt8.self, forKey: .outlineType)
+        shadowType = try c.decode(UInt8.self, forKey: .shadowType)
+        shadowColor = try c.decode(UInt32.self, forKey: .shadowColor)
+        shadowOffsetX = try c.decode(Double.self, forKey: .shadowOffsetX)
+        shadowOffsetY = try c.decode(Double.self, forKey: .shadowOffsetY)
+        emboss = try c.decode(Bool.self, forKey: .emboss)
+        engrave = try c.decode(Bool.self, forKey: .engrave)
+        superscript = try c.decode(Bool.self, forKey: .superscript)
+        `subscript` = try c.decode(Bool.self, forKey: .`subscript`)
+        emphasisDot = try c.decode(UInt8.self, forKey: .emphasisDot)
+        underlineShape = try c.decode(UInt8.self, forKey: .underlineShape)
+        strikeShape = try c.decode(UInt8.self, forKey: .strikeShape)
+        underlineColor = try c.decode(UInt32.self, forKey: .underlineColor)
+        strikeColor = try c.decode(UInt32.self, forKey: .strikeColor)
+        shadeColor = try c.decode(UInt32.self, forKey: .shadeColor)
     }
 }
 

@@ -4,11 +4,31 @@
 
 import UIKit
 import CoreGraphics
+import CoreImage
 import CoreText
+
+/// 이미지 캐시 키 — bin_data_id + 이미지 효과 + 보정값 별 별개 캐시
+struct ImageCacheKey: Hashable {
+    let binDataId: UInt16
+    let effect: ImageEffect
+    let brightness: Int8
+    let contrast: Int8
+}
+
+/// 렌더링 패스 (Task #516 — TextWrap 다층 레이어 분리)
+enum RenderPass {
+    /// BehindText 이미지만 (텍스트보다 뒤)
+    case behindText
+    /// 본문 + 일반 이미지 (Square/Tight/Through/TopAndBottom)
+    case body
+    /// InFrontOfText 이미지만 (텍스트보다 위)
+    case inFrontOfText
+}
 
 @MainActor
 class CGTreeRenderer {
-    private var imageCache: [UInt16: CGImage] = [:]
+    private var imageCache: [ImageCacheKey: CGImage] = [:]
+    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private weak var document: RhwpDocument?
 
     private var pageHeight: Double = 0
@@ -21,7 +41,14 @@ class CGTreeRenderer {
         // 렌더 트리의 좌표(좌상단 원점)를 그대로 사용할 수 있다.
         // 단, Core Text와 CGImage는 원본 CG 좌표계(좌하단)를 기대하므로
         // 해당 요소에서만 국소적으로 좌표를 조정한다.
-        renderNode(tree, in: context)
+        //
+        // Task #516: 다층 레이어를 위해 트리를 3번 순회.
+        // 1) BehindText: 텍스트 뒤로 깔리는 이미지만
+        // 2) body: 본문 + 일반 이미지 (Square/Tight/Through/TopAndBottom/None)
+        // 3) InFrontOfText: 텍스트 위에 떠 있는 이미지만
+        renderNode(tree, in: context, pass: .behindText)
+        renderNode(tree, in: context, pass: .body)
+        renderNode(tree, in: context, pass: .inFrontOfText)
     }
 
     func clearCache() {
@@ -30,59 +57,75 @@ class CGTreeRenderer {
 
     // MARK: - 트리 순회
 
-    private func renderNode(_ node: RenderNode, in ctx: CGContext) {
+    private func renderNode(_ node: RenderNode, in ctx: CGContext, pass: RenderPass) {
         guard node.visible else { return }
 
         switch node.nodeType {
         case .page:
-            // 페이지 배경 (흰색)
-            ctx.setFillColor(UIColor.white.cgColor)
-            ctx.fill(cgRect(node.bbox))
-            renderChildren(node, in: ctx)
+            // 페이지 배경 (흰색) — body pass에서만
+            if pass == .body {
+                ctx.setFillColor(UIColor.white.cgColor)
+                ctx.fill(cgRect(node.bbox))
+            }
+            renderChildren(node, in: ctx, pass: pass)
 
         case .pageBackground(let bg):
-            renderPageBackground(bg, bbox: node.bbox, in: ctx)
+            // 페이지 배경/테두리 — body pass에서만
+            if pass == .body {
+                renderPageBackground(bg, bbox: node.bbox, in: ctx)
+            }
 
         case .body(let body):
             if let clip = body.clipRect {
                 ctx.saveGState()
                 ctx.clip(to: cgRect(clip))
-                renderChildren(node, in: ctx)
+                renderChildren(node, in: ctx, pass: pass)
                 ctx.restoreGState()
             } else {
-                renderChildren(node, in: ctx)
+                renderChildren(node, in: ctx, pass: pass)
             }
 
         case .tableCell(let cell):
             if cell.clip {
                 ctx.saveGState()
                 ctx.clip(to: cgRect(node.bbox))
-                renderChildren(node, in: ctx)
+                renderChildren(node, in: ctx, pass: pass)
                 ctx.restoreGState()
             } else {
-                renderChildren(node, in: ctx)
+                renderChildren(node, in: ctx, pass: pass)
             }
 
         case .rectangle(let rect):
-            renderRectangle(rect, bbox: node.bbox, in: ctx)
+            if pass == .body { renderRectangle(rect, bbox: node.bbox, in: ctx) }
 
         case .line(let line):
-            renderLine(line, in: ctx)
+            if pass == .body { renderLine(line, in: ctx) }
 
         case .ellipse(let ell):
-            renderEllipse(ell, bbox: node.bbox, in: ctx)
+            if pass == .body { renderEllipse(ell, bbox: node.bbox, in: ctx) }
 
         case .path(let path):
-            renderPath(path, bbox: node.bbox, in: ctx)
+            if pass == .body { renderPath(path, bbox: node.bbox, in: ctx) }
 
         case .image(let img):
-            renderImage(img, bbox: node.bbox, in: ctx)
+            // Task #516: text_wrap 별로 그릴 패스를 분리
+            let imageLayer: RenderPass = {
+                switch img.textWrap {
+                case .behindText: return .behindText
+                case .inFrontOfText: return .inFrontOfText
+                default: return .body
+                }
+            }()
+            if pass == imageLayer {
+                renderImage(img, bbox: node.bbox, in: ctx)
+            }
 
         case .group(let grp):
-            renderGroup(node, in: ctx)
+            // Group은 자식만 순회 (자식 image가 자체 textWrap으로 분기)
+            renderGroup(node, in: ctx, pass: pass)
 
         case .textRun(let run):
-            renderTextRun(run, bbox: node.bbox, in: ctx)
+            if pass == .body { renderTextRun(run, bbox: node.bbox, in: ctx) }
 
         case .equation(let eq):
             // M3에서 네이티브 수식 렌더링 예정
@@ -93,17 +136,23 @@ class CGTreeRenderer {
             break
 
         case .footnoteMarker(let marker):
-            renderFootnoteMarker(marker, bbox: node.bbox, in: ctx)
+            if pass == .body { renderFootnoteMarker(marker, bbox: node.bbox, in: ctx) }
+
+        case .placeholder(let p):
+            if pass == .body { renderPlaceholder(p, bbox: node.bbox, in: ctx) }
+
+        case .rawSvg(let raw):
+            if pass == .body { renderRawSvgFallback(raw, bbox: node.bbox, in: ctx) }
 
         default:
             // 구조 노드(header, footer, column 등): 자식만 순회
-            renderChildren(node, in: ctx)
+            renderChildren(node, in: ctx, pass: pass)
         }
     }
 
-    private func renderChildren(_ node: RenderNode, in ctx: CGContext) {
+    private func renderChildren(_ node: RenderNode, in ctx: CGContext, pass: RenderPass) {
         for child in node.children {
-            renderNode(child, in: ctx)
+            renderNode(child, in: ctx, pass: pass)
         }
     }
 
@@ -229,15 +278,32 @@ class CGTreeRenderer {
     private func renderImage(_ img: ImageNode, bbox: BBox, in ctx: CGContext) {
         guard img.binDataId > 0, let doc = document else { return }
 
+        // 캐시 키: bin_data_id + 효과 + 보정값 (Task #195 — 효과별 별개 캐시)
+        let key = ImageCacheKey(
+            binDataId: img.binDataId,
+            effect: img.effect,
+            brightness: img.brightness,
+            contrast: img.contrast
+        )
+
         let cgImage: CGImage
-        if let cached = imageCache[img.binDataId] {
+        if let cached = imageCache[key] {
             cgImage = cached
         } else {
             guard let data = doc.imageData(binDataId: img.binDataId),
                   let uiImage = UIImage(data: data),
-                  let cg = uiImage.cgImage else { return }
-            imageCache[img.binDataId] = cg
-            cgImage = cg
+                  let raw = uiImage.cgImage else { return }
+            // 효과/보정 미적용이면 원본 그대로 캐시
+            let processed = (img.effect != .realPic
+                            || img.brightness != 0
+                            || img.contrast != 0)
+                ? applyImageEffect(raw,
+                                   effect: img.effect,
+                                   brightness: img.brightness,
+                                   contrast: img.contrast)
+                : raw
+            imageCache[key] = processed
+            cgImage = processed
         }
 
         ctx.saveGState()
@@ -255,15 +321,55 @@ class CGTreeRenderer {
         ctx.restoreGState()
     }
 
+    /// 이미지 효과 + 밝기/대비 보정 적용 (Task #195)
+    /// CIFilter 체인을 통해 GrayScale / BlackWhite / brightness / contrast 적용.
+    private func applyImageEffect(_ cgImage: CGImage,
+                                  effect: ImageEffect,
+                                  brightness: Int8,
+                                  contrast: Int8) -> CGImage {
+        var current = CIImage(cgImage: cgImage)
+
+        // 1) 효과
+        switch effect {
+        case .realPic:
+            break
+        case .grayScale:
+            current = current.applyingFilter("CIPhotoEffectMono")
+        case .blackWhite:
+            // 흑백 2색화: 그레이스케일 → 임계값 분리
+            current = current.applyingFilter("CIPhotoEffectMono")
+            current = current.applyingFilter("CIColorControls",
+                                             parameters: ["inputContrast": 4.0])
+        case .pattern8x8:
+            // HWP 8×8 dot pattern은 iOS 표준 매핑 없음 → 임시 그레이스케일 폴백
+            // 정식 구현은 M3에서 패턴 이미지 생성 검토
+            current = current.applyingFilter("CIPhotoEffectMono")
+        }
+
+        // 2) 밝기/대비 (-100..+100 → CI 단위 -1.0..+1.0)
+        if brightness != 0 || contrast != 0 {
+            let b = Double(brightness) / 100.0
+            // contrast: HWP -100..+100 → CI 0.0..2.0 (1.0이 원본)
+            let c = 1.0 + Double(contrast) / 100.0
+            current = current.applyingFilter("CIColorControls", parameters: [
+                "inputBrightness": b,
+                "inputContrast": c,
+            ])
+        }
+
+        // 3) CIImage → CGImage 변환
+        return ciContext.createCGImage(current, from: current.extent) ?? cgImage
+    }
+
     // MARK: - 그룹
 
-    private func renderGroup(_ node: RenderNode, in ctx: CGContext) {
+    private func renderGroup(_ node: RenderNode, in ctx: CGContext, pass: RenderPass) {
         ctx.saveGState()
         // 그룹 노드의 transform은 자식에게 적용
         if case .group = node.nodeType {
             // 그룹 자체는 transform 없음 (자식 개별 적용)
         }
-        renderChildren(node, in: ctx)
+        renderChildren(node, in: ctx, pass: pass)
         ctx.restoreGState()
     }
 
@@ -378,6 +484,61 @@ class CGTreeRenderer {
 
         ctx.restoreGState()
     }
+
+    // MARK: - Placeholder / RawSvg (Task #195)
+
+    /// 차트/OLE placeholder (배경 rect + 중앙 라벨)
+    private func renderPlaceholder(_ p: PlaceholderNode, bbox: BBox, in ctx: CGContext) {
+        let r = cgRect(bbox)
+        ctx.saveGState()
+        ctx.setFillColor(colorRefToCGColor(p.fillColor))
+        ctx.fill(r)
+        ctx.setStrokeColor(colorRefToCGColor(p.strokeColor))
+        ctx.setLineWidth(0.5)
+        ctx.stroke(r)
+        ctx.restoreGState()
+        drawCenteredLabel(p.label, in: r, ctx: ctx, color: UIColor.darkGray)
+    }
+
+    /// RawSvg 임시 폴백 — iOS 네이티브 SVG 렌더링은 M3에서 정식 구현
+    /// 차트 영역 인지 가능하도록 회색 점선 박스 + "[SVG 차트]" 라벨 표시
+    private func renderRawSvgFallback(_ raw: RawSvgNode, bbox: BBox, in ctx: CGContext) {
+        let r = cgRect(bbox)
+        ctx.saveGState()
+        ctx.setFillColor(UIColor(white: 0.96, alpha: 1.0).cgColor)
+        ctx.fill(r)
+        ctx.setStrokeColor(UIColor(white: 0.65, alpha: 1.0).cgColor)
+        ctx.setLineDash(phase: 0, lengths: [4, 2])
+        ctx.setLineWidth(0.5)
+        ctx.stroke(r)
+        ctx.restoreGState()
+        drawCenteredLabel("[SVG 차트]", in: r, ctx: ctx, color: UIColor.gray)
+    }
+
+    /// 사각형 중앙에 라벨 그리기 (Y축 반전 처리 포함)
+    private func drawCenteredLabel(_ text: String, in rect: CGRect, ctx: CGContext, color: UIColor) {
+        guard !text.isEmpty, rect.width > 4, rect.height > 4 else { return }
+        let fontSize = max(8, min(rect.width, rect.height) * 0.12)
+        let font = CTFontCreateWithName("AppleSDGothicNeo-Regular" as CFString, fontSize, nil)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color,
+        ]
+        let attrStr = NSAttributedString(string: text, attributes: attrs)
+        let line = CTLineCreateWithAttributedString(attrStr)
+        let bounds = CTLineGetImageBounds(line, ctx)
+
+        ctx.saveGState()
+        // Y축 반전 (이미 페이지 전체가 좌상단 원점이므로 텍스트만 국소 반전)
+        ctx.translateBy(x: rect.midX - bounds.width / 2,
+                        y: rect.midY + bounds.height / 2)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.textPosition = .zero
+        CTLineDraw(line, ctx)
+        ctx.restoreGState()
+    }
+
+    // MARK: - 각주/미주
 
     /// 각주/미주 마커 (위첨자)
     private func renderFootnoteMarker(_ marker: FootnoteMarkerNode, bbox: BBox, in ctx: CGContext) {
