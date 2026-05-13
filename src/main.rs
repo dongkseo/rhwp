@@ -18,6 +18,7 @@ fn main() {
         Some("dump-pages") => dump_pages(&args[2..]),
         Some("diag") => diag_document(&args[2..]),
         Some("convert") => convert_hwp(&args[2..]),
+        Some("build-from-ingest") => build_from_ingest(&args[2..]),
         Some("dump-records") => dump_raw_records(&args[2..]),
         Some("test-shape") => test_shape_roundtrip(&args[2..]),
         Some("test-caption") => test_caption(&args[2..]),
@@ -65,9 +66,15 @@ fn print_help() {
     println!("      --scale <배율>          렌더링 배율 (기본: 1.0)");
     println!("      --max-dimension <픽셀>  한 변 최대 픽셀 (longest edge). VLM 입력 한도용.");
     println!("                              명시 --scale 이 없으면 자동 scale 계산 (페이지 → 한도 안)");
-    println!("      --vlm-target <프리셋>   VLM 입력 프리셋 (현재: claude)");
-    println!("                              claude: 1568 px / 1.15 MP (Claude Vision 정합)");
-    println!("                              다른 VLM (gpt4v/gemini/qwen-vl/llava) 은 이슈 #613 후속");
+    println!("      --dpi <값>              DPI 메타데이터 (PNG pHYs chunk). 실제 픽셀 수 무관.");
+    println!("                              --scale 미지정 시 scale = dpi/96 자동 계산");
+    println!("      --vlm-target <프리셋>   VLM 입력 프리셋 (하이픈/밑줄 모두 허용):");
+    println!("                              claude:     1568 px / 1.15 MP (Claude Vision)");
+    println!("                              gpt4v-low:  512 px (GPT-4V low detail)");
+    println!("                              gpt4v-high: 2000 px / 1.54 MP (GPT-4V high, 별칭: gpt4v)");
+    println!("                              gemini:     3072 px (Google Gemini)");
+    println!("                              qwen-vl:    2240 px (Qwen-VL, 별칭: qwen)");
+    println!("                              llava:      672 px (LLaVA / OSS CLIP)");
     println!();
     println!("  export-text <파일.hwp> [옵션]");
     println!("      페이지별 텍스트를 TXT로 내보내기");
@@ -97,6 +104,10 @@ fn print_help() {
     println!();
     println!("  ir-diff <파일A.hwpx> <파일B.hwp> [-s <구역>] [-p <문단>]");
     println!("      두 파일의 IR(중간표현) 비교 (HWPX↔HWP 불일치 검출)");
+    println!("      비교 항목: text, char_count, char_offsets, char_shapes, line_segs,");
+    println!("                 controls(타입+속성), tab_extended, ParaShape, TabDef");
+    println!("      표: page_break, outer_margin, treat_as_char, wrap, size, v_offset/h_offset");
+    println!("      그림/도형: treat_as_char, wrap, size, v_offset/h_offset, vert_rel/horz_rel");
     println!();
     println!("  thumbnail <파일.hwp> [옵션]");
     println!("      HWP 파일에서 썸네일(PrvImage) 추출");
@@ -220,6 +231,12 @@ fn export_svg(args: &[String]) {
             return;
         }
     };
+
+    // [Task #741 후속] 외부 file path 그림 영역 영역 HWP file 영역 영역 같은 dir 영역
+    // 영역 image 영역 영역 자동 load (basename 매칭).
+    if let Some(parent) = std::path::Path::new(file_path).parent() {
+        let _loaded = doc.populate_external_images_from_dir(parent);
+    }
 
     if show_para_marks {
         doc.set_show_paragraph_marks(true);
@@ -400,6 +417,7 @@ fn export_png(args: &[String]) {
     let mut scale: Option<f64> = None;
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
+    let mut dpi: Option<f64> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -467,13 +485,30 @@ fn export_png(args: &[String]) {
                     return;
                 }
             }
+            "--dpi" => {
+                if i + 1 < args.len() {
+                    match args[i + 1].parse::<f64>() {
+                        Ok(d) if d.is_finite() && d > 0.0 => dpi = Some(d),
+                        _ => {
+                            eprintln!("오류: --dpi 값이 올바르지 않습니다 (양수 실수 필요).");
+                            return;
+                        }
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("오류: --dpi 뒤에 DPI 값이 필요합니다.");
+                    return;
+                }
+            }
             "--vlm-target" => {
                 if i + 1 < args.len() {
                     match VlmTarget::from_str(&args[i + 1]) {
                         Some(t) => vlm_target = Some(t),
                         None => {
-                            eprintln!("오류: --vlm-target 값이 올바르지 않습니다 (지원: claude).");
-                            eprintln!("       다른 VLM 프리셋 (gpt4v / gemini / qwen-vl / llava) 은 이슈 #613 후속 task.");
+                            eprintln!(
+                                "오류: --vlm-target 값이 올바르지 않습니다 (지원: {}).",
+                                VlmTarget::all_names()
+                            );
                             return;
                         }
                     }
@@ -494,6 +529,7 @@ fn export_png(args: &[String]) {
         scale,
         max_dimension,
         vlm_target,
+        dpi,
         font_paths: font_paths.clone(),
     };
 
@@ -547,7 +583,8 @@ fn export_png(args: &[String]) {
     for page_num in &pages {
         let has_options = png_options.scale.is_some()
             || png_options.max_dimension.is_some()
-            || png_options.vlm_target.is_some();
+            || png_options.vlm_target.is_some()
+            || png_options.dpi.is_some();
         let result = if has_options {
             core.render_page_png_native_with_export_options(*page_num, &png_options)
         } else if !font_paths.is_empty() {
@@ -1160,7 +1197,9 @@ fn show_info(args: &[String]) {
     for (i, fonts) in document.doc_info.font_faces.iter().enumerate() {
         if !fonts.is_empty() {
             let name = if i < lang_names.len() { lang_names[i] } else { "기타" };
-            let font_names: Vec<&str> = fonts.iter().map(|f| f.name.as_str()).collect();
+            let font_names: Vec<String> = fonts.iter().enumerate()
+                .map(|(idx, f)| format!("[{}]{}", idx, f.name))
+                .collect();
             println!("폰트({}): {}", name, font_names.join(", "));
         }
     }
@@ -1911,6 +1950,12 @@ fn dump_controls(args: &[String]) {
                                                 println!("{}    ctrl[{}] {}: tac={}, wrap={:?}",
                                                     indent, ci, s.shape_name(), s.common().treat_as_char, s.common().text_wrap);
                                             }
+                                            Control::PageHide(ph) => {
+                                                println!("{}    ctrl[{}] PageHide: header={} footer={} master={} border={} fill={} page_num={}",
+                                                    indent, ci,
+                                                    ph.hide_header, ph.hide_footer, ph.hide_master_page,
+                                                    ph.hide_border, ph.hide_fill, ph.hide_page_num);
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -1946,9 +1991,12 @@ fn dump_controls(args: &[String]) {
                             sa.current_width, sa.current_height,
                             sa.current_width as f64 / 7200.0 * 25.4, sa.current_height as f64 / 7200.0 * 25.4,
                             pic.common.treat_as_char);
-                        println!("{}  [image_attr] effect={:?} brightness={} contrast={} watermark={}",
+                        println!("{}  [image_attr] effect={:?} brightness={} contrast={} watermark={}{}",
                             prefix, pic.image_attr.effect, pic.image_attr.brightness, pic.image_attr.contrast,
-                            pic.image_attr.watermark_preset().unwrap_or("none"));
+                            pic.image_attr.watermark_preset().unwrap_or("none"),
+                            pic.image_attr.external_path.as_ref()
+                                .map(|p| format!(" external_path=\"{}\"", p))
+                                .unwrap_or_default());
                         println!("{}  border_x={:?} border_y={:?} border_color=#{:06X} border_width={} ({:.2}mm) border_attr={:?}",
                             prefix, pic.border_x, pic.border_y,
                             pic.border_color, pic.border_width, pic.border_width as f64 / 7200.0 * 25.4,
@@ -2293,6 +2341,113 @@ fn convert_hwp(args: &[String]) {
         Err(e) => {
             eprintln!("오류: 직렬화 실패 - {}", e);
         }
+    }
+}
+
+/// `rhwp build-from-ingest <ingest.json> [--media-dir <dir>] -o <out.hwpx>`
+///
+/// Claude Code Skill (`rhwp-exam-ingest`)이 생성한 JSON 중간 표현을 HWPX로 변환한다.
+/// Task #660 (Neumann 본 작업 1단계).
+fn build_from_ingest(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("사용법: rhwp build-from-ingest <ingest.json> [--media-dir <dir>] -o <out.hwpx>");
+        return;
+    }
+
+    let mut input_path: Option<&str> = None;
+    let mut output_path: Option<&str> = None;
+    let mut media_dir: Option<&str> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" | "--output" => {
+                if i + 1 >= args.len() {
+                    eprintln!("오류: -o 옵션에 값이 필요합니다");
+                    return;
+                }
+                output_path = Some(&args[i + 1]);
+                i += 2;
+            }
+            "--media-dir" => {
+                if i + 1 >= args.len() {
+                    eprintln!("오류: --media-dir 옵션에 값이 필요합니다");
+                    return;
+                }
+                media_dir = Some(&args[i + 1]);
+                i += 2;
+            }
+            other => {
+                if input_path.is_none() {
+                    input_path = Some(other);
+                } else {
+                    eprintln!("경고: 알 수 없는 인자 '{}' 무시", other);
+                }
+                i += 1;
+            }
+        }
+    }
+
+    let input = match input_path {
+        Some(p) => p,
+        None => {
+            eprintln!("오류: 입력 ingest JSON 경로가 누락되었습니다");
+            return;
+        }
+    };
+    let output = match output_path {
+        Some(p) => p,
+        None => {
+            eprintln!("오류: -o <출력 경로> 가 누락되었습니다");
+            return;
+        }
+    };
+
+    let bytes = match fs::read(input) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("오류: 입력 파일 읽기 실패 - {}: {}", input, e);
+            return;
+        }
+    };
+
+    let ingest = match rhwp::parser::ingest::parse_ingest_bytes(&bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: ingest JSON 파싱 실패 - {}", e);
+            return;
+        }
+    };
+
+    if let Some(md) = media_dir {
+        let p = Path::new(md);
+        if !p.exists() {
+            eprintln!(
+                "경고: 미디어 디렉토리가 존재하지 않습니다 ({}). 본 단계는 이미지 placeholder로 처리됩니다.",
+                md
+            );
+        }
+    }
+
+    let doc = rhwp::document_core::builders::exam_paper::build_exam_paper(&ingest);
+
+    let hwpx_bytes = match rhwp::serializer::serialize_hwpx(&doc) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("오류: HWPX 직렬화 실패 - {}", e);
+            return;
+        }
+    };
+
+    match fs::write(output, &hwpx_bytes) {
+        Ok(_) => println!(
+            "저장 완료: {} ({}바이트, 문제 {}개, 문단 {}개)",
+            output,
+            hwpx_bytes.len(),
+            ingest.questions.len(),
+            doc.sections.iter().map(|s| s.paragraphs.len()).sum::<usize>()
+        ),
+        Err(e) => eprintln!("오류: 파일 저장 실패 - {}: {}", output, e),
     }
 }
 
@@ -2675,9 +2830,106 @@ fn test_field_roundtrip(args: &[String]) {
     }
 }
 
+fn control_tag(c: &rhwp::model::control::Control) -> &'static str {
+    use rhwp::model::control::Control;
+    match c {
+        Control::SectionDef(_) => "secd",
+        Control::ColumnDef(_) => "cold",
+        Control::Table(_) => "tbl",
+        Control::Shape(_) => "shape",
+        Control::Picture(_) => "pic",
+        Control::Header(_) => "head",
+        Control::Footer(_) => "foot",
+        Control::Footnote(_) => "fn",
+        Control::Endnote(_) => "en",
+        Control::AutoNumber(_) => "atno",
+        Control::NewNumber(_) => "nwno",
+        Control::PageNumberPos(_) => "pgnp",
+        Control::Bookmark(_) => "bokm",
+        Control::Hyperlink(_) => "hlk",
+        Control::Ruby(_) => "ruby",
+        Control::CharOverlap(_) => "tcps",
+        Control::PageHide(_) => "pghd",
+        Control::HiddenComment(_) => "tcmt",
+        Control::Equation(_) => "eqed",
+        Control::Field(_) => "field",
+        Control::Form(_) => "form",
+        Control::Unknown(_) => "unknown",
+    }
+}
+
+fn diff_table(
+    diffs: &mut Vec<String>,
+    ci: usize,
+    a: &rhwp::model::table::Table,
+    b: &rhwp::model::table::Table,
+) {
+    if a.row_count != b.row_count {
+        diffs.push(format!("ctrl[{}] tbl rows: A={} vs B={}", ci, a.row_count, b.row_count));
+    }
+    if a.col_count != b.col_count {
+        diffs.push(format!("ctrl[{}] tbl cols: A={} vs B={}", ci, a.col_count, b.col_count));
+    }
+    if a.page_break != b.page_break {
+        diffs.push(format!("ctrl[{}] tbl page_break: A={:?} vs B={:?}", ci, a.page_break, b.page_break));
+    }
+    if a.repeat_header != b.repeat_header {
+        diffs.push(format!("ctrl[{}] tbl repeat_header: A={} vs B={}", ci, a.repeat_header, b.repeat_header));
+    }
+    if a.cell_spacing != b.cell_spacing {
+        diffs.push(format!("ctrl[{}] tbl cell_spacing: A={} vs B={}", ci, a.cell_spacing, b.cell_spacing));
+    }
+    if a.border_fill_id != b.border_fill_id {
+        diffs.push(format!("ctrl[{}] tbl border_fill_id: A={} vs B={}", ci, a.border_fill_id, b.border_fill_id));
+    }
+    if a.outer_margin_left != b.outer_margin_left
+        || a.outer_margin_right != b.outer_margin_right
+        || a.outer_margin_top != b.outer_margin_top
+        || a.outer_margin_bottom != b.outer_margin_bottom
+    {
+        diffs.push(format!(
+            "ctrl[{}] tbl outer_margin: A=({},{},{},{}) vs B=({},{},{},{})",
+            ci,
+            a.outer_margin_left, a.outer_margin_top, a.outer_margin_right, a.outer_margin_bottom,
+            b.outer_margin_left, b.outer_margin_top, b.outer_margin_right, b.outer_margin_bottom,
+        ));
+    }
+    diff_common_obj(diffs, ci, "tbl", &a.common, &b.common);
+}
+
+fn diff_common_obj(
+    diffs: &mut Vec<String>,
+    ci: usize,
+    tag: &str,
+    a: &rhwp::model::shape::CommonObjAttr,
+    b: &rhwp::model::shape::CommonObjAttr,
+) {
+    if a.treat_as_char != b.treat_as_char {
+        diffs.push(format!("ctrl[{}] {} tac: A={} vs B={}", ci, tag, a.treat_as_char, b.treat_as_char));
+    }
+    if a.text_wrap != b.text_wrap {
+        diffs.push(format!("ctrl[{}] {} wrap: A={:?} vs B={:?}", ci, tag, a.text_wrap, b.text_wrap));
+    }
+    if a.width != b.width || a.height != b.height {
+        diffs.push(format!("ctrl[{}] {} size: A={}x{} vs B={}x{}", ci, tag, a.width, a.height, b.width, b.height));
+    }
+    if a.vertical_offset != b.vertical_offset {
+        diffs.push(format!("ctrl[{}] {} v_offset: A={} vs B={}", ci, tag, a.vertical_offset, b.vertical_offset));
+    }
+    if a.horizontal_offset != b.horizontal_offset {
+        diffs.push(format!("ctrl[{}] {} h_offset: A={} vs B={}", ci, tag, a.horizontal_offset, b.horizontal_offset));
+    }
+    if a.vert_rel_to != b.vert_rel_to {
+        diffs.push(format!("ctrl[{}] {} vert_rel: A={:?} vs B={:?}", ci, tag, a.vert_rel_to, b.vert_rel_to));
+    }
+    if a.horz_rel_to != b.horz_rel_to {
+        diffs.push(format!("ctrl[{}] {} horz_rel: A={:?} vs B={:?}", ci, tag, a.horz_rel_to, b.horz_rel_to));
+    }
+}
+
 fn ir_diff(args: &[String]) {
     if args.len() < 2 {
-        eprintln!("사용법: rhwp ir-diff <파일A> <파일B> [-s <구역>] [-p <문단>]");
+        eprintln!("사용법: rhwp ir-diff <파일A> <파일B> [-s <구역>] [-p <문단>] [--summary] [--max-lines <N>]");
         return;
     }
 
@@ -2685,6 +2937,9 @@ fn ir_diff(args: &[String]) {
     let file_b = &args[1];
     let mut section_filter: Option<usize> = None;
     let mut para_filter: Option<usize> = None;
+    // [Task #653 보강] 출력 가드 옵션
+    let mut summary_mode = false;
+    let mut max_lines: Option<usize> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -2695,6 +2950,14 @@ fn ir_diff(args: &[String]) {
             }
             "-p" | "--para" if i + 1 < args.len() => {
                 para_filter = args[i + 1].parse().ok();
+                i += 2;
+            }
+            "--summary" => {
+                summary_mode = true;
+                i += 1;
+            }
+            "--max-lines" if i + 1 < args.len() => {
+                max_lines = args[i + 1].parse().ok();
                 i += 2;
             }
             _ => { i += 1; }
@@ -2721,11 +2984,70 @@ fn ir_diff(args: &[String]) {
 
     let name_a = Path::new(file_a).file_name().unwrap_or_default().to_string_lossy();
     let name_b = Path::new(file_b).file_name().unwrap_or_default().to_string_lossy();
-    println!("=== IR 비교: {} vs {} ===", name_a, name_b);
+    if !summary_mode {
+        println!("=== IR 비교: {} vs {} ===", name_a, name_b);
+    }
+
+    // [Task #653 보강] 출력 가드 상태
+    let mut printed_lines: usize = 0;
+    let mut truncated = false;
+    let mut summary_buckets: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+
+    // emit_header: paragraph/섹션 헤더. summary 모드에서는 출력 안 함, max_lines 초과 시 truncate.
+    macro_rules! emit_header {
+        ($($arg:tt)*) => {{
+            if !summary_mode {
+                let line = format!($($arg)*);
+                match max_lines {
+                    Some(limit) if printed_lines >= limit => {
+                        if !truncated {
+                            println!("... 이하 생략 (--max-lines {} 도달)", limit);
+                            truncated = true;
+                        }
+                    }
+                    _ => {
+                        println!("{}", line);
+                        printed_lines += 1;
+                    }
+                }
+            }
+        }};
+    }
+    // emit_diff: 차이 라인. summary 모드에서는 카테고리별 카운트, 일반 모드에서는 "  [차이] {}" 형식.
+    // 카테고리 추출: ":" 앞쪽 첫 토큰. controls[N].xxx 는 ".xxx" 만 추출.
+    macro_rules! emit_diff {
+        ($($arg:tt)*) => {{
+            let body = format!($($arg)*);
+            if summary_mode {
+                let prefix = body.split(':').next().unwrap_or(&body);
+                let cat = if let Some(pos) = prefix.rfind(']') {
+                    prefix[pos + 1..].trim_start_matches('.').trim().to_string()
+                } else {
+                    prefix.trim().to_string()
+                };
+                let key = if cat.is_empty() { body.clone() } else { cat };
+                *summary_buckets.entry(key).or_insert(0) += 1;
+            } else {
+                let line = format!("  [차이] {}", body);
+                match max_lines {
+                    Some(limit) if printed_lines >= limit => {
+                        if !truncated {
+                            println!("... 이하 생략 (--max-lines {} 도달)", limit);
+                            truncated = true;
+                        }
+                    }
+                    _ => {
+                        println!("{}", line);
+                        printed_lines += 1;
+                    }
+                }
+            }
+        }};
+    }
 
     // 구역 수 비교
     if doc_a.sections.len() != doc_b.sections.len() {
-        println!("[차이] 구역 수: A={} vs B={}", doc_a.sections.len(), doc_b.sections.len());
+        emit_diff!("구역 수: A={} vs B={}", doc_a.sections.len(), doc_b.sections.len());
     }
 
     let sec_count = doc_a.sections.len().min(doc_b.sections.len());
@@ -2740,7 +3062,7 @@ fn ir_diff(args: &[String]) {
         let sec_b = &doc_b.sections[sec_idx];
 
         if sec_a.paragraphs.len() != sec_b.paragraphs.len() {
-            println!("[차이] 구역 {}: 문단 수 A={} vs B={}", sec_idx, sec_a.paragraphs.len(), sec_b.paragraphs.len());
+            emit_diff!("구역 {}: 문단 수 A={} vs B={}", sec_idx, sec_a.paragraphs.len(), sec_b.paragraphs.len());
             total_diffs += 1;
         }
 
@@ -2807,8 +3129,23 @@ fn ir_diff(args: &[String]) {
                     if la.text_start != lb.text_start {
                         diffs.push(format!("ls[{}].ts: A={} vs B={}", li, la.text_start, lb.text_start));
                     }
+                    if la.vertical_pos != lb.vertical_pos {
+                        diffs.push(format!("ls[{}].vpos: A={} vs B={}", li, la.vertical_pos, lb.vertical_pos));
+                    }
                     if la.line_height != lb.line_height {
                         diffs.push(format!("ls[{}].lh: A={} vs B={}", li, la.line_height, lb.line_height));
+                    }
+                    if la.text_height != lb.text_height {
+                        diffs.push(format!("ls[{}].th: A={} vs B={}", li, la.text_height, lb.text_height));
+                    }
+                    if la.baseline_distance != lb.baseline_distance {
+                        diffs.push(format!("ls[{}].bl: A={} vs B={}", li, la.baseline_distance, lb.baseline_distance));
+                    }
+                    if la.line_spacing != lb.line_spacing {
+                        diffs.push(format!("ls[{}].ls: A={} vs B={}", li, la.line_spacing, lb.line_spacing));
+                    }
+                    if la.column_start != lb.column_start {
+                        diffs.push(format!("ls[{}].cs: A={} vs B={}", li, la.column_start, lb.column_start));
                     }
                     if la.segment_width != lb.segment_width {
                         diffs.push(format!("ls[{}].sw: A={} vs B={}", li, la.segment_width, lb.segment_width));
@@ -2816,9 +3153,32 @@ fn ir_diff(args: &[String]) {
                 }
             }
 
-            // 컨트롤 수 비교
+            // 컨트롤 식별 비교
             if pa.controls.len() != pb.controls.len() {
-                diffs.push(format!("controls: A={} vs B={}", pa.controls.len(), pb.controls.len()));
+                diffs.push(format!("controls count: A={} vs B={}", pa.controls.len(), pb.controls.len()));
+            }
+            {
+                use rhwp::model::control::Control;
+                let ctrl_count = pa.controls.len().min(pb.controls.len());
+                for ci in 0..ctrl_count {
+                    let ca = &pa.controls[ci];
+                    let cb = &pb.controls[ci];
+                    match (ca, cb) {
+                        (Control::Table(ta), Control::Table(tb)) => {
+                            diff_table(&mut diffs, ci, ta, tb);
+                        }
+                        (Control::Picture(pic_a), Control::Picture(pic_b)) => {
+                            diff_common_obj(&mut diffs, ci, "pic", &pic_a.common, &pic_b.common);
+                        }
+                        (Control::Shape(sa), Control::Shape(sb)) => {
+                            diff_common_obj(&mut diffs, ci, "shape", sa.common(), sb.common());
+                        }
+                        _ if control_tag(ca) != control_tag(cb) => {
+                            diffs.push(format!("ctrl[{}] type: A={} vs B={}", ci, control_tag(ca), control_tag(cb)));
+                        }
+                        _ => {}
+                    }
+                }
             }
 
             // char_shapes 비교
@@ -2839,9 +3199,9 @@ fn ir_diff(args: &[String]) {
 
             if !diffs.is_empty() {
                 let text_preview: String = pa.text.chars().take(30).collect();
-                println!("\n--- 문단 {}.{} --- \"{}\"", sec_idx, pi, text_preview);
+                emit_header!("\n--- 문단 {}.{} --- \"{}\"", sec_idx, pi, text_preview);
                 for d in &diffs {
-                    println!("  [차이] {}", d);
+                    emit_diff!("{}", d);
                 }
                 total_diffs += diffs.len() as u32;
             }
@@ -2853,7 +3213,7 @@ fn ir_diff(args: &[String]) {
         let ps_a = &doc_a.doc_info.para_shapes;
         let ps_b = &doc_b.doc_info.para_shapes;
         if ps_a.len() != ps_b.len() {
-            println!("\n[차이] ParaShape 수: A={} vs B={}", ps_a.len(), ps_b.len());
+            emit_diff!("ParaShape 수: A={} vs B={}", ps_a.len(), ps_b.len());
             total_diffs += 1;
         }
         let ps_count = ps_a.len().min(ps_b.len());
@@ -2868,7 +3228,7 @@ fn ir_diff(args: &[String]) {
             if a.spacing_after != b.spacing_after { ps_diffs.push(format!("sa: {}vs{}", a.spacing_after, b.spacing_after)); }
             if a.line_spacing != b.line_spacing { ps_diffs.push(format!("ls: {}vs{}", a.line_spacing, b.line_spacing)); }
             if !ps_diffs.is_empty() {
-                println!("  [PS {}] {}", i, ps_diffs.join(", "));
+                emit_diff!("PS[{}] {}", i, ps_diffs.join(", "));
                 total_diffs += ps_diffs.len() as u32;
             }
         }
@@ -2879,24 +3239,34 @@ fn ir_diff(args: &[String]) {
         let td_a = &doc_a.doc_info.tab_defs;
         let td_b = &doc_b.doc_info.tab_defs;
         if td_a.len() != td_b.len() {
-            println!("\n[차이] TabDef 수: A={} vs B={}", td_a.len(), td_b.len());
+            emit_diff!("TabDef 수: A={} vs B={}", td_a.len(), td_b.len());
             total_diffs += 1;
         }
         let td_count = td_a.len().min(td_b.len());
         for i in 0..td_count {
             let a = &td_a[i]; let b = &td_b[i];
             if a.tabs.len() != b.tabs.len() {
-                println!("  [TD {}] 탭 수: A={} vs B={}", i, a.tabs.len(), b.tabs.len());
+                emit_diff!("TD[{}] 탭 수: A={} vs B={}", i, a.tabs.len(), b.tabs.len());
                 total_diffs += 1;
             } else {
                 for (ti, (ta, tb)) in a.tabs.iter().zip(b.tabs.iter()).enumerate() {
                     if ta.position != tb.position || ta.tab_type != tb.tab_type || ta.fill_type != tb.fill_type {
-                        println!("  [TD {}][{}] pos: {}vs{}, type: {}vs{}, fill: {}vs{}",
+                        emit_diff!("TD[{}][{}] pos: {}vs{}, type: {}vs{}, fill: {}vs{}",
                             i, ti, ta.position, tb.position, ta.tab_type, tb.tab_type, ta.fill_type, tb.fill_type);
                         total_diffs += 1;
                     }
                 }
             }
+        }
+    }
+
+    // [Task #653 보강] 요약 모드 출력 — 카테고리별 카운트 (내림차순 → 알파벳)
+    if summary_mode {
+        println!("=== 카테고리별 차이 요약 ===");
+        let mut entries: Vec<(String, u32)> = summary_buckets.into_iter().collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (cat, count) in &entries {
+            println!("  {:>5}건  {}", count, cat);
         }
     }
 

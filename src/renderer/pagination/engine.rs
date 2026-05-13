@@ -538,12 +538,39 @@ impl Paginator {
                             new_page_numbers.push((pi, nn.number));
                         }
                     }
+                    Control::Table(table) => {
+                        Self::collect_pagehide_in_table(table, pi, &mut page_hides);
+                    }
                     _ => {}
                 }
             }
         }
 
         (hf_entries, page_number_pos, page_hides, new_page_numbers)
+    }
+
+    /// 표 셀 안 paragraph 의 PageHide 를 재귀 수집.
+    /// 외부 paragraph index `pi` 를 그대로 사용해 페이지 매핑 정합성 유지.
+    fn collect_pagehide_in_table(
+        table: &crate::model::table::Table,
+        pi: usize,
+        page_hides: &mut Vec<(usize, crate::model::control::PageHide)>,
+    ) {
+        for cell in &table.cells {
+            for cp in &cell.paragraphs {
+                for ctrl in &cp.controls {
+                    match ctrl {
+                        Control::PageHide(ph) => {
+                            page_hides.push((pi, ph.clone()));
+                        }
+                        Control::Table(inner) => {
+                            Self::collect_pagehide_in_table(inner, pi, page_hides);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     /// 다단 나누기 처리
@@ -841,6 +868,8 @@ impl Paginator {
                 let avail_for_lines = (page_avail - sp_b).max(0.0);
 
                 // 세그먼트 안에서만 줄 누적 (seg_end 초과 금지)
+                // [Task #643] 마지막 줄은 자체 line_height 만 차지 (트레일링 line_spacing 제외)
+                // 트레일링 ls 는 다음 줄/문단으로의 간격이며, 세그먼트 마지막 줄에는 불필요.
                 let mut cumulative = 0.0;
                 let mut end_line = cursor_line;
                 for li in cursor_line..seg_end {
@@ -848,14 +877,25 @@ impl Paginator {
                     if cumulative + content_h > avail_for_lines && li > cursor_line {
                         break;
                     }
-                    cumulative += mp.line_advance(li);
+                    cumulative += if li + 1 < seg_end {
+                        mp.line_advance(li)
+                    } else {
+                        mp.line_heights[li]
+                    };
                     end_line = li + 1;
                 }
                 if end_line <= cursor_line {
                     end_line = cursor_line + 1;
                 }
 
-                let part_line_height: f64 = mp.line_advances_sum(cursor_line..end_line);
+                // [Task #643] part_line_height 도 동일 산식: 마지막 줄은 lh 만
+                let part_line_height: f64 = if end_line > cursor_line {
+                    let advances = mp.line_advances_sum(cursor_line..end_line.saturating_sub(1));
+                    let last_lh = mp.line_heights.get(end_line - 1).copied().unwrap_or(0.0);
+                    advances + last_lh
+                } else {
+                    0.0
+                };
                 let part_sp_after = if end_line >= line_count { sp_after } else { 0.0 };
                 let part_height = sp_b + part_line_height + part_sp_after;
 
@@ -1961,7 +2001,9 @@ impl Paginator {
                 footer_even.clone().or_else(|| footer_both.clone())
             };
 
-            page.page_number_pos = page_number_pos.clone();
+            if !assigner.should_hide_page_number() {
+                page.page_number_pos = page_number_pos.clone();
+            }
             // PageHide: 해당 문단이 이 페이지에서 **처음** 시작하는 경우만 적용
             // (문단이 여러 페이지에 걸치면 첫 페이지에서만 감추기 적용)
             for (ph_para, ph) in page_hides {

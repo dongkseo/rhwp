@@ -247,6 +247,7 @@ impl SvgRenderer {
                     let mut attrs = format!("font-family=\"{}\" font-size=\"{}\" fill=\"{}\" text-anchor=\"middle\" dominant-baseline=\"central\"",
                         escape_xml(&font_family), font_size, color);
                     if run.style.is_visually_bold() { attrs.push_str(" font-weight=\"bold\""); }
+                    else if run.style.is_medium_weight() { attrs.push_str(" font-weight=\"500\""); }
                     if run.style.italic { attrs.push_str(" font-style=\"italic\""); }
                     for c in run.text.chars() {
                         if c == ' ' { continue; }
@@ -1067,14 +1068,26 @@ impl SvgRenderer {
 
     /// 이미지 노드를 fill_mode에 따라 렌더링한다.
     fn render_image_node(&mut self, img: &ImageNode, bbox: &super::render_tree::BoundingBox) {
+        // [Task #741] 빈 binary 데이터 (외부 file path 그림 등) 도 placeholder 처리.
+        // 한컴 한글 2024 viewer 정합 — 외부 file 못 찾는 경우 점선 사각형 + 깨진 image 아이콘.
         let data = match img.data {
-            Some(ref d) => d,
-            None => {
-                // 이미지 데이터가 없으면 플레이스홀더 표시
+            Some(ref d) if !d.is_empty() => d,
+            _ => {
+                // 이미지 데이터 부재 (None 또는 빈 vec) — placeholder 표시
                 self.output.push_str(&format!(
-                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#cccccc\" stroke=\"#999999\" stroke-dasharray=\"4\"/>\n",
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#f0f0f0\" stroke=\"#999999\" stroke-dasharray=\"4\"/>\n",
                     bbox.x, bbox.y, bbox.width, bbox.height,
                 ));
+                // 외부 file path 그림: file path 표시 (가독성)
+                if let Some(ref path) = img.external_path {
+                    let cx = bbox.x + bbox.width / 2.0;
+                    let cy = bbox.y + bbox.height / 2.0;
+                    let escaped = path.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                    self.output.push_str(&format!(
+                        "<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" fill=\"#666666\" font-size=\"10\">[외부: {}]</text>\n",
+                        cx, cy, escaped,
+                    ));
+                }
                 return;
             }
         };
@@ -1085,9 +1098,19 @@ impl SvgRenderer {
             self.output.push_str(&format!("<g filter=\"url(#{})\">\n", fid));
         }
         // 밝기/대비 → SVG 필터 래핑
+        // [Issue #677] 한컴 워터마크 효과 (effect != RealPic 이고 brightness/contrast 가
+        // 비-zero) 는 저장값을 그대로 brightness/contrast 필터로 적용 (회색조 + 강대비
+        // 영역) + opacity 0.5 반투명 영역으로 본문 텍스트 가독성 보존. PDF 정답지 영역
+        // 의 시각 — 진한 회색 워터마크 + 본문 텍스트가 워터마크 위로 가독 정합.
+        let is_watermark_image = !matches!(img.effect, crate::model::image::ImageEffect::RealPic)
+            && (img.brightness != 0 || img.contrast != 0);
         let bc_filter_id = self.ensure_brightness_contrast_filter(img.brightness, img.contrast);
         if let Some(ref fid) = bc_filter_id {
             self.output.push_str(&format!("<g filter=\"url(#{})\">\n", fid));
+        }
+        // 워터마크 반투명 영역 (PDF 정합 — 본문 가독성 보존)
+        if is_watermark_image {
+            self.output.push_str("<g opacity=\"0.17\">\n");
         }
 
         let mime_type = detect_image_mime_type(data);
@@ -1179,6 +1202,9 @@ impl SvgRenderer {
             }
         }
 
+        if is_watermark_image {
+            self.output.push_str("</g>\n");
+        }
         if bc_filter_id.is_some() {
             self.output.push_str("</g>\n");
         }
@@ -1427,10 +1453,12 @@ impl SvgRenderer {
         let font_family_str = if style.font_family.is_empty() {
             "sans-serif".to_string()
         } else {
-            format!("{},sans-serif", style.font_family)
+            let fb = super::generic_fallback(&style.font_family);
+            format!("{},{}", style.font_family, fb)
         };
         let mut font_attrs = format!("font-family=\"{}\" font-size=\"{:.2}\"", escape_xml(&font_family_str), inner_font_size);
         if style.is_visually_bold() { font_attrs.push_str(" font-weight=\"bold\""); }
+        else if style.is_medium_weight() { font_attrs.push_str(" font-weight=\"500\""); }
         if style.italic { font_attrs.push_str(" font-style=\"italic\""); }
 
         for (i, ch) in chars.iter().enumerate() {
@@ -1501,10 +1529,12 @@ impl SvgRenderer {
         let font_family_str = if style.font_family.is_empty() {
             "sans-serif".to_string()
         } else {
-            format!("{},sans-serif", style.font_family)
+            let fb = super::generic_fallback(&style.font_family);
+            format!("{},{}", style.font_family, fb)
         };
         let mut font_attrs = format!("font-family=\"{}\" font-size=\"{:.2}\"", escape_xml(&font_family_str), inner_font_size);
         if style.is_visually_bold() { font_attrs.push_str(" font-weight=\"bold\""); }
+        else if style.is_medium_weight() { font_attrs.push_str(" font-weight=\"500\""); }
         if style.italic { font_attrs.push_str(" font-style=\"italic\""); }
 
         let cx = bbox_x + box_size / 2.0;
@@ -1901,6 +1931,8 @@ impl Renderer for SvgRenderer {
         );
         if style.is_visually_bold() {
             base_attrs.push_str(" font-weight=\"bold\"");
+        } else if style.is_medium_weight() {
+            base_attrs.push_str(" font-weight=\"500\"");
         }
         if style.italic {
             base_attrs.push_str(" font-style=\"italic\"");

@@ -67,6 +67,8 @@ export class PicturePropsDialog {
   private para = 0;
   private ci = 0;
   private objectType: 'image' | 'shape' | 'line' = 'image';
+  /** [Task #825] 머리말/꼬리말 그림 marker (Some 일 때 신규 API 사용). */
+  private headerFooter: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } | undefined;
   private props: PictureProperties | null = null;
   private shapeProps: ShapeProperties | null = null;
 
@@ -178,6 +180,9 @@ export class PicturePropsDialog {
   private tbFormModeCheck!: HTMLInputElement;
 
   // ── 그림 탭 컨트롤 ──
+  // [Task #741 후속] 외부 file path 그림 영역 영역 dialog 표시 영역
+  private picFileNameInput!: HTMLInputElement;
+  private picEmbedCheck!: HTMLInputElement;
   private picScaleXInput!: HTMLInputElement;
   private picScaleYInput!: HTMLInputElement;
   private picKeepRatioCheck!: HTMLInputElement;
@@ -211,19 +216,34 @@ export class PicturePropsDialog {
   //  공개 API
   // ════════════════════════════════════════════════════════
 
-  open(sec: number, para: number, ci: number, type: 'image' | 'shape' | 'line' = 'image'): void {
+  open(
+    sec: number,
+    para: number,
+    ci: number,
+    type: 'image' | 'shape' | 'line' = 'image',
+    headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
+  ): void {
     this.build();
     this.sec = sec;
     this.para = para;
     this.ci = ci;
     this.objectType = type;
+    this.headerFooter = headerFooter;
 
     if (type === 'shape' || type === 'line') {
       this.shapeProps = this.wasm.getShapeProperties(sec, para, ci);
       this.props = this.shapeProps as unknown as PictureProperties;
     } else {
       this.shapeProps = null;
-      this.props = this.wasm.getPictureProperties(sec, para, ci);
+      // [Task #825] 머리말/꼬리말 그림은 별도 API 사용 — outer (Header/Footer 컨트롤)
+      // 위치 + inner (그림) 위치 5-tuple lookup.
+      if (headerFooter) {
+        this.props = this.wasm.getHeaderFooterPictureProperties(
+          sec, headerFooter.outerParaIdx, headerFooter.outerControlIdx, para, ci,
+        );
+      } else {
+        this.props = this.wasm.getPictureProperties(sec, para, ci);
+      }
     }
     this.originalWidth = this.props.width;
     this.originalHeight = this.props.height;
@@ -1405,17 +1425,19 @@ export class PicturePropsDialog {
     const fileFs = this.fieldset('파일 이름');
     panel.appendChild(fileFs);
     const fileRow = this.row();
-    const fileNameInput = document.createElement('input');
-    fileNameInput.type = 'text';
-    fileNameInput.className = 'dialog-input';
-    fileNameInput.style.width = '280px';
-    fileNameInput.readOnly = true;
-    fileNameInput.value = '(문서에 포함된 그림)';
-    fileRow.appendChild(fileNameInput);
+    // [Task #741 후속] 외부 file path 그림 영역 dialog 표시 영역. populateFromProps 영역
+    // 영역 props.externalPath 영역 보유 시 file path + embed=false 영역 갱신.
+    this.picFileNameInput = document.createElement('input');
+    this.picFileNameInput.type = 'text';
+    this.picFileNameInput.className = 'dialog-input';
+    this.picFileNameInput.style.width = '280px';
+    this.picFileNameInput.readOnly = true;
+    this.picFileNameInput.value = '(문서에 포함된 그림)';
+    fileRow.appendChild(this.picFileNameInput);
     const embedLabel = this.checkboxLabel('문서에 포함');
-    const embedCheck = embedLabel.querySelector('input') as HTMLInputElement;
-    embedCheck.checked = true;
-    embedCheck.disabled = true;
+    this.picEmbedCheck = embedLabel.querySelector('input') as HTMLInputElement;
+    this.picEmbedCheck.checked = true;
+    this.picEmbedCheck.disabled = true;
     fileRow.appendChild(embedLabel);
     fileFs.appendChild(fileRow);
 
@@ -2116,6 +2138,14 @@ export class PicturePropsDialog {
     if (Object.keys(updated).length > 0) {
       if (this.objectType === 'shape' || this.objectType === 'line') {
         this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+      } else if (this.headerFooter) {
+        // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
+        // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported
+        // 에러 반환 — 본 dialog 에서는 일반 속성 변경만 허용).
+        this.wasm.setHeaderFooterPictureProperties(
+          this.sec, this.headerFooter.outerParaIdx, this.headerFooter.outerControlIdx,
+          this.para, this.ci, updated,
+        );
       } else {
         this.wasm.setPictureProperties(this.sec, this.para, this.ci, updated);
       }
@@ -2130,6 +2160,20 @@ export class PicturePropsDialog {
 
   private populateFromProps(): void {
     if (!this.props) return;
+    // [Task #741 후속 — 한컴 viewer 정합] 외부 file path 그림 영역 dialog 표시 영역.
+    // props.externalPath 영역 영역 그대로 표시 (resolved path 영역, 한컴 viewer 영역 영역
+    // 원본 절대 경로 영역 영역 access 부재 시 HWP file 영역 영역 같은 dir 영역 image 영역
+    // 영역 영역 path 영역 영역 갱신 — populate_external_images_from_dir / inject_external_image
+    // 영역 영역 변경 영역 ~~basename~~ → resolved local path 영역 영역).
+    if (this.picFileNameInput && this.picEmbedCheck) {
+      if (this.props.externalPath) {
+        this.picFileNameInput.value = this.props.externalPath;
+        this.picEmbedCheck.checked = false;
+      } else {
+        this.picFileNameInput.value = '(문서에 포함된 그림)';
+        this.picEmbedCheck.checked = true;
+      }
+    }
     this.widthInput.value = hwpToMm(this.props.width).toFixed(2);
     this.heightInput.value = hwpToMm(this.props.height).toFixed(2);
     this.treatAsCharCheck.checked = this.props.treatAsChar;

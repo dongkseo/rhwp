@@ -338,6 +338,9 @@ impl DocumentCore {
             is_textbox: bool,
             // 소속 칼럼 인덱스 (다단 지원)
             column_index: Option<u16>,
+            // 소속 표 RenderNode id. 중첩 표에서 같은 cell_index가 반복되므로
+            // TextRun과 TableCell bbox를 같은 표 단위로 묶는 데 사용한다.
+            table_id: Option<u32>,
         }
 
         /// 안내문(guide text) TextRun 정보 (char_start: None)
@@ -353,16 +356,19 @@ impl DocumentCore {
 
         /// 셀 bbox 정보
         struct CellBboxInfo {
+            table_id: Option<u32>,
             section_index: usize,
             parent_para_index: usize,
             control_index: usize,
             cell_index: usize,
+            text_direction: u8,
             x: f64,
             y: f64,
             w: f64,
             h: f64,
             // Table 노드에서 meta가 채워졌는지 여부 (false이면 TextRun에서만 보완됨)
             has_meta: bool,
+            cell_context: Option<CellContext>,
         }
 
         fn collect_runs(
@@ -371,6 +377,7 @@ impl DocumentCore {
             guide_runs: &mut Vec<GuideRunInfo>,
             cell_bboxes: &mut Vec<CellBboxInfo>,
             current_column: Option<u16>,
+            current_table_id: Option<u32>,
             // Table 노드에서 전파되는 (section_index, parent_para_index, control_index)
             current_table_meta: Option<(usize, usize, usize)>,
         ) {
@@ -381,10 +388,15 @@ impl DocumentCore {
                 current_column
             };
             // Table 노드 진입 시 section_index / parent_para_index / control_index 전파
+            let current_table_id = if matches!(node.node_type, RenderNodeType::Table(_)) {
+                Some(node.id)
+            } else {
+                current_table_id
+            };
             let table_meta = if let RenderNodeType::Table(ref tn) = node.node_type {
                 match (tn.section_index, tn.para_index, tn.control_index) {
                     (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
-                    _ => current_table_meta,
+                    _ => None,
                 }
             } else {
                 current_table_meta
@@ -397,15 +409,18 @@ impl DocumentCore {
                         .map(|(si, ppi, ci)| (si, ppi, ci, true))
                         .unwrap_or((0, 0, 0, false));
                     cell_bboxes.push(CellBboxInfo {
+                        table_id: current_table_id,
                         section_index: si,
                         parent_para_index: ppi,
                         control_index: ci,
                         cell_index: cell_idx as usize,
+                        text_direction: tc.text_direction,
                         x: node.bbox.x,
                         y: node.bbox.y,
                         w: node.bbox.width,
                         h: node.bbox.height,
                         has_meta,
+                        cell_context: None,
                     });
                 }
             }
@@ -433,6 +448,7 @@ impl DocumentCore {
                             cell_context: text_run.cell_context.clone(),
                             is_textbox: false,
                             column_index: col,
+                            table_id: current_table_id,
                         });
                     } else {
                         // char_start: None → 안내문 TextRun
@@ -449,7 +465,7 @@ impl DocumentCore {
                 }
             }
             for child in &node.children {
-                collect_runs(child, runs, guide_runs, cell_bboxes, col, table_meta);
+                collect_runs(child, runs, guide_runs, cell_bboxes, col, current_table_id, table_meta);
             }
         }
 
@@ -495,18 +511,35 @@ impl DocumentCore {
         let mut runs: Vec<RunInfo> = Vec::new();
         let mut guide_runs: Vec<GuideRunInfo> = Vec::new();
         let mut cell_bboxes: Vec<CellBboxInfo> = Vec::new();
-        collect_runs(&tree.root, &mut runs, &mut guide_runs, &mut cell_bboxes, None, None);
+        collect_runs(&tree.root, &mut runs, &mut guide_runs, &mut cell_bboxes, None, None, None);
 
-        // cell_bboxes의 section_index/parent_para_index/control_index를 runs로 재확인하여 보완
-        // (Table 노드에서 이미 채워진 값이 있어도 runs에서 더 정확한 값을 덮어씀)
+        // cell_bboxes의 section_index/parent_para_index/control_index/cellPath를 runs로 보완.
+        // Table 노드에서 이미 채워진 최외곽 메타는 유지하되, 중첩 표의 Table 노드에는
+        // 메타가 없을 수 있으므로 같은 RenderNode 표 안의 TextRun cell_context를 템플릿으로 쓴다.
+        // cell_index는 표마다 반복되므로 같은 table_id 범위 안에서만 매칭해야 한다.
         for cb in &mut cell_bboxes {
-            if let Some(run) = runs.iter().find(|r| {
-                r.cell_context.as_ref().map(|ctx| ctx.path[0].cell_index == cb.cell_index).unwrap_or(false)
-            }) {
+            let same_cell_run = runs.iter().find(|r| {
+                r.table_id == cb.table_id
+                    && r.cell_context.as_ref().map(|ctx| {
+                        ctx.innermost().cell_index == cb.cell_index
+                    }).unwrap_or(false)
+            });
+            let template_run = same_cell_run.or_else(|| {
+                runs.iter().find(|r| r.table_id == cb.table_id && r.cell_context.is_some())
+            });
+
+            if let Some(run) = template_run {
                 if let Some(ref ctx) = run.cell_context {
+                    let mut cell_ctx = ctx.clone();
+                    if let Some(last) = cell_ctx.path.last_mut() {
+                        last.cell_index = cb.cell_index;
+                        last.cell_para_index = 0;
+                        last.text_direction = cb.text_direction;
+                    }
                     cb.section_index = run.section_index;
-                    cb.parent_para_index = ctx.parent_para_index;
-                    cb.control_index = ctx.path[0].control_index;
+                    cb.parent_para_index = cell_ctx.parent_para_index;
+                    cb.control_index = cell_ctx.path[0].control_index;
+                    cb.cell_context = Some(cell_ctx);
                     cb.has_meta = true;
                 }
             }
@@ -637,16 +670,18 @@ impl DocumentCore {
 
         // 2. 셀 bbox 기반으로 클릭한 셀 판별
         let clicked_cell: Option<&CellBboxInfo> = cell_bboxes.iter()
-            .find(|cb| x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h);
+            .filter(|cb| cb.has_meta)
+            .filter(|cb| x >= cb.x && x <= cb.x + cb.w && y >= cb.y && y <= cb.y + cb.h)
+            .min_by_key(|cb| ((cb.w.max(0.0) * cb.h.max(0.0)) * 1000.0) as i64);
 
         // 셀 내부 클릭이면: 해당 셀의 run만 검색하여 가장 가까운 위치 반환
         if let Some(cb) = clicked_cell {
             let cell_runs: Vec<&RunInfo> = runs.iter()
                 .filter(|r| {
                     r.cell_context.as_ref().map(|ctx| {
-                        ctx.parent_para_index == cb.parent_para_index
-                            && ctx.path[0].control_index == cb.control_index
-                            && ctx.path[0].cell_index == cb.cell_index
+                        r.table_id == cb.table_id
+                            && ctx.parent_para_index == cb.parent_para_index
+                            && ctx.innermost().cell_index == cb.cell_index
                     }).unwrap_or(false)
                 })
                 .collect();
@@ -692,16 +727,36 @@ impl DocumentCore {
             // 양식 컨트롤(FormObject)만 있는 셀: TextRun이 없어 cell_runs가 비어있음.
             // table_meta(또는 runs)에서 채워진 meta로 커서 진입.
             if cb.has_meta {
+                let caret_h = (cb.h - 4.0).max(12.0);
+                if let Some(ref ctx) = cb.cell_context {
+                    let outer = &ctx.path[0];
+                    let inner = ctx.innermost();
+                    let path_entries: Vec<String> = ctx.path.iter().map(|e| {
+                        format!("{{\"controlIndex\":{},\"cellIndex\":{},\"cellParaIndex\":{}}}",
+                            e.control_index, e.cell_index, e.cell_para_index)
+                    }).collect();
+                    return Ok(format!(
+                        "{{\"sectionIndex\":{},\"paragraphIndex\":{},\"charOffset\":0,\
+                         \"parentParaIndex\":{},\"controlIndex\":{},\"cellIndex\":{},\"cellParaIndex\":{},\
+                         \"cellPath\":[{}],\
+                         \"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}}}",
+                        cb.section_index, inner.cell_para_index,
+                        ctx.parent_para_index, outer.control_index, outer.cell_index, outer.cell_para_index,
+                        path_entries.join(","),
+                        page_num,
+                        cb.x + 2.0, cb.y + 2.0, caret_h
+                    ));
+                }
                 return Ok(format!(
-                    "{{\"sectionIndex\":{},\"paragraphIndex\":{},\"charOffset\":0,\
+                    "{{\"sectionIndex\":{},\"paragraphIndex\":0,\"charOffset\":0,\
                      \"parentParaIndex\":{},\"controlIndex\":{},\"cellIndex\":{},\"cellParaIndex\":0,\
                      \"cellPath\":[{{\"controlIndex\":{},\"cellIndex\":{},\"cellParaIndex\":0}}],\
                      \"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}}}",
-                    cb.section_index, cb.parent_para_index,
+                    cb.section_index,
                     cb.parent_para_index, cb.control_index, cb.cell_index,
                     cb.control_index, cb.cell_index,
                     page_num,
-                    cb.x + 2.0, cb.y + 2.0, cb.h.max(4.0) - 4.0
+                    cb.x + 2.0, cb.y + 2.0, caret_h
                 ));
             }
         }
@@ -1776,40 +1831,53 @@ impl DocumentCore {
     /// 페이지 좌표가 머리말 또는 꼬리말 영역에 해당하는지 판별.
     /// 반환: JSON `{"hit":true,"isHeader":bool,"sectionIndex":N,"applyTo":N}`
     /// 또는 `{"hit":false}`
+    ///
+    /// Issue #595: Header/Footer 노드의 bbox 는 `expand_bbox_to_children` 으로
+    /// 자식 (예: 단 구분선 line) 까지 확장되어 본문 영역을 침범할 수 있음.
+    /// hit 판정은 layout 의 정확한 `header_area` / `footer_area` 로 수행하여
+    /// bbox 확장과 무관하게 본질 영역만 hit.
     pub fn hit_test_header_footer_native(
         &self,
         page_num: u32,
         x: f64,
         y: f64,
     ) -> Result<String, HwpError> {
-        use crate::renderer::render_tree::RenderNodeType;
+        let (page_content, _, _) = self.find_page(page_num)?;
+        let layout = &page_content.layout;
 
-        let tree = self.build_page_tree(page_num)?;
-
-        for child in &tree.root.children {
-            let is_header = matches!(child.node_type, RenderNodeType::Header);
-            let is_footer = matches!(child.node_type, RenderNodeType::Footer);
-            if !is_header && !is_footer { continue; }
-
-            if x >= child.bbox.x && x <= child.bbox.x + child.bbox.width
-                && y >= child.bbox.y && y <= child.bbox.y + child.bbox.height
-            {
-                // active header/footer에서 source_section_index와 apply_to 추출
-                // 머리말/꼬리말은 이전 구역에서 상속될 수 있으므로
-                // 페이지 소속 구역이 아닌 source_section_index를 반환해야 함
-                if let Some((source_sec, apply_to)) = self.get_active_hf_info(page_num, is_header) {
-                    return Ok(format!(
-                        "{{\"hit\":true,\"isHeader\":{},\"sectionIndex\":{},\"applyTo\":{}}}",
-                        is_header, source_sec, apply_to
-                    ));
-                }
-                // active 정보가 없는 경우 fallback
-                let (section_idx, _) = self.find_section_for_page(page_num);
+        // 머리말 영역 hit 판정 (layout.header_area — 정확한 머리말 범위)
+        let h = &layout.header_area;
+        if x >= h.x && x <= h.x + h.width && y >= h.y && y <= h.y + h.height {
+            // active header에서 source_section_index와 apply_to 추출
+            // 머리말은 이전 구역에서 상속될 수 있으므로 source_section_index 우선
+            if let Some((source_sec, apply_to)) = self.get_active_hf_info(page_num, true) {
                 return Ok(format!(
-                    "{{\"hit\":true,\"isHeader\":{},\"sectionIndex\":{},\"applyTo\":0}}",
-                    is_header, section_idx
+                    "{{\"hit\":true,\"isHeader\":true,\"sectionIndex\":{},\"applyTo\":{}}}",
+                    source_sec, apply_to
                 ));
             }
+            // active 정보가 없는 경우 fallback (빈 머리말 영역 — 신규 생성 대상)
+            let (section_idx, _) = self.find_section_for_page(page_num);
+            return Ok(format!(
+                "{{\"hit\":true,\"isHeader\":true,\"sectionIndex\":{},\"applyTo\":0}}",
+                section_idx
+            ));
+        }
+
+        // 꼬리말 영역 hit 판정 (layout.footer_area)
+        let f = &layout.footer_area;
+        if x >= f.x && x <= f.x + f.width && y >= f.y && y <= f.y + f.height {
+            if let Some((source_sec, apply_to)) = self.get_active_hf_info(page_num, false) {
+                return Ok(format!(
+                    "{{\"hit\":true,\"isHeader\":false,\"sectionIndex\":{},\"applyTo\":{}}}",
+                    source_sec, apply_to
+                ));
+            }
+            let (section_idx, _) = self.find_section_for_page(page_num);
+            return Ok(format!(
+                "{{\"hit\":true,\"isHeader\":false,\"sectionIndex\":{},\"applyTo\":0}}",
+                section_idx
+            ));
         }
 
         Ok("{\"hit\":false}".to_string())

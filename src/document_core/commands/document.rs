@@ -35,6 +35,18 @@ pub struct HwpExportVerification {
 }
 
 impl DocumentCore {
+    /// [Task #741 후속] 외부 file path 그림 영역 의 binary 영역 영역 base_dir 영역 영역 자동 load.
+    ///
+    /// HWP3 파일 영역 image 영역 영역 영역 영역 절대 경로 (예: "D:\\Work\\...\\rdb02.gif") 영역
+    /// 저장 영역. 본 환경 영역 영역 영역 path 영역 영역 access 부재 영역 영역 영역, basename
+    /// 영역 영역 추출 → `base_dir` 영역 영역 영역 file 영역 load → renderer 영역 영역 표시.
+    ///
+    /// 반환: load 영역 image 영역.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn populate_external_images_from_dir(&mut self, base_dir: &std::path::Path) -> usize {
+        self.document.populate_external_images_from_dir(base_dir)
+    }
+
     pub fn from_bytes(data: &[u8]) -> Result<DocumentCore, HwpError> {
         let source_format = crate::parser::detect_format(data);
         let mut document = crate::parser::parse_document(data)
@@ -262,12 +274,18 @@ impl DocumentCore {
                 for ctrl in &mut para.controls {
                     if let Control::Table(ref mut table) = ctrl {
                         for cell in &mut table.cells {
+                            // [Task #671 후속 / Issue #671 자동보정 영역 정정]
+                            // 셀 폭 (cell.width) 에서 좌우 padding 차감하여 셀 inner 폭 계산.
+                            // col_width 사용 시 셀 너비 영역 밖으로 LINE_SEG 가 채워져
+                            // recompose_for_cell_width 가드 #1 (line_segs.is_empty()) 영역 거짓 →
+                            // PR #673 영역의 layout 단계 정정 미적용 → 자동보정 모드 영역 한 줄 겹침 회귀.
+                            let cell_w_px = crate::renderer::hwpunit_to_px(cell.width as i32, dpi);
+                            let pad_left = crate::renderer::hwpunit_to_px(cell.padding.left as i32, dpi);
+                            let pad_right = crate::renderer::hwpunit_to_px(cell.padding.right as i32, dpi);
+                            let cell_inner_width = (cell_w_px - pad_left - pad_right).max(1.0);
                             for cell_para in &mut cell.paragraphs {
                                 if Self::needs_line_seg_reflow(cell_para) {
-                                    // 셀 너비가 아직 불확정이므로 컬럼 너비를 근사값으로 사용.
-                                    // 핵심은 line_height > 0을 보장하는 것이며,
-                                    // 실제 셀 내 줄바꿈은 테이블 레이아웃이 재수행한다.
-                                    reflow_line_segs(cell_para, col_width, styles, dpi);
+                                    reflow_line_segs(cell_para, cell_inner_width, styles, dpi);
                                 }
                             }
                         }
@@ -420,9 +438,16 @@ impl DocumentCore {
                 for ctrl in &mut para.controls {
                     if let Control::Table(ref mut table) = ctrl {
                         for cell in &mut table.cells {
+                            // [Task #671 후속 / Issue #671 자동보정 영역 정정]
+                            // 셀 폭 (cell.width) 에서 좌우 padding 차감하여 셀 inner 폭 계산.
+                            // 동일 본질 정정: line 270 영역 참조.
+                            let cell_w_px = crate::renderer::hwpunit_to_px(cell.width as i32, dpi);
+                            let pad_left = crate::renderer::hwpunit_to_px(cell.padding.left as i32, dpi);
+                            let pad_right = crate::renderer::hwpunit_to_px(cell.padding.right as i32, dpi);
+                            let cell_inner_width = (cell_w_px - pad_left - pad_right).max(1.0);
                             for cell_para in &mut cell.paragraphs {
                                 if Self::needs_reflow_broadly(cell_para) {
-                                    reflow_line_segs(cell_para, col_width, &styles, dpi);
+                                    reflow_line_segs(cell_para, cell_inner_width, &styles, dpi);
                                     reflowed += 1;
                                 }
                             }
@@ -544,6 +569,12 @@ impl DocumentCore {
     /// 문서의 IR 참조를 반환한다 (네이티브 전용).
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// [Task #741 후속] 문서의 IR mutable 참조를 반환한다.
+    /// WASM 영역 영역 외부 image inject 영역 의 영역 영역 영역.
+    pub fn document_mut(&mut self) -> &mut Document {
+        &mut self.document
     }
 
     /// 문서 IR을 직접 설정한다 (테스트/네이티브 전용).

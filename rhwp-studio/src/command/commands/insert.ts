@@ -78,6 +78,36 @@ export const insertCommands: CommandDef[] = [
       ih.enterTextboxPlacementMode();
     },
   },
+  {
+    id: 'insert:equation',
+    label: '수식',
+    shortcutLabel: 'Ctrl+M,M',
+    canExecute: (ctx) => ctx.hasDocument && !ctx.inTable,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const pos = ih.getPosition();
+      // 본문 전용 — 표 셀 내부에서는 실행하지 않음
+      if ((pos as any).cellIndex !== undefined && (pos as any).cellIndex >= 0) return;
+      try {
+        const defaultFontSize = 1000; // 10pt → HWPUNIT
+        const defaultColor = 0x00000000; // 검정
+        const result = services.wasm.insertEquation(
+          pos.sectionIndex, pos.paragraphIndex, pos.charOffset,
+          '', defaultFontSize, defaultColor
+        );
+        if (result.ok) {
+          services.eventBus.emit('document-changed');
+          if (!equationEditorDialog) {
+            equationEditorDialog = new EquationEditorDialog(services.wasm, services.eventBus);
+          }
+          equationEditorDialog.open(pos.sectionIndex, result.paraIdx, result.controlIdx);
+        }
+      } catch (err) {
+        console.warn('[insert:equation] 수식 삽입 실패:', err);
+      }
+    },
+  },
   stub('insert:field', '필드 입력', undefined, 'Ctrl+K+E'),
   stub('insert:caption-top', '캡션 - 위'),
   stub('insert:caption-lt', '캡션 - 왼쪽 위'),
@@ -150,7 +180,8 @@ export const insertCommands: CommandDef[] = [
       if (!picturePropsDialog) {
         picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus);
       }
-      picturePropsDialog.open(ref.sec, ref.ppi, ref.ci, ref.type);
+      // [Task #825] 머리말/꼬리말 그림은 ref.headerFooter 동반 — dialog 에 전달.
+      picturePropsDialog.open(ref.sec, ref.ppi, ref.ci, ref.type, ref.headerFooter);
     },
   },
   {
@@ -280,6 +311,8 @@ export const insertCommands: CommandDef[] = [
       if (!ref) return;
       if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
         services.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
+      } else if (ref.type === 'equation') {
+        services.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
       } else {
         services.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
       }
@@ -376,12 +409,12 @@ function setProps(services: import('../types').CommandServices, ref: { sec: numb
   }
 }
 
-/** 현재 회전각에 delta(도)를 더한다 (Shape만 지원). */
+/** 현재 회전각에 delta(도)를 더한다 (shape + image 지원). */
 function applyRotationDelta(services: import('../types').CommandServices, delta: number): void {
   const ih = services.getInputHandler();
   if (!ih) return;
   const ref = ih.getSelectedPictureRef();
-  if (!ref || ref.type !== 'shape') return;
+  if (!ref || ref.type === 'equation' || ref.type === 'group' || ref.type === 'line') return;
   const props = getProps(services, ref);
   const cur = ((props.rotationAngle as number) ?? 0);
   let next = cur + delta;
@@ -392,12 +425,12 @@ function applyRotationDelta(services: import('../types').CommandServices, delta:
   services.eventBus.emit('document-changed');
 }
 
-/** horzFlip/vertFlip을 토글한다 (Shape만 지원). */
+/** horzFlip/vertFlip을 토글한다 (shape + image 지원). */
 function toggleFlip(services: import('../types').CommandServices, key: 'horzFlip' | 'vertFlip'): void {
   const ih = services.getInputHandler();
   if (!ih) return;
   const ref = ih.getSelectedPictureRef();
-  if (!ref || ref.type !== 'shape') return;
+  if (!ref || ref.type === 'equation' || ref.type === 'group' || ref.type === 'line') return;
   const props = getProps(services, ref);
   const cur = !!props[key];
   setProps(services, ref, { [key]: !cur });

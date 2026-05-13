@@ -453,17 +453,23 @@ impl HeightMeasurer {
                 row_block_end: rbe,
             };
         }
-        // 1x1 래퍼 표 감지: 내부 표의 높이를 직접 측정
+        // 1x1 래퍼 표 감지: 내부 표의 높이를 직접 측정.
+        // (Task #688) 셀 paragraphs 가 2개 이상이면 첫 nested 표만 unwrap 시 나머지
+        // paragraph 의 nested 표가 누락되므로 paragraphs.len() == 1 가드를 둔다.
+        // controls.len() == 1 가드는 두지 않는다 — table_layout 분기와 일관성을 위해
+        // 정렬 마커 등 다른 control 이 동거하는 케이스에서도 첫 nested table 만 추출한다.
         if table.row_count == 1 && table.col_count == 1 && table.cells.len() == 1 {
             let cell = &table.cells[0];
-            let has_visible_text = cell.paragraphs.iter()
-                .any(|p| p.text.chars().any(|ch| !ch.is_whitespace() && ch != '\r' && ch != '\n'));
-            if !has_visible_text {
-                if let Some(nested) = cell.paragraphs.iter()
-                    .flat_map(|p| p.controls.iter())
-                    .find_map(|c| if let Control::Table(t) = c { Some(t.as_ref()) } else { None })
-                {
-                    return self.measure_table_impl(nested, para_index, control_index, styles, depth + 1);
+            if cell.paragraphs.len() == 1 {
+                let p = &cell.paragraphs[0];
+                let has_visible_text = p.text.chars()
+                    .any(|ch| !ch.is_whitespace() && ch != '\r' && ch != '\n');
+                if !has_visible_text {
+                    if let Some(nested) = p.controls.iter()
+                        .find_map(|c| if let Control::Table(t) = c { Some(t.as_ref()) } else { None })
+                    {
+                        return self.measure_table_impl(nested, para_index, control_index, styles, depth + 1);
+                    }
                 }
             }
         }
@@ -505,6 +511,23 @@ impl HeightMeasurer {
                 } else {
                     hwpunit_to_px(table.padding.bottom as i32, self.dpi)
                 };
+                // [Task #671] 좌우 패딩 — recompose_for_cell_width 의 inner_width 계산용
+                let pad_left = if prefer_cell_axis(cell.padding.left, table.padding.left) {
+                    hwpunit_to_px(cell.padding.left as i32, self.dpi)
+                } else {
+                    hwpunit_to_px(table.padding.left as i32, self.dpi)
+                };
+                let pad_right = if prefer_cell_axis(cell.padding.right, table.padding.right) {
+                    hwpunit_to_px(cell.padding.right as i32, self.dpi)
+                } else {
+                    hwpunit_to_px(table.padding.right as i32, self.dpi)
+                };
+                let cell_w_px = if cell.width < 0x80000000 {
+                    hwpunit_to_px(cell.width as i32, self.dpi)
+                } else {
+                    0.0
+                };
+                let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
 
                 // 셀 내 문단들의 실제 높이 합산
                 let text_height: f64 = if cell.text_direction != 0 {
@@ -524,7 +547,13 @@ impl HeightMeasurer {
                     cell.paragraphs.iter()
                         .enumerate()
                         .map(|(pidx, p)| {
-                            let comp = compose_paragraph(p);
+                            let mut comp = compose_paragraph(p);
+                            // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
+                            // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
+                            // 측정/렌더링 일관성 (layout 의 recompose_for_cell_width 호출과 동일).
+                            crate::renderer::composer::recompose_for_cell_width(
+                                &mut comp, p, cell_inner_width, styles,
+                            );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
                             let spacing_before = if pidx > 0 {
@@ -671,6 +700,22 @@ impl HeightMeasurer {
                      if cell.padding.bottom != 0 { hwpunit_to_px(cell.padding.bottom as i32, self.dpi) }
                      else { hwpunit_to_px(table.padding.bottom as i32, self.dpi) })
                 };
+                // [Task #671] 좌우 패딩 (recompose_for_cell_width inner_width 계산용)
+                let (pad_left, pad_right) = if !cell.apply_inner_margin {
+                    (hwpunit_to_px(table.padding.left as i32, self.dpi),
+                     hwpunit_to_px(table.padding.right as i32, self.dpi))
+                } else {
+                    (if cell.padding.left != 0 { hwpunit_to_px(cell.padding.left as i32, self.dpi) }
+                     else { hwpunit_to_px(table.padding.left as i32, self.dpi) },
+                     if cell.padding.right != 0 { hwpunit_to_px(cell.padding.right as i32, self.dpi) }
+                     else { hwpunit_to_px(table.padding.right as i32, self.dpi) })
+                };
+                let cell_w_px = if cell.width < 0x80000000 {
+                    hwpunit_to_px(cell.width as i32, self.dpi)
+                } else {
+                    0.0
+                };
+                let cell_inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
                 let text_height: f64 = if cell.text_direction != 0 {
                     // 세로쓰기: max(segment_width)
                     let mut max_h: f64 = 0.0;
@@ -686,7 +731,12 @@ impl HeightMeasurer {
                     cell.paragraphs.iter()
                         .enumerate()
                         .map(|(pidx, p)| {
-                            let comp = compose_paragraph(p);
+                            let mut comp = compose_paragraph(p);
+                            // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
+                            // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
+                            crate::renderer::composer::recompose_for_cell_width(
+                                &mut comp, p, cell_inner_width, styles,
+                            );
                             let para_style = styles.para_styles.get(p.para_shape_id as usize);
                             let is_last_para = pidx + 1 == cell_para_count;
                             let spacing_before = if pidx > 0 {
@@ -758,7 +808,18 @@ impl HeightMeasurer {
         // 한컴은 TAC 표의 높이를 속성값으로 유지 (셀 콘텐츠 넘침은 클리핑)
         // 비-TAC 표: 셀 콘텐츠 기반 확장 유지 (행 분할 필요)
         let common_h = hwpunit_to_px(table.common.height as i32, self.dpi);
-        let table_height = if table.common.treat_as_char && common_h > 0.0 && raw_table_height > common_h + 1.0 {
+        // [Task #672] TAC 표 비례 축소 임계값 강화 — 작은 차이 (≤2%) 는 면제.
+        //
+        // 본질: 셀 콘텐츠 측정값과 common.height 의 미세한 불일치 (측정 오차
+        // 또는 line_height 보정 부산물) 시 비례 축소가 셀 콘텐츠 클립을 발생.
+        // 한컴 뷰어는 작은 차이를 비례 축소 안 함 (계획서.hwp 1.32% 차이 — 3 줄
+        // 정상 표시). 2% 이상 차이는 사용자 의도 영역 (의도적 압축) 으로 간주
+        // 하여 기존 동작 유지.
+        //
+        // 발동 영역 sweep 진단 (187 fixture): ≤2% 7 건 면제, ≥5% 11 건 그대로.
+        const TAC_SHRINK_THRESHOLD_RATIO: f64 = 0.02;
+        let shrink_threshold = (common_h * TAC_SHRINK_THRESHOLD_RATIO).max(1.0);
+        let table_height = if table.common.treat_as_char && common_h > 0.0 && raw_table_height > common_h + shrink_threshold {
             let scale = common_h / raw_table_height;
             for h in &mut row_heights {
                 *h *= scale;

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.11] - 2026-05-11
+
+라이브러리 버전 동기화. v0.7.10 후속 사이클 (5/10 + 5/11) — 외부 기여자 다수 PR 30+ 머지. 핵심 변경:
+
+**Skia native raster 단계적 진전** (Issue #536): P8 (#761) Layer IR contract hardening (paint::schema + paint::resources blake3) + P9 (#769) text replay parity (char overlap, tab leader, decoration, shade/shadow, emphasis, vertical rotation, control mark + text_replay.rs 모듈 분리).
+
+**HWP3 native 렌더링** (#753): hwp3-sample10.hwp Oracle 기술 문서 763 페이지 8 단계 정정 — HWP3 외부 file path 그림 IR + 사적 graphic char 매핑 + Hwp3TabDef 필드 순서 bug 정정 + 제목차례 자동 장식 inject + 차례 inline page 번호. Git LFS pdf-large/ 폴더 한정 격리 신규 도입.
+
+**페이지네이션 정정**: Task #775 (#778) — Task #703 다단 영역 InFrontOfText/BehindText 컬럼 분배 회귀 정정 (col_count == 1 가드).
+
+**rhwp-studio 인터랙션**: PR #781 scrollbar drag-during-scroll 결함 정정 + PR #786~#788 PR #739/#745 후속 결함 정정 (chord 키 Ctrl+N → Ctrl+M, Chrome reserved shortcut 회피 + 한글 IME chord e.code 판별 + 표 셀 pattern_type 가드 + 도구 모음 mousedown preventDefault).
+
+**rhwp-studio editor 신규 기능**: 표 편집 Undo/Redo (#728) + 표 크기 조절 SnapshotCommand (#748) + 셀 편집 다수 (블록 합계/평균/곱/숫자 서식/높이·너비 균등화/블록 계산식) + 다단 설정 dialog (#750) + 새 번호로 시작 dialog (#760) + Ctrl/Cmd+Arrow / Ctrl/Cmd+O / Ctrl+E (지우기) 단축키.
+
+상세는 저장소 루트 CHANGELOG.md 및 mydocs/pr/archives/ 참고.
+
 ## [0.7.9] - 2026-05-01
 
 라이브러리 버전 동기화. v0.7.8 후속 사이클 — Task #501 (cell.padding 한컴 방어 로직 모방 정정) + PR #428/#494/#478/#498 cherry-pick (외부 기여자 4명, 17 commits). 핵심 변경: 비정상 큰 cell padding (mel-001 셀 1700 HU vs 1280 HU) 의 한컴 동작 모방 가드, 그룹 내 그림 직렬화 (#428), Paragraph::utf16_pos_to_char_idx 외부 노출 (#484), 수식 토크나이저 prefix 분리 + 렌더러 italic (#488), 빈 텍스트 + TAC 수식 셀 alignment (#490), 각주 multi-paragraph line_spacing (#483), Picture+Square wrap LINE_SEG 적용 (#489), 셀 paragraph 인라인 Shape 분기 가드 (#495), wrap=Square 표 paragraph margin (#480), PartialParagraph 인라인 Shape 페이지 라우팅 (#476), Canvas visual diff 검증 인프라 (#498). 상세는 저장소 루트 CHANGELOG.md 참고.

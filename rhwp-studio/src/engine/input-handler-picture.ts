@@ -16,7 +16,7 @@ function pointToSegmentDist(px: number, py: number, x1: number, y1: number, x2: 
 
 export function findPictureAtClick(this: any,
   pageIdx: number, pageX: number, pageY: number,
-): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; x1?: number; y1?: number; x2?: number; y2?: number } | null {
+): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; x1?: number; y1?: number; x2?: number; y2?: number; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null {
   try {
     const layout = this.wasm.getPageControlLayout(pageIdx);
     // Task #516 결함 3 (옵션 3-C): BehindText 그림은 텍스트 영역 위에서는 후순위.
@@ -26,6 +26,8 @@ export function findPictureAtClick(this: any,
     for (const ctrl of layout.controls) {
       if (ctrl.type !== 'image' && ctrl.type !== 'shape' && ctrl.type !== 'equation' && ctrl.type !== 'group' && ctrl.type !== 'line') continue;
       if (ctrl.secIdx === undefined || ctrl.paraIdx === undefined || ctrl.controlIdx === undefined) continue;
+      // [Task #825] 머리말/꼬리말 그림: headerFooter marker 가 함께 있어야 lookup 가능.
+      // (없으면 본문 picture 동작 그대로.)
 
       // BehindText 그림은 1차 패스 건너뛰고 2차 패스로 보류
       if (ctrl.wrap === 'behindText') {
@@ -81,7 +83,7 @@ export function findPictureAtClick(this: any,
         // bbox 히트 판정
         if (pageX >= ctrl.x && pageX <= ctrl.x + ctrl.w &&
             pageY >= ctrl.y && pageY <= ctrl.y + ctrl.h) {
-          return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx };
+          return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, headerFooter: ctrl.headerFooter };
         }
       }
     }
@@ -104,7 +106,7 @@ export function findPictureAtClick(this: any,
         for (const ctrl of behindCtrls) {
           if (pageX >= ctrl.x && pageX <= ctrl.x + ctrl.w &&
               pageY >= ctrl.y && pageY <= ctrl.y + ctrl.h) {
-            return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx };
+            return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, headerFooter: ctrl.headerFooter };
           }
         }
       }
@@ -225,11 +227,16 @@ export function renderPictureObjectSelection(this: any): void {
 
           const bx = ctrl.x, by = ctrl.y, bw = ctrl.w, bh = ctrl.h;
 
-          // 회전각 조회 (shape만)
+          // 회전각 조회 (shape + image)
           let rotAngle = 0;
           if (ref.type === 'shape') {
             try {
               const props = this.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci);
+              rotAngle = (props.rotationAngle as number) ?? 0;
+            } catch { /* ignore */ }
+          } else if (ref.type === 'image') {
+            try {
+              const props = this.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci);
               rotAngle = (props.rotationAngle as number) ?? 0;
             } catch { /* ignore */ }
           }
@@ -294,6 +301,8 @@ export function setObjectProperties(this: any, ref: { sec: number; ppi: number; 
 export function deleteObjectControl(this: any, ref: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line' }): void {
   if (ref.type === 'shape' || ref.type === 'group' || ref.type === 'line') {
     this.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
+  } else if (ref.type === 'equation') {
+    this.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
   } else {
     this.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
   }
@@ -591,10 +600,10 @@ export function updatePictureMoveDrag(this: any, e: MouseEvent): void {
   const cr = sc.getBoundingClientRect();
   const cx = e.clientX - cr.left;
   const cy = e.clientY - cr.top;
-  const pi = this.virtualScroll.getPageAtY(cy);
+  const pi = this.virtualScroll.getPageAtPoint(cx, cy);
   const po = this.virtualScroll.getPageOffset(pi);
   const pw = this.virtualScroll.getPageWidth(pi);
-  const pl = (sc.clientWidth - pw) / 2;
+  const pl = this.virtualScroll.getPageLeftResolved(pi, sc.clientWidth);
   const px = (cx - pl) / zoom;
   const py = (cy - po) / zoom;
 

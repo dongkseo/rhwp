@@ -15,6 +15,13 @@ use super::text_measurement::{resolved_to_text_style, estimate_text_width, compu
 use super::border_rendering::create_border_line_nodes;
 use super::utils::{resolve_numbering_id, expand_numbering_format, numbering_format_to_number_format, find_bin_data, extract_shape_transform};
 
+/// `RHWP_LAYOUT_DEBUG=1` 로 활성화되는 layout 디버그 로깅 여부.
+/// Phase 1 (#517) — 본질 정정 (#467/#491/#496) 시 결함 측정·재현 자동화에 사용.
+#[inline]
+pub(crate) fn layout_debug_enabled() -> bool {
+    std::env::var("RHWP_LAYOUT_DEBUG").map(|v| v == "1").unwrap_or(false)
+}
+
 /// lineseg baseline_distance를 폰트 어센트 기준으로 보정한다.
 /// CENTER 문단 수직정렬 등으로 baseline이 50% 이하로 설정된 경우,
 /// 텍스트 어센트(~80%)가 줄 박스 밖으로 넘치지 않도록 보장한다.
@@ -77,6 +84,50 @@ pub(crate) fn resolve_last_tab_pending(
     }
 }
 
+/// 우측/가운데 탭 정렬 단위의 폭(px).
+///
+/// 탭 직후 run(`start`)부터 `\t` 를 포함하지 않는 연속 run 들의 `estimate_text_width` 합산.
+/// composer(`split_runs_by_lang` / `split_by_char_shapes`)가 char-shape·스크립트 경계로 run 을
+/// 쪼개므로(예: `"Ctrl+(회색)5"` → `["Ctrl+(", "회색)", "5"]`), 탭 직후 한 개 run 폭만 쓰면
+/// 나머지 run 이 탭스톱 우측으로 흘러넘친다 (Issue #842, 결함 #4).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn right_tab_block_width(
+    runs: &[crate::renderer::composer::ComposedTextRun],
+    start: usize,
+    styles: &ResolvedStyleSet,
+    default_tab_width: f64,
+    tab_stops: &[TabStop],
+    auto_tab_right: bool,
+    available_width: f64,
+) -> f64 {
+    let mut w = 0.0;
+    for r in runs.iter().skip(start) {
+        if r.text.contains('\t') {
+            break;
+        }
+        if let Some(_ov) = &r.char_overlap {
+            let chars: Vec<char> = r.text.chars().collect();
+            let fs = {
+                let ts = resolved_to_text_style(styles, r.char_style_id, r.lang_index);
+                if ts.font_size > 0.0 { ts.font_size } else { 12.0 }
+            };
+            w += if crate::renderer::composer::decode_pua_overlap_number(&chars).is_some() {
+                fs
+            } else {
+                fs * chars.len() as f64
+            };
+            continue;
+        }
+        let mut ts = resolved_to_text_style(styles, r.char_style_id, r.lang_index);
+        ts.default_tab_width = default_tab_width;
+        ts.tab_stops = tab_stops.to_vec();
+        ts.auto_tab_right = auto_tab_right;
+        ts.available_width = available_width;
+        w += estimate_text_width(&r.text, &ts);
+    }
+    w
+}
+
 impl LayoutEngine {
     pub(crate) fn layout_inline_table_paragraph(
         &self,
@@ -115,6 +166,31 @@ impl LayoutEngine {
                 None
             })
             .collect();
+
+        // [Task #517 Stage 1] RHWP_LAYOUT_DEBUG 진단 로깅
+        if layout_debug_enabled() {
+            eprintln!(
+                "LAYOUT_INLINE_TABLE_PARA: pi={} sec={} col_x={:.1} col_w={:.1} y_start={:.1} y={:.1} sb={:.1} sa={:.1} ml={:.1} mr={:.1} align={:?} ls_count={} tables={}",
+                para_index, section_index, col_area.x, col_area.width, y_start, y,
+                spacing_before, spacing_after, margin_left, margin_right, alignment,
+                para.line_segs.len(), inline_tables.len(),
+            );
+            for (li, seg) in para.line_segs.iter().enumerate() {
+                eprintln!(
+                    "  LAYOUT_LS[{}]: vpos={} lh={} ls={} bl={} text_start={} sw={}",
+                    li, seg.vertical_pos, seg.line_height, seg.line_spacing,
+                    seg.baseline_distance, seg.text_start, seg.segment_width,
+                );
+            }
+            for (ti, (ci, tbl)) in inline_tables.iter().enumerate() {
+                eprintln!(
+                    "  LAYOUT_INLINE_TBL[{}]: ctrl_idx={} rows={} cols={} w={} h={} vert={:?} horz={:?} wrap={:?}",
+                    ti, ci, tbl.row_count, tbl.col_count,
+                    tbl.common.width, tbl.common.height,
+                    tbl.common.vert_align, tbl.common.horz_align, tbl.common.text_wrap,
+                );
+            }
+        }
 
         // 3. char_offsets 갭 분석으로 텍스트 세그먼트 분할
         // 확장 컨트롤은 8 UTF-16 코드 유닛을 차지
@@ -259,54 +335,47 @@ impl LayoutEngine {
             baseline_dist * 1.5
         };
 
-        // LINE_SEG 기반 줄 나눔 위치 결정:
-        // ls[1].text_start가 있으면 해당 UTF-16 위치에서 줄 나눔 (한컴 저장값 존재)
-        // ls[1]이 없으면 자체 right_margin 기반 줄 나눔 (동적 reflow)
-        let line_break_char_idx: Option<usize> = if para.line_segs.len() > 1 {
-            let ts = para.line_segs[1].text_start as u32;
-            // UTF-16 text_start를 char index로 변환 (제어문자 갭 보정)
-            // text_start는 제어문자 8 code unit 포함한 절대 UTF-16 위치
-            let mut utf16_pos = 0u32;
-            let mut ctrl_gap = 0u32;
-            // char_offsets에서 제어문자 갭 계산
-            if !para.char_offsets.is_empty() {
-                let first_offset = para.char_offsets[0];
-                ctrl_gap += first_offset; // 선행 컨트롤
-                for i in 1..para.char_offsets.len() {
-                    let prev_len = if text_chars[i-1] >= '\u{10000}' { 2u32 } else { 1 };
-                    let gap = para.char_offsets[i] - para.char_offsets[i-1];
-                    if gap > prev_len + 4 {
-                        ctrl_gap += gap - prev_len; // 중간 컨트롤 갭
+        // [Task #518 Phase 2] LINE_SEG 기반 줄 나눔 위치 결정:
+        // ls[1..] 의 text_start (raw UTF-16 위치, controls 포함) 를 char index 로 변환.
+        // char_offsets[i] = text_chars[i] 의 원본 UTF-16 위치 → char_offsets[i] >= ts 인 첫 i 가 break.
+        //
+        // 이전: ctrl_gap 을 paragraph 전체 controls 합으로 over-subtract → controls 가 있는
+        // paragraph 에서 saturating 0 으로 항상 break 미감지 (#496 케이스).
+        // 이전: ls[1] 만 사용. 다중 줄 paragraph 에서 ls[2..] 무시 → dynamic reflow.
+        let line_break_char_indices: Vec<usize> = if para.line_segs.len() > 1
+            && !para.char_offsets.is_empty()
+        {
+            let mut indices: Vec<usize> = Vec::new();
+            for ls in para.line_segs.iter().skip(1) {
+                let ts = ls.text_start as u32;
+                // char_offsets[i] >= ts 인 첫 i (= text_chars 의 break 위치)
+                let char_idx = para.char_offsets.iter().position(|&off| off >= ts)
+                    .unwrap_or(text_chars.len());
+                if char_idx > 0 && char_idx <= text_chars.len() {
+                    // 단조 증가 보장 (이전 break 보다 큰 경우에만 추가)
+                    if indices.last().map(|&prev| char_idx > prev).unwrap_or(true) {
+                        indices.push(char_idx);
                     }
                 }
             }
-            // text_start에서 ctrl_gap을 빼서 순수 텍스트 char index 추정
-            let text_only_ts = ts.saturating_sub(ctrl_gap);
-            // UTF-16 → char index 변환
-            let mut char_idx = 0usize;
-            let mut u16_accum = 0u32;
-            for (i, ch) in text_chars.iter().enumerate() {
-                if u16_accum >= text_only_ts {
-                    char_idx = i;
-                    break;
-                }
-                u16_accum += if *ch >= '\u{10000}' { 2 } else { 1 };
-                char_idx = i + 1;
-            }
-            if char_idx > 0 && char_idx <= text_chars.len() {
-                Some(char_idx)
-            } else {
-                None
-            }
+            indices
         } else {
-            None
+            Vec::new()
         };
+        if layout_debug_enabled() {
+            eprintln!(
+                "  LAYOUT_BREAK_INDICES: pi={} indices={:?} (from ls[1..])",
+                para_index, line_break_char_indices,
+            );
+        }
 
         let mut inline_x = start_x;
         let mut current_y = y;
         let mut table_idx = 0;
         let mut max_table_bottom = y; // 표의 최대 하단 y (표 높이를 줄 높이로 사용하기 위함)
         let mut wrapped_below_table = false; // 텍스트가 표 아래로 줄바꿈되었는지
+        // [Task #518] 다음 break 인덱스 (line_break_char_indices 안에서)
+        let mut next_break: usize = 0;
 
         for (s, e) in &segments {
             // 텍스트 세그먼트 렌더링 (줄바꿈 지원)
@@ -394,9 +463,13 @@ impl LayoutEngine {
                         let ch_w = estimate_text_width(&ch.to_string(), &ts);
 
                         // char_shape 변경 또는 줄바꿈 시 누적된 run을 출력
-                        // LINE_SEG 기반 줄 나눔: text_start 위치에서 강제 개행
-                        let need_wrap = if let Some(break_idx) = line_break_char_idx {
-                            ch_idx >= break_idx && !wrapped_below_table
+                        // [Task #518] LINE_SEG 기반 줄 나눔: ls[1..] 의 text_start 위치 모두 사용.
+                        // break 가 모두 소진되거나 미존재 시 right_margin 동적 reflow 로 fallback.
+                        let need_wrap = if next_break < line_break_char_indices.len()
+                            && ch_idx >= line_break_char_indices[next_break]
+                        {
+                            next_break += 1;
+                            true
                         } else {
                             inline_x + ch_w > right_margin + 0.5 && inline_x > line_start_x + 1.0
                         };
@@ -583,13 +656,14 @@ impl LayoutEngine {
         para_index: usize,
         multi_col_width_hu: Option<i32>,
         bin_data_content: Option<&[BinDataContent]>,
+        wrap_anchor: Option<&crate::renderer::pagination::WrapAnchorRef>,
     ) -> f64 {
         let end_line = composed
             .map(|c| c.lines.len())
             .unwrap_or(para.line_segs.len());
         self.layout_partial_paragraph(
             tree, col_node, para, composed, styles, col_area, y_start, 0, end_line,
-            section_index, para_index, multi_col_width_hu, bin_data_content,
+            section_index, para_index, multi_col_width_hu, bin_data_content, wrap_anchor,
         )
     }
 
@@ -609,12 +683,13 @@ impl LayoutEngine {
         para_index: usize,
         multi_col_width_hu: Option<i32>,
         bin_data_content: Option<&[BinDataContent]>,
+        wrap_anchor: Option<&crate::renderer::pagination::WrapAnchorRef>,
     ) -> f64 {
         if let Some(comp) = composed {
             return self.layout_composed_paragraph(
                 tree, col_node, comp, styles, col_area, y_start, start_line, end_line,
                 section_index, para_index, None, false, 0.0, multi_col_width_hu,
-                Some(para), bin_data_content,
+                Some(para), bin_data_content, wrap_anchor,
             );
         }
 
@@ -647,6 +722,7 @@ impl LayoutEngine {
         multi_col_width_hu: Option<i32>,
         para: Option<&Paragraph>,
         bin_data_content: Option<&[BinDataContent]>,
+        wrap_anchor: Option<&crate::renderer::pagination::WrapAnchorRef>,
     ) -> f64 {
         let mut y = y_start;
         let end = end_line.min(composed.lines.len());
@@ -876,14 +952,23 @@ impl LayoutEngine {
                     text_y + line_height, col_bottom, text_y + line_height - col_bottom,
                 );
             }
-            // wrap_precomputed: 파서가 LineSeg cs/sw를 사전 계산한 문단.
-            // 각 라인의 LineSeg cs(column_start)를 x 오프셋으로, sw(segment_width)를 너비로 적용.
-            let (line_cs_offset, line_avail_w_override) = if para.map(|p| p.wrap_precomputed).unwrap_or(false) {
+            // [Task #604 R3] wrap_anchor 가 있으면 본 문단은 anchor 그림/표 옆 wrap text.
+            // 각 라인의 LineSeg cs(column_start)/sw(segment_width)를 x 오프셋/너비로 적용.
+            // typeset 의 wrap_around state machine 매칭 결과 (ColumnContent.wrap_anchors)
+            // 가 layout 에 전달되어 본 분기가 동작.
+            //
+            // [Task #722] inter-image-text gap 보정 — 한컴 viewer 는 anchor image 의
+            // outer margin_right (HU) 만큼 cs 에 더해 text 시작 x 결정. sw 에서 동일량
+            // 차감하여 가용 폭 정합. WrapAnchorRef.anchor_image_margin_right 활용.
+            let (line_cs_offset, line_avail_w_override) = if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
                 let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
                 let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);
-                let cs_px = crate::renderer::hwpunit_to_px(cs, self.dpi);
-                let sw_px = if sw > 0 { Some(crate::renderer::hwpunit_to_px(sw, self.dpi)) } else { None };
+                let mr = anchor.anchor_image_margin_right;
+                let cs_px = crate::renderer::hwpunit_to_px(cs + mr, self.dpi);
+                let sw_px = if sw > 0 {
+                    Some(crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi))
+                } else { None };
                 (cs_px, sw_px)
             } else {
                 (0.0, None)
@@ -897,9 +982,9 @@ impl LayoutEngine {
                     TextLineNode::with_para_vpos(line_height, baseline, section_index, para_index, line_idx as u32, vpos)
                 }),
                 BoundingBox::new(
-                    // Task #460 보완6: wrap_precomputed면 line_cs_offset 사용 (col_area.x 기준),
+                    // [Task #604 R3] wrap_anchor 가 있으면 line_cs_offset 사용 (col_area.x 기준),
                     // 아니면 Task #489 effective_col_x 사용. 두 경로 중복 적용 방지.
-                    if para.map(|p| p.wrap_precomputed).unwrap_or(false) {
+                    if wrap_anchor.is_some() {
                         col_area.x + effective_margin_left + line_cs_offset
                     } else {
                         effective_col_x + effective_margin_left
@@ -921,14 +1006,15 @@ impl LayoutEngine {
 
             // 텍스트 정렬을 위한 전체 줄 폭 계산 (자연 폭, 추가 간격 미포함)
             // treat_as_char 이미지 폭도 포함하여 정확한 폭 산출
-            // wrap_precomputed: line_cs_offset을 est_x 기준점에 포함 (line_x_offset은 col_area.x 기준 상대좌표)
+            // [Task #604 Stage 2] wrap_anchor 가 있는 줄: line_cs_offset 을 est_x 기준점에
+            // 포함 (line_x_offset 은 col_area.x 기준 상대좌표).
             let mut est_x = effective_margin_left + line_cs_offset + inline_offset;
             let est_x_start = est_x;
             let mut pending_right_tab_est: Option<(f64, u8, u8)> = None;
             let mut run_char_pos_est = comp_line.char_start;
             // cross-run 탭 감지용 inline_tabs(composed.tab_extended) 커서 — Task #290
             let mut inline_tab_cursor_est: usize = 0;
-            for run in &comp_line.runs {
+            for (run_idx_est, run) in comp_line.runs.iter().enumerate() {
                 let run_char_count_est = if run.char_overlap.is_some() {
                     let chars: Vec<char> = run.text.chars().collect();
                     if crate::renderer::composer::decode_pua_overlap_number(&chars).is_some() {
@@ -962,16 +1048,18 @@ impl LayoutEngine {
                         } else {
                             tab_pos
                         };
+                        // [Issue #842 #4] 탭 다음 콘텐츠가 여러 composed run 으로 쪼개진 경우
+                        // (스크립트·char-shape 경계) 전체 블록 폭 기준으로 정렬해야 마지막 글자가
+                        // 탭스톱에 맞는다. (선행 공백 run "예 16" 케이스도 합산에 포함되어 동작 유지.)
+                        let run_w = right_tab_block_width(
+                            &comp_line.runs, run_idx_est, styles,
+                            tab_width, &tab_stops, auto_tab_right, available_width,
+                        );
                         match tab_type {
                             1 => {
-                                // [Task #279] 전체 run 폭 기준 — 선행 공백이 있는 경우 (예: " 16")
-                                // run 시작 x 가 좌측으로 가서 시각적으로 페이지번호 right edge 가
-                                // effective_pos 에 정렬되도록.
-                                let run_w = estimate_text_width(&run.text, &ts);
                                 est_x = effective_pos - run_w;
                             }
                             2 => {
-                                let run_w = estimate_text_width(&run.text, &ts);
                                 est_x = effective_pos - run_w / 2.0;
                             }
                             _ => {}
@@ -1222,9 +1310,9 @@ impl LayoutEngine {
             let num_x_offset = if num_offset > 0.0 && !(line_idx == start_line && start_line == 0) {
                 num_offset
             } else { 0.0 };
-            // Task #460 보완6: wrap_precomputed면 col_area.x + line_cs_offset 기준,
-            // 아니면 effective_col_x (Task #489) 기준
-            let x_base = if para.map(|p| p.wrap_precomputed).unwrap_or(false) {
+            // [Task #604 R3] wrap_anchor 가 있으면 col_area.x + line_cs_offset 기준,
+            // 아니면 effective_col_x (Task #489) 기준.
+            let x_base = if wrap_anchor.is_some() {
                 col_area.x + effective_margin_left + line_cs_offset
             } else {
                 effective_col_x + effective_margin_left
@@ -1400,16 +1488,17 @@ impl LayoutEngine {
                     } else {
                         tab_pos
                     };
+                    // [Issue #842 #4] 탭 다음 콘텐츠가 여러 composed run 으로 쪼개진 경우
+                    // (스크립트·char-shape 경계, 예 "Ctrl+(회색)5") 전체 블록 폭 기준 정렬.
+                    let next_w = right_tab_block_width(
+                        &comp_line.runs, run_idx, styles,
+                        tab_width, &tab_stops, auto_tab_right, available_width,
+                    );
                     match tab_type {
                         1 => {
-                            // [Task #279] 전체 run 폭 기준 — 선행 공백이 있는 경우 (예: " 16")
-                            // run 시작 x 가 좌측으로 가서 시각적으로 페이지번호 right edge 가
-                            // effective_pos 에 정렬되도록.
-                            let next_w = estimate_text_width(&run.text, &text_style);
                             x = col_area.x + effective_pos - next_w;
                         }
                         2 => {
-                            let next_w = estimate_text_width(&run.text, &text_style);
                             x = col_area.x + effective_pos - next_w / 2.0;
                         }
                         _ => {}
@@ -2960,7 +3049,7 @@ impl LayoutEngine {
 /// **Supplementary PUA-A 저영역 (0xF0000~0xF00CF)** — 한컴 자체 PUA 저영역.
 ///   요약형 문항 화살표 등 시각 마커. Task #588 의 한컴 PDF 임베디드 폰트
 ///   글리프 외곽 분석 + 정답지 시각 검증으로 매핑 확정.
-pub(crate) fn map_pua_bullet_char(ch: char) -> char {
+pub fn map_pua_bullet_char(ch: char) -> char {
     let code = ch as u32;
 
     // Supplementary PUA-A 저영역 — 한컴 자체 영역 (Task #588 한컴 정답지 정합)
@@ -3014,6 +3103,12 @@ pub(crate) fn map_pua_bullet_char(ch: char) -> char {
             0xF0855 => '\u{300B}', // 》 RIGHT DOUBLE ANGLE BRACKET
             // 예시 마커 — `(F00DA 단풍 철 : 철 성분)` 패턴 — 한컴 PDF 시각 검증 필요
             0xF00DA => '\u{25B8}', // ▸ BLACK SMALL TRIANGLE (잠정, 시각 판정 후 정정)
+            // [Task #826] HWP3 한컴 PUA 그래픽 라인 (PR #753 후속 — johab.rs:65,67).
+            // 한컴 함초롬 폰트는 PUA glyph 보유, rhwp-studio 번들 폰트 (오픈 라이선스)
+            // 부재 → render-time substitution. 측정/렌더링 양쪽 자동 적용.
+            // sample11.hwp 머리말/꼬리말 가로선 패턴 (각 85+ 회) 시각 정합.
+            0xF080F => '\u{2501}', // ━ BOX DRAWINGS HEAVY HORIZONTAL (한컴 — 굵은 가로선)
+            0xF0827 => '\u{25A0}', // ■ BLACK SQUARE (한컴 — 잠정, 시각 판정 후 조정)
             _ => ch,
         };
     }

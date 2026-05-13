@@ -21,6 +21,7 @@ import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showValidationModalIfNeeded } from '@/ui/validation-modal';
 import { showToast } from '@/ui/toast';
+import { initRhwpDev } from '@/core/rhwp-dev';
 import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
@@ -33,6 +34,7 @@ const eventBus = new EventBus();
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
   (window as any).__eventBus = eventBus;
+  initRhwpDev(wasm);
 }
 let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
@@ -95,6 +97,9 @@ async function initialize(): Promise<void> {
     await loadWebFonts([]);  // CSS @font-face 등록 + CRITICAL 폰트만 로드
     msg.textContent = 'WASM 로딩 중...';
     await wasm.initialize();
+    if (import.meta.env.DEV) {
+      initRhwpDev(wasm);
+    }
     msg.textContent = 'HWP 파일을 선택해주세요.';
 
     const container = document.getElementById('scroll-container')!;
@@ -176,6 +181,17 @@ async function initialize(): Promise<void> {
       document.querySelectorAll('.tb-split.open').forEach(s => s.classList.remove('open'));
     });
 
+    // #780: 도구 모음/서식 도구 모음 영역 mousedown 시 focus 이동 방지
+    // — 편집 영역의 텍스트 선택(cursor.anchor)이 보존되어야 서식 적용이 동작함
+    for (const id of ['icon-toolbar', 'style-bar']) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('mousedown', (e) => {
+        if ((e.target as HTMLElement).tagName !== 'INPUT' && (e.target as HTMLElement).tagName !== 'SELECT') {
+          e.preventDefault();
+        }
+      });
+    }
+
     setupFileInput();
     setupZoomControls();
     setupEventListeners();
@@ -215,6 +231,14 @@ function setupGlobalShortcuts(): void {
         return;
       }
     }
+    // Ctrl/Cmd+O → 열기 (문서 미로드 상태에서도 동작)
+    if (ctrlOrMeta && !e.altKey && !e.shiftKey) {
+      if (e.key === 'o' || e.key === 'O' || e.key === 'ㅐ') {
+        e.preventDefault();
+        dispatcher.dispatch('file:open');
+        return;
+      }
+    }
   }, false);
 }
 
@@ -251,8 +275,26 @@ function setupFileInput(): void {
     const file = e.dataTransfer?.files[0];
     if (!file) return;
     const dropName = file.name.toLowerCase();
+    const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
+    if (imageExts.some(ext => dropName.endsWith(ext))) {
+      if (!inputHandler || wasm.pageCount === 0) return;
+      const data = new Uint8Array(await file.arrayBuffer());
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      try {
+        img.src = url;
+        await img.decode();
+        inputHandler.enterImagePlacementMode(data, ext, img.naturalWidth, img.naturalHeight, file.name);
+      } catch {
+        console.warn('[drop] 이미지 디코딩 실패:', file.name);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
     if (!dropName.endsWith('.hwp') && !dropName.endsWith('.hwpx')) {
-      alert('HWP/HWPX 파일만 지원합니다.');
+      alert('HWP/HWPX 파일 또는 이미지 파일만 지원합니다.');
       return;
     }
     await loadFile(file);
@@ -422,7 +464,8 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     canvasView?.loadDocument();
     console.log('[initDoc] 5. toolbar setEnabled');
     toolbar?.setEnabled(true);
-    console.log('[initDoc] 6. toolbar initStyleDropdown');
+    console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
+    toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     console.log('[initDoc] 7. inputHandler activateWithCaretPosition');
     inputHandler?.activateWithCaretPosition();
@@ -568,12 +611,21 @@ eventBus.on('open-document-bytes', async (payload) => {
     bytes: Uint8Array;
     fileName: string;
     fileHandle: typeof wasm.currentFileHandle;
+    /** 문서 비교 등: 로드 완료를 기다리는 쪽과 짝을 맞출 때만 전달 */
+    requestId?: string;
+  };
+  const notifyDone = (ok: boolean, error?: string) => {
+    if (!data.requestId) return;
+    eventBus.emit('open-document-bytes:done', { requestId: data.requestId, ok, error });
   };
   try {
     await loadBytes(data.bytes, data.fileName, data.fileHandle);
+    notifyDone(true);
   } catch (error) {
     // #265: WASM 파서 에러 (예: HWP 3.0 미지원) 를 사용자에게 전파
     showLoadError(error);
+    const msg = error instanceof Error ? error.message : String(error);
+    notifyDone(false, msg);
   }
 });
 

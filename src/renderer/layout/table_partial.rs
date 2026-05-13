@@ -59,13 +59,20 @@ impl LayoutEngine {
             return y_start;
         }
 
-        // 분할 표 첫 부분: vert_offset 적용 (자리차지 표의 세로 오프셋)
+        // 분할 표 첫 부분: vert_offset 적용 (자리차지 표의 세로 오프셋).
+        // [Task #712] HwpUnit=u32 이라 `vertical_offset > 0` 는 음수 비트표현
+        // (예: -1796 HU = 0xFFFFF8FC = 4294965500u32) 도 양수로 통과시켜
+        // 후속 `as i32` 캐스트에서 음수가 적용 → 표가 위로 점프, 직전 인라인
+        // 표 영역 침범. 비-Partial 경로(`table_layout.rs:1069+`)는 동일 분기에
+        // `raw_y.max(y_start)` 클램프가 있어 음수 무력화. Partial 경로에는
+        // 클램프가 없으므로 게이트를 signed 비교로 정정해 동등 효과.
+        let vert_off_signed = table.common.vertical_offset as i32;
         let y_start = if !is_continuation && !table.common.treat_as_char
             && matches!(table.common.text_wrap, crate::model::shape::TextWrap::TopAndBottom)
             && matches!(table.common.vert_rel_to, crate::model::shape::VertRelTo::Para)
-            && table.common.vertical_offset > 0
+            && vert_off_signed > 0
         {
-            y_start + hwpunit_to_px(table.common.vertical_offset as i32, self.dpi)
+            y_start + hwpunit_to_px(vert_off_signed, self.dpi)
         } else {
             y_start
         };
@@ -85,13 +92,23 @@ impl LayoutEngine {
             let mut max_remaining_h = 0.0f64;
             for cell in &table.cells {
                 if cell.row_span == 1 && cell.row as usize == start_row {
-                    let (_, _, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
+                    let (pad_left, pad_right, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
+                    let cell_w_px = crate::renderer::hwpunit_to_px(cell.width as i32, self.dpi);
+                    let inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
 
                     // Task #324 v3: 중첩 표 포함 여부와 무관하게 통일된 경로 사용.
                     // compute_cell_line_ranges 가 cumulative position 기반으로 nested table
                     // atomic 처리를 정확히 수행하므로 별도 분기 불필요.
+                    // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
+                    // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                     let composed: Vec<_> = cell.paragraphs.iter()
-                        .map(|p| compose_paragraph(p))
+                        .map(|p| {
+                            let mut comp = compose_paragraph(p);
+                            crate::renderer::composer::recompose_for_cell_width(
+                                &mut comp, p, inner_width, styles,
+                            );
+                            comp
+                        })
                         .collect();
                     let ranges = self.compute_cell_line_ranges(cell, &composed, split_start_content_offset, 0.0, styles);
                     // [Task #362] split_start 시 한 페이지보다 큰 nested table 의 잔여 높이가
@@ -354,13 +371,13 @@ impl LayoutEngine {
             let (mut pad_left, mut pad_right, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
 
             // 셀 내 문단 구성
-            let composed_paras: Vec<_> = cell.paragraphs.iter()
+            let mut composed_paras: Vec<_> = cell.paragraphs.iter()
                 .map(|p| compose_paragraph(p))
                 .collect();
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
             let (new_pl, new_pr) = self.shrink_cell_padding_for_overflow(
-                pad_left, pad_right, cell_w, &composed_paras, styles,
+                pad_left, pad_right, cell_w, &composed_paras, &cell.paragraphs, styles,
             );
             pad_left = new_pl;
             pad_right = new_pr;
@@ -368,6 +385,16 @@ impl LayoutEngine {
             let inner_x = cell_x + pad_left;
             let inner_width = (cell_w - pad_left - pad_right).max(0.0);
             let inner_height = (cell_h - pad_top - pad_bottom).max(0.0);
+
+            // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine 압축
+            // 결과를 셀 가용 너비 (inner_width) 에 맞춰 다중 ComposedLine 으로 재분할.
+            for (cpi, para) in cell.paragraphs.iter().enumerate() {
+                if let Some(comp) = composed_paras.get_mut(cpi) {
+                    crate::renderer::composer::recompose_for_cell_width(
+                        comp, para, inner_width, styles,
+                    );
+                }
+            }
 
 
             // 분할 행: compute_cell_line_ranges()로 표시할 줄 범위 계산
@@ -440,10 +467,20 @@ impl LayoutEngine {
             };
 
             // 수직 정렬
-            // 분할 행에서도 셀 콘텐츠가 visible area에 모두 들어가면 원래 정렬 적용
             use crate::model::table::VerticalAlign;
-            // 분할 행에서는 항상 Top 정렬 (컨텐츠가 페이지를 넘어 분할되었으므로)
-            let effective_align = if is_in_split_row {
+            // [Task #697 후속] 분할 행이라도 이 셀의 line_ranges 가 셀의 모든 paragraph line 을
+            // 그대로 visible 처리한다면 (= 실제 split 적용 안 받은 cell, 예: inner-table-01.hwp
+            // cell[10] '사업개요' 라벨) 원본 cell.vertical_align 을 사용한다. split 적용으로
+            // line 일부가 잘린 cell 만 Top 강제.
+            let cell_was_split = if let Some(ref ranges) = line_ranges {
+                ranges.iter().enumerate().any(|(i, &(s, e))| {
+                    let total = composed_paras.get(i).map(|c| c.lines.len()).unwrap_or(0);
+                    s != 0 || e != total
+                })
+            } else {
+                false
+            };
+            let effective_align = if is_in_split_row && cell_was_split {
                 VerticalAlign::Top
             } else {
                 cell.vertical_align
@@ -669,6 +706,7 @@ impl LayoutEngine {
                         is_last_para,
                         0.0,
                         None, Some(para), Some(bin_data_content),
+                        None,  // 셀 컨텍스트 — wrap zone 무관
                     );
 
                     let has_visible_text = composed.lines.iter()

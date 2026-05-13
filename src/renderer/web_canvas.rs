@@ -265,6 +265,8 @@ impl WebCanvasRenderer {
 
     /// 레이어 트리를 Canvas에 렌더링
     pub fn render_layer_tree(&mut self, tree: &PageLayerTree) {
+        self.show_paragraph_marks = tree.output_options.show_paragraph_marks;
+        self.show_control_codes = tree.output_options.show_control_codes;
         self.begin_page(tree.page_width, tree.page_height);
         self.render_layer_node(&tree.root);
     }
@@ -419,17 +421,50 @@ impl WebCanvasRenderer {
             }
             RenderNodeType::Image(img) => {
                 self.open_shape_transform(&img.transform, &node.bbox);
+                // [Task #741 후속] 외부 file path 그림 (data 부재 + external_path 보유) →
+                // placeholder 영역 (회색 점선 사각형 + file path 텍스트). SVG renderer
+                // (svg.rs:1075~) 영역 정합. 본 분기 부재 시 image 표시 부재.
+                if img.data.is_none() && img.external_path.is_some() {
+                    let bbox = &node.bbox;
+                    self.ctx.set_fill_style_str("#f0f0f0");
+                    self.ctx.fill_rect(bbox.x, bbox.y, bbox.width, bbox.height);
+                    self.ctx.set_stroke_style_str("#999999");
+                    self.ctx.set_line_dash(&js_sys::Array::of2(&4f64.into(), &4f64.into())).ok();
+                    self.ctx.stroke_rect(bbox.x, bbox.y, bbox.width, bbox.height);
+                    self.ctx.set_line_dash(&js_sys::Array::new()).ok();
+                    if let Some(ref path) = img.external_path {
+                        self.ctx.set_fill_style_str("#666666");
+                        self.ctx.set_font("10px sans-serif");
+                        self.ctx.set_text_align("center");
+                        let cx = bbox.x + bbox.width / 2.0;
+                        let cy = bbox.y + bbox.height / 2.0;
+                        let _ = self.ctx.fill_text(&format!("[외부: {}]", path), cx, cy);
+                        self.ctx.set_text_align("start");
+                    }
+                }
                 if let Some(ref data) = img.data {
                     // Task #516: 그림 효과 / 밝기 / 대비 / 워터마크를 CSS filter 로 적용
+                    // [Issue #677] 한컴 워터마크 모드 (effect != RealPic + brightness/contrast 비-zero) 는
+                    // 저장값 그대로 brightness/contrast 적용 + opacity 0.5 반투명 영역.
+                    // PDF 정답지 영역의 시각 — 진한 회색 워터마크 + 본문 텍스트가 워터마크
+                    // 위로 가독 정합. SVG 영역과 동기.
+                    let is_watermark_image = !matches!(img.effect, crate::model::image::ImageEffect::RealPic)
+                        && (img.brightness != 0 || img.contrast != 0);
                     let filter_str = compose_image_filter(img.effect, img.brightness, img.contrast);
                     if let Some(ref f) = filter_str {
                         self.ctx.set_filter(f);
+                    }
+                    if is_watermark_image {
+                        self.ctx.set_global_alpha(0.17);
                     }
                     self.draw_image_with_fill_mode(
                         data, &node.bbox, img.fill_mode, img.original_size, img.crop,
                         img.original_size_hu,
                     );
                     // 다음 그리기 작업에 영향 없도록 reset
+                    if is_watermark_image {
+                        self.ctx.set_global_alpha(1.0);
+                    }
                     if filter_str.is_some() {
                         self.ctx.set_filter("none");
                     }
@@ -712,7 +747,13 @@ impl WebCanvasRenderer {
                             LayerNodeKind::Leaf { ops } => {
                                 if ops.iter().all(|op| matches!(
                                     op,
-                                    PaintOp::TextRun { .. } | PaintOp::FootnoteMarker { .. }
+                                    PaintOp::TextRun { .. }
+                                        | PaintOp::GlyphRun { .. }
+                                        | PaintOp::CharOverlap { .. }
+                                        | PaintOp::TextControlMark { .. }
+                                        | PaintOp::TabLeader { .. }
+                                        | PaintOp::TextDecoration { .. }
+                                        | PaintOp::FootnoteMarker { .. }
                                 )) {
                                     return false;
                                 }
@@ -838,6 +879,11 @@ impl WebCanvasRenderer {
                             RenderNodeType::RawSvg(raw.clone()),
                             *bbox,
                         ),
+                        PaintOp::GlyphRun { .. }
+                        | PaintOp::CharOverlap { .. }
+                        | PaintOp::TextControlMark { .. }
+                        | PaintOp::TabLeader { .. }
+                        | PaintOp::TextDecoration { .. } => continue,
                     };
                     self.render_node(&render_node);
                 }

@@ -615,6 +615,20 @@ pub(crate) fn is_heavy_display_face(font_family: &str) -> bool {
     )
 }
 
+/// 중고딕/태고딕 계열 (CSS font-weight 500) 폰트 판별.
+///
+/// HWP 에서 중고딕 계열은 Regular(400)과 Bold(700) 사이의 Medium(500) weight.
+/// Fallback 폰트 매칭 시 weight 500 힌트를 주어 선명도를 유지한다.
+pub(crate) fn is_medium_weight_face(font_family: &str) -> bool {
+    let primary = font_family.split(',').next().unwrap_or(font_family)
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"');
+    let lower = primary.to_lowercase();
+    lower.contains("중고딕") || lower.contains("태고딕")
+        || lower.contains("mediumgothic") || lower.contains("hymedium")
+}
+
 /// ParaShape → ResolvedParaStyle 목록
 fn resolve_para_styles(doc_info: &DocInfo, dpi: f64) -> Vec<ResolvedParaStyle> {
     doc_info
@@ -695,9 +709,10 @@ fn resolve_border_styles(doc_info: &DocInfo) -> Vec<ResolvedBorderStyle> {
 fn resolve_single_border_style(bf: &BorderFill) -> ResolvedBorderStyle {
     let fill_color = match bf.fill.fill_type {
         FillType::Solid => bf.fill.solid.as_ref().and_then(|s| {
+            // pattern_type > 0: 패턴 채우기 → 단색 fill 아님 (background_color는 패턴 배경)
             // ColorRef 상위 바이트가 0이 아니면 "채우기 없음" (투명)
             // 0xFFFFFFFF = CLR_INVALID/CLR_DEFAULT (Windows COLORREF)
-            if (s.background_color >> 24) != 0 {
+            if s.pattern_type > 0 || (s.background_color >> 24) != 0 {
                 None
             } else {
                 Some(s.background_color)

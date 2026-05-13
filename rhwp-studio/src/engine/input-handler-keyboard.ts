@@ -52,12 +52,18 @@ const chordMapK: Record<string, string> = {
   ㅜ: 'format:para-num-shape', // 한글 IME 상태
 };
 
-/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+N,? 형태) */
-const chordMapN: Record<string, string> = {
+/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+M,? 형태)
+ *
+ * 한컴 표준 영역 영역 Ctrl+N 영역 영역 chord 시작 영역 영역 Chrome 영역 영역 reserved shortcut
+ * (새 창) 영역 영역 JS 차단 불가 영역 영역 Ctrl+M 영역 영역 변경 (PR #786 후속 정정).
+ */
+const chordMapM: Record<string, string> = {
   n: 'insert:footnote',
   ㅜ: 'insert:footnote', // 한글 IME
   s: 'page:hide',
   ㄴ: 'page:hide', // 한글 IME
+  m: 'insert:equation',
+  ㅡ: 'insert:equation', // 한글 IME
 };
 
 /** 코드 단축키 → 커맨드 ID 매핑 (Alt+V,? 형태 — 보기 메뉴) */
@@ -83,7 +89,8 @@ const chordMapG: Record<string, string> = {
 /**
  * 키보드 이벤트 처리 순서:
  *
- * 1. 코드 단축키 2번째 키 (Ctrl+K → ?)
+
+ * 1. 코드 단축키 2번째 키 (Ctrl+K → ? / Ctrl+M → ?)
  * 2. 특수 모드 탈출 (연결선/다각형/이미지/글상자 배치 모드 → Escape)
  * 3. IME 조합 중 네비게이션 키 보류
  * 4. 편집 모드별 키 처리 (머리말꼬리말 / 각주)
@@ -99,7 +106,7 @@ const chordMapG: Record<string, string> = {
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
 
-  // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+N → ?) ───
+  // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ?) ───
   if (this._pendingChordK) {
     this._pendingChordK = false;
     const key = e.key.toLowerCase();
@@ -110,10 +117,10 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
   }
-  if (this._pendingChordN) {
-    this._pendingChordN = false;
+  if (this._pendingChordM) {
+    this._pendingChordM = false;
     const key = e.key.toLowerCase();
-    const cmdId = chordMapN[key];
+    const cmdId = chordMapM[key];
     if (cmdId && this.dispatcher) {
       e.preventDefault();
       this.dispatcher.dispatch(cmdId);
@@ -192,6 +199,29 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // IME 조합 중 처리 (한국어 IME에서 e.key는 항상 'Process'이므로 e.code로 판별)
   if (e.isComposing || e.keyCode === 229) {
+    // [PR #786 후속] Ctrl+M chord 1번째/2번째 키 영역 영역 IME 합성 중 영역 영역도 활성화.
+    // 한글 IME 영역 영역 e.key === 'Process' 영역 영역, e.code (KeyM/KeyN/KeyS/KeyF/KeyK 등) 영역 영역 판별.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyM') {
+      e.preventDefault();
+      this._pendingChordM = true;
+      return;
+    }
+    // chord 2번째 키 — _pendingChordM 활성화 시 e.code 영역 영역 chordMapM lookup
+    if (this._pendingChordM) {
+      this._pendingChordM = false;
+      const codeToKey: Record<string, string> = {
+        KeyM: 'm', KeyN: 'n', KeyS: 's', KeyF: 'f', KeyK: 'k',
+      };
+      const key = codeToKey[e.code];
+      if (key && this.dispatcher) {
+        const cmdId = chordMapM[key];
+        if (cmdId) {
+          e.preventDefault();
+          this.dispatcher.dispatch(cmdId);
+          return;
+        }
+      }
+    }
     const navCodes = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
                       'Home', 'End', 'Escape', 'Enter', 'Tab',
                       'PageUp', 'PageDown'];
@@ -361,23 +391,42 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     return;
   }
 
-  // ─── F5 셀 선택 모드 진입/단계 전환 ────────────────────────────────
+  // ─── F5 블록 선택 모드 진입/해제 ────────────────────────────────
   if (e.key === 'F5') {
     e.preventDefault();
     if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
       if (this.cursor.isInCellSelectionMode()) {
-        // 이미 셀 선택 모드 → 다음 단계로 전환
         this.cursor.advanceCellSelectionPhase();
         this.updateCellSelection();
       } else {
-        // 셀 선택 모드 진입 (phase 1)
         if (this.cursor.enterCellSelectionMode()) {
           this.caret.hide();
           this.selectionRenderer.clear();
           this.updateCellSelection();
         }
       }
+    } else {
+      // 본문 블록 선택 모드 (#220)
+      if (this.cursor.isInBlockSelectionMode()) {
+        this.cursor.exitBlockSelectionMode();
+        this.selectionRenderer.clear();
+        this.updateCaret();
+      } else {
+        this.cursor.enterBlockSelectionMode();
+        this.updateSelection();
+      }
     }
+    return;
+  }
+
+  // ─── F3 선택 영역 확장 (#220) ──────────────────────────
+  if (e.key === 'F3') {
+    e.preventDefault();
+    if (!this.cursor.isInBlockSelectionMode()) {
+      this.cursor.enterBlockSelectionMode();
+    }
+    this.cursor.expandSelection();
+    this.updateSelection();
     return;
   }
 
@@ -413,6 +462,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.executeOperation({ kind: 'snapshot', operationType: 'deleteObject', operation: (wasm: WasmBridge) => {
           if (ref.type === 'image') {
             wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+          } else if (ref.type === 'equation') {
+            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
           } else {
             wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
           }
@@ -468,6 +519,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
           if (ref.type === 'image') {
             wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+          } else if (ref.type === 'equation') {
+            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
           } else {
             wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
           }
@@ -601,6 +654,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     // fall through
   }
 
+  // ─── 본문 블록 선택 모드 해제 (#220) ──────────────────────
+  if (this.cursor.isInBlockSelectionMode() && e.key === 'Escape') {
+    e.preventDefault();
+    this.cursor.exitBlockSelectionMode();
+    this.selectionRenderer.clear();
+    this.updateCaret();
+    return;
+  }
+
   // ─── 셀 선택 모드 중 키 처리 ────────────────────────────
   if (this.cursor.isInCellSelectionMode()) {
     if (e.key === 'Escape') {
@@ -680,7 +742,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   }
 
   // Alt 조합 단축키 처리
-  if (e.altKey && this.dispatcher) {
+  // - Alt+Arrow → 단어 이동 (아래 Arrow case)
+  // - Alt+Backspace → 이전 단어 삭제 (아래 Backspace/Delete case)
+  // - Alt+Delete → 표 안 영역 영역 'table:delete-col' (기존 동작 보존),
+  //                표 외 영역 영역 다음 단어 삭제 (아래 Backspace/Delete case)
+  const isAltWordKey = e.altKey && (
+    e.key.startsWith('Arrow') ||
+    e.key === 'Backspace' ||
+    (e.key === 'Delete' && !this.cursor.isInCell())
+  );
+  if (e.altKey && !isAltWordKey && this.dispatcher) {
     // Alt+V → Chord 대기 (보기 메뉴 단축키, 한컴 Alt+V,T 계승)
     if ((e.key === 'v' || e.key === 'V' || e.key === 'ㅍ') && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
@@ -739,6 +810,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       e.preventDefault();
       if (this.cursor.hasSelection()) {
         this.deleteSelection();
+      } else if (e.altKey) {
+        // Alt/Option+Backspace/Delete: 단어 삭제 (macOS standard)
+        this.cursor.setAnchor();
+        this.cursor.moveToWordBoundary(e.key === 'Backspace' ? -1 : 1);
+        if (this.cursor.hasSelection()) this.deleteSelection();
       } else if (e.key === 'Backspace') {
         this.handleBackspace(pos, inCell);
       } else {
@@ -764,6 +840,15 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     case 'ArrowUp':
     case 'ArrowDown': {
       e.preventDefault();
+      // Alt/Option+Arrow: 단어 단위 이동 (macOS standard)
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        if (e.shiftKey) this.cursor.setAnchor();
+        else this.cursor.clearSelection();
+        this.cursor.moveToWordBoundary(e.key === 'ArrowLeft' ? -1 : 1);
+        this.updateCaret();
+        if (e.shiftKey) this.updateSelection();
+        break;
+      }
       const vertical = this.cursor.isInVerticalCell();
       // 세로쓰기 셀: ↑↓=글자이동(horizontal), ←→=줄이동(vertical)
       // 가로쓰기:    ←→=글자이동(horizontal), ↑↓=줄이동(vertical)
@@ -875,15 +960,17 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
     }
   }
 
-  // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+N) ───
+  // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M) ───
   if ((e.key === 'k' || e.key === 'K' || e.key === 'ㅏ') && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     this._pendingChordK = true;
     return;
   }
-  if ((e.key === 'n' || e.key === 'N' || e.key === 'ㅜ') && !e.shiftKey && !e.altKey) {
+  // [PR #786 후속] Ctrl+N 영역 영역 Chrome reserved shortcut (새 창) 영역 영역 JS 차단 불가
+  // 영역 영역 Ctrl+M 영역 영역 chord 1번째 키 영역 영역 변경.
+  if ((e.key === 'm' || e.key === 'M' || e.key === 'ㅡ') && !e.shiftKey && !e.altKey) {
     e.preventDefault();
-    this._pendingChordN = true;
+    this._pendingChordM = true;
     return;
   }
   if ((e.key === 'g' || e.key === 'G' || e.key === 'ㅎ') && !e.shiftKey && !e.altKey) {
@@ -892,8 +979,38 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
     return;
   }
 
-  // 커맨드 시스템에 없는 직접 처리 (Ctrl+Home/End 등 커서 이동)
+  // 커맨드 시스템에 없는 직접 처리 (Ctrl/Cmd+Backspace, Ctrl+Home/End, Ctrl/Cmd+Arrow 등)
   switch (e.key.toLowerCase()) {
+    case 'backspace': {
+      e.preventDefault();
+      if (this.cursor.hasSelection()) {
+        this.deleteSelection();
+      } else if (e.metaKey && !e.ctrlKey) {
+        // Cmd+Backspace (macOS): 줄 시작까지 삭제
+        this.cursor.setAnchor();
+        this.cursor.moveToLineStart();
+        if (this.cursor.hasSelection()) this.deleteSelection();
+      } else {
+        // Ctrl+Backspace (Win/Linux): 이전 단어 경계까지 삭제
+        this.cursor.setAnchor();
+        this.cursor.moveToWordBoundary(-1);
+        if (this.cursor.hasSelection()) this.deleteSelection();
+      }
+      break;
+    }
+    case 'delete': {
+      if (!e.ctrlKey) break;
+      e.preventDefault();
+      if (this.cursor.hasSelection()) {
+        this.deleteSelection();
+      } else {
+        // Ctrl+Delete (Win/Linux): 다음 단어 경계까지 삭제
+        this.cursor.setAnchor();
+        this.cursor.moveToWordBoundary(1);
+        if (this.cursor.hasSelection()) this.deleteSelection();
+      }
+      break;
+    }
     case 'home': {
       e.preventDefault();
       if (e.shiftKey) {
@@ -914,6 +1031,50 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
       } else {
         this.cursor.clearSelection();
         this.cursor.moveToDocumentEnd();
+      }
+      this.updateCaret();
+      break;
+    }
+    case 'arrowleft': {
+      e.preventDefault();
+      if (e.shiftKey) this.cursor.setAnchor();
+      else this.cursor.clearSelection();
+      this.cursor.moveToLineStart();
+      this.updateCaret();
+      break;
+    }
+    case 'arrowright': {
+      e.preventDefault();
+      if (e.shiftKey) this.cursor.setAnchor();
+      else this.cursor.clearSelection();
+      this.cursor.moveToLineEnd();
+      this.updateCaret();
+      break;
+    }
+    case 'arrowup': {
+      e.preventDefault();
+      if (e.shiftKey) this.cursor.setAnchor();
+      else this.cursor.clearSelection();
+      // [Issue #784 후속] macOS Cmd+↑ = 문서 시작 (macOS 표준).
+      // Windows/Linux Ctrl+↑ = 이전 문단 (한컴 표준).
+      if (e.metaKey && !e.ctrlKey) {
+        this.cursor.moveToDocumentStart();
+      } else {
+        this.cursor.moveToParagraphBoundary(-1);
+      }
+      this.updateCaret();
+      break;
+    }
+    case 'arrowdown': {
+      e.preventDefault();
+      if (e.shiftKey) this.cursor.setAnchor();
+      else this.cursor.clearSelection();
+      // [Issue #784 후속] macOS Cmd+↓ = 문서 끝 (macOS 표준).
+      // Windows/Linux Ctrl+↓ = 다음 문단 (한컴 표준).
+      if (e.metaKey && !e.ctrlKey) {
+        this.cursor.moveToDocumentEnd();
+      } else {
+        this.cursor.moveToParagraphBoundary(1);
       }
       this.updateCaret();
       break;
@@ -1026,6 +1187,8 @@ export function onCut(this: any, e: ClipboardEvent): void {
       this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
         if (ref.type === 'image') {
           wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+        } else if (ref.type === 'equation') {
+          wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
         } else {
           wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
         }

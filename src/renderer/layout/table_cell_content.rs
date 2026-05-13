@@ -558,7 +558,7 @@ impl LayoutEngine {
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
             let (new_pl, new_pr) = self.shrink_cell_padding_for_overflow(
-                pad_left, pad_right, cell_w, &composed_paras, styles,
+                pad_left, pad_right, cell_w, &composed_paras, &cell.paragraphs, styles,
             );
             pad_left = new_pl;
             pad_right = new_pr;
@@ -607,6 +607,7 @@ impl LayoutEngine {
                     pidx + 1 == para_count,
                     0.0,
                     None, Some(para), None,
+                    None,  // 셀 컨텍스트 — wrap zone 무관
                 );
 
                 // 셀 내 그림/도형 컨트롤 렌더링
@@ -648,6 +649,8 @@ impl LayoutEngine {
                                     brightness: pic.image_attr.brightness,
                                     contrast: pic.image_attr.contrast,
                                     text_wrap: None,
+                                    external_path: pic.image_attr.external_path.clone(),
+                                    header_footer_ref: None,
                                 }),
                                 BoundingBox::new(pic_x, pic_y, fit_w, fit_h),
                             );

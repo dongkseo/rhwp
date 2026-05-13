@@ -148,23 +148,94 @@ impl LayoutEngine {
         if table.cells.is_empty() {
             if depth == 0 { return y_start; } else { return 0.0; }
         }
-        // 1x1 래퍼 표 감지: 외곽 표를 무시하고 내부 표를 직접 렌더링
+        // 1x1 래퍼 표 감지: 외곽 표를 무시하고 내부 표를 직접 렌더링.
+        // (Task #688) 셀 paragraphs 가 2개 이상이면 첫 nested 표만 unwrap 시 나머지
+        // paragraph 의 nested 표가 누락되므로 paragraphs.len() == 1 가드를 둔다.
+        // controls.len() == 1 가드는 두지 않는다 — exam_social.hwp pi=15 (PR #681)
+        // 처럼 정렬 마커 등 다른 control 이 동거하는 케이스에서 unwrap + 외곽선 분기를
+        // 모두 보존해야 하므로 find_map 으로 첫 nested table 만 추출한다.
         if table.row_count == 1 && table.col_count == 1 && table.cells.len() == 1 {
             let cell = &table.cells[0];
-            let has_visible_text = cell.paragraphs.iter()
-                .any(|p| p.text.chars().any(|ch| !ch.is_whitespace() && ch != '\r' && ch != '\n'));
-            if !has_visible_text {
-                if let Some(nested) = cell.paragraphs.iter()
-                    .flat_map(|p| p.controls.iter())
-                    .find_map(|c| if let Control::Table(t) = c { Some(t.as_ref()) } else { None })
-                {
-                    return self.layout_table(
-                        tree, col_node, nested,
-                        section_index, styles, col_area, y_start,
-                        bin_data_content, None, depth,
-                        table_meta, host_alignment, enclosing_cell_ctx, host_margin_left,
-                        host_margin_right, inline_x_override, nested_split, para_y,
-                    );
+            if cell.paragraphs.len() == 1 {
+                let p = &cell.paragraphs[0];
+                let has_visible_text = p.text.chars()
+                    .any(|ch| !ch.is_whitespace() && ch != '\r' && ch != '\n');
+                if !has_visible_text {
+                    if let Some(nested) = p.controls.iter()
+                        .find_map(|c| if let Control::Table(t) = c { Some(t.as_ref()) } else { None })
+                    {
+                        // [Task: nested-table-border] 자료 박스 외곽 테두리 추가:
+                        // 외부 1x1 표가 wrapper 라도 padding + border_fill 에 테두리선이
+                        // 정의된 경우 (자료 박스 외곽), 외곽 4개 라인을 별도 추가하여 시각 정합.
+                        // 외곽 박스의 size 는 nested layout 의 실제 결과 (y_end - y_start) 와
+                        // nested 표의 측정 width 를 사용하여 내부 표 영역과 정확히 정합.
+                        // (exam_social.hwp pi=15 4번 자료 박스: 외부 1x1 padding=(850,850,850,850)
+                        //  border_fill_id=6, 내부 6x3 대화체 셀.)
+                        let outer_y = y_start;
+                        let outer_border_meta = if depth == 0 {
+                            let has_outer_padding = cell.padding.left != 0
+                                || cell.padding.right != 0
+                                || cell.padding.top != 0
+                                || cell.padding.bottom != 0;
+                            if has_outer_padding {
+                                if let Some(bs) = styles.border_styles.get(cell.border_fill_id as usize) {
+                                    let any_border = bs.borders.iter()
+                                        .any(|b| b.line_type != crate::model::style::BorderLineType::None);
+                                    if any_border {
+                                        Some(bs.borders)
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        } else { None };
+
+                        // nested 표 위치/size 미리 결정 (nested layout 의 위치 결정 logic 동일)
+                        let pw_now = self.current_paper_width.get();
+                        let paper_w = if pw_now > 0.0 { Some(pw_now) } else { None };
+                        let nested_w = hwpunit_to_px(nested.common.width as i32, self.dpi);
+                        let outer_w_for_box = nested_w;
+                        let outer_x_for_box = self.compute_table_x_position(
+                            nested, nested_w, col_area, depth, host_alignment,
+                            host_margin_left, host_margin_right, inline_x_override, paper_w,
+                        );
+
+                        let y_end = self.layout_table(
+                            tree, col_node, nested,
+                            section_index, styles, col_area, y_start,
+                            bin_data_content, None, depth,
+                            table_meta, host_alignment, enclosing_cell_ctx, host_margin_left,
+                            host_margin_right, inline_x_override, nested_split, para_y,
+                        );
+
+                        if let Some(bs_borders) = outer_border_meta {
+                            let outer_h_actual = (y_end - outer_y).max(0.0);
+                            if outer_h_actual > 0.0 {
+                                use super::border_rendering::create_border_line_nodes;
+                                // 좌
+                                col_node.children.extend(create_border_line_nodes(
+                                    tree, &bs_borders[0],
+                                    outer_x_for_box, outer_y, outer_x_for_box, outer_y + outer_h_actual,
+                                ));
+                                // 우
+                                col_node.children.extend(create_border_line_nodes(
+                                    tree, &bs_borders[1],
+                                    outer_x_for_box + outer_w_for_box, outer_y,
+                                    outer_x_for_box + outer_w_for_box, outer_y + outer_h_actual,
+                                ));
+                                // 상
+                                col_node.children.extend(create_border_line_nodes(
+                                    tree, &bs_borders[2],
+                                    outer_x_for_box, outer_y, outer_x_for_box + outer_w_for_box, outer_y,
+                                ));
+                                // 하
+                                col_node.children.extend(create_border_line_nodes(
+                                    tree, &bs_borders[3],
+                                    outer_x_for_box, outer_y + outer_h_actual,
+                                    outer_x_for_box + outer_w_for_box, outer_y + outer_h_actual,
+                                ));
+                            }
+                        }
+                        return y_end;
+                    }
                 }
             }
         }
@@ -605,13 +676,15 @@ impl LayoutEngine {
         for cell in &table.cells {
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
-                let (_, _, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
+                let (pad_left, pad_right, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
 
                 let content_height = if cell.text_direction != 0 {
                     // 세로쓰기: line_seg.segment_width가 열의 세로 길이
                     self.calc_vertical_cell_content_height(&cell.paragraphs)
                 } else {
-                    self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles)
+                    let cell_w_px = hwpunit_to_px(cell.width as i32, self.dpi);
+                    let inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                    self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles, inner_width)
                 };
                 // LINE_SEG의 line_height에 이미 셀 내 중첩 표 높이가 반영되어 있으므로
                 // controls_height를 별도로 더하면 이중 계산됨
@@ -674,8 +747,10 @@ impl LayoutEngine {
             let r = cell.row as usize;
             let span = cell.row_span as usize;
             if span > 1 && r + span <= row_count {
-                let (_, _, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
-                let content_height = self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles);
+                let (pad_left, pad_right, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
+                let cell_w_px = hwpunit_to_px(cell.width as i32, self.dpi);
+                let inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
+                let content_height = self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles, inner_width);
                 // LINE_SEG의 line_height에 이미 셀 내 중첩 표 높이가 반영되어 있으므로
                 // controls_height를 별도로 더하면 이중 계산됨
                 let required_height = content_height + pad_top + pad_bottom;
@@ -701,14 +776,21 @@ impl LayoutEngine {
         &self,
         paragraphs: &[Paragraph],
         styles: &ResolvedStyleSet,
+        cell_inner_width_px: f64,
     ) -> f64 {
         let cell_para_count = paragraphs.len();
         paragraphs.iter()
             .enumerate()
             .map(|(pidx, p)| {
-                let comp = compose_paragraph(p);
+                let mut comp = compose_paragraph(p);
+                // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
+                // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
+                // 측정/렌더링 일관성 보장 (table_layout.rs:1226 의 렌더링 경로와 동일).
+                crate::renderer::composer::recompose_for_cell_width(
+                    &mut comp, p, cell_inner_width_px, styles,
+                );
                 self.calc_para_lines_height(&comp.lines, pidx, cell_para_count,
-                    styles.para_styles.get(p.para_shape_id as usize))
+                    styles.para_styles.get(p.para_shape_id as usize), styles)
             })
             .sum()
     }
@@ -726,18 +808,24 @@ impl LayoutEngine {
             .enumerate()
             .map(|(pidx, (comp, para))| {
                 self.calc_para_lines_height(&comp.lines, pidx, cell_para_count,
-                    styles.para_styles.get(para.para_shape_id as usize))
+                    styles.para_styles.get(para.para_shape_id as usize), styles)
             })
             .sum()
     }
 
     /// 단일 문단의 줄 높이 합산 (공통 로직)
+    ///
+    /// [Task #674] line_height 측정에 corrected_line_height 보정 적용.
+    /// line_segs 부재 paragraph 의 fallback line_height (400 HU = 5.33 px) 가
+    /// max_fs 보다 작은 경우 ParaShape 의 line_spacing_type + line_spacing 으로
+    /// 보정. height_measurer.rs:570-587 와 동일 로직 — 측정/layout 일관성 보장.
     fn calc_para_lines_height(
         &self,
         lines: &[crate::renderer::composer::ComposedLine],
         pidx: usize,
         total_para_count: usize,
         para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
+        styles: &ResolvedStyleSet,
     ) -> f64 {
         let is_last_para = pidx + 1 == total_para_count;
         let spacing_before = if pidx > 0 {
@@ -753,11 +841,20 @@ impl LayoutEngine {
         if lines.is_empty() {
             spacing_before + hwpunit_to_px(400, self.dpi) + spacing_after
         } else {
+            let cell_ls_val = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
+            let cell_ls_type = para_style.map(|s| s.line_spacing_type)
+                .unwrap_or(crate::model::style::LineSpacingType::Percent);
             let line_count = lines.len();
             let lines_total: f64 = lines.iter()
                 .enumerate()
                 .map(|(i, line)| {
-                    let h = hwpunit_to_px(line.line_height, self.dpi);
+                    let raw_lh = hwpunit_to_px(line.line_height, self.dpi);
+                    let max_fs = line.runs.iter()
+                        .map(|r| styles.char_styles.get(r.char_style_id as usize)
+                            .map(|cs| cs.font_size).unwrap_or(0.0))
+                        .fold(0.0f64, f64::max);
+                    let h = crate::renderer::corrected_line_height(
+                        raw_lh, max_fs, cell_ls_type, cell_ls_val);
                     let is_cell_last_line = is_last_para && i + 1 == line_count;
                     if !is_cell_last_line {
                         h + hwpunit_to_px(line.line_spacing, self.dpi)
@@ -857,14 +954,31 @@ impl LayoutEngine {
     /// 셀 텍스트가 오버플로우할 때 좌우 패딩을 축소하여 공간을 확보한다.
     /// composed 문단의 각 줄 텍스트 폭을 측정하여 최대값이 가용 폭을 초과하면
     /// 패딩을 비례 축소한다 (최소 1px 보장).
+    ///
+    /// [Task #617] 다중 줄(2 줄 이상) 단락이 있는 셀은 HWP 가 가용 폭에 자간을
+    /// 분배·줄바꿈을 확정한 상태이므로 padding 을 보존한다 (자연 폭 추정으로
+    /// 다시 깎으면 본문이 테두리에 닿는 시각 오류 발생 — exam_kor.hwp
+    /// 16/27/36번 보기 박스). 단일 줄 셀(좁은 수치 셀에서 오버플로우 가능성
+    /// 있음) 은 종전 휴리스틱으로 보호한다.
     pub(crate) fn shrink_cell_padding_for_overflow(
         &self,
         pad_left: f64,
         pad_right: f64,
         cell_w: f64,
         composed_paras: &[ComposedParagraph],
+        paragraphs: &[Paragraph],
         styles: &ResolvedStyleSet,
     ) -> (f64, f64) {
+        // [Task #617] 다중 줄(2 줄 이상) 단락이 line_segs 로 분배 완료된 경우,
+        // HWP 가 가용 폭에 맞춰 자간을 분배하고 줄바꿈을 확정한 상태이므로
+        // 자연 폭 추정으로 다시 깎으면 오버 페인팅. 단일 줄 셀(좁은 수치 셀
+        // 등에서 오버플로우 가능성 있음) 은 종전 휴리스틱으로 보호한다.
+        let any_multiline_distributed = paragraphs.iter()
+            .any(|p| p.line_segs.len() >= 2);
+        if any_multiline_distributed {
+            return (pad_left, pad_right);
+        }
+
         let mut max_line_w = 0.0f64;
         for comp in composed_paras {
             for line in &comp.lines {
@@ -876,6 +990,7 @@ impl LayoutEngine {
                         ts.letter_spacing = 0.0;
                     }
                     // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭 사용.
+                    // (estimate_text_width 는 ts.ratio 를 자체 반영함.)
                     w += estimate_text_width(effective_text_for_metrics(run), &ts);
                 }
                 if w > max_line_w {
@@ -1217,7 +1332,7 @@ impl LayoutEngine {
 
             // 텍스트 오버플로우 시 좌우 패딩 축소
             let (new_pl, new_pr) = self.shrink_cell_padding_for_overflow(
-                pad_left, pad_right, cell_w, &composed_paras, styles,
+                pad_left, pad_right, cell_w, &composed_paras, &cell.paragraphs, styles,
             );
             pad_left = new_pl;
             pad_right = new_pr;
@@ -1225,6 +1340,18 @@ impl LayoutEngine {
             let inner_x = cell_x + pad_left;
             let inner_width = (cell_w - pad_left - pad_right).max(0.0);
             let inner_height = (cell_h - pad_top - pad_bottom).max(0.0);
+
+            // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine 압축
+            // 결과를 셀 가용 너비 (inner_width) 에 맞춰 다중 ComposedLine 으로 재분할.
+            // 한컴이 PARA_LINE_SEG 를 인코딩하지 않은 케이스 (samples/계획서.hwp) 의
+            // 줄겹침 시각 결함 정정. 정상 line_segs 인코딩된 paragraph 는 무영향.
+            for (cpi, para) in cell.paragraphs.iter().enumerate() {
+                if let Some(comp) = composed_paras.get_mut(cpi) {
+                    crate::renderer::composer::recompose_for_cell_width(
+                        comp, para, inner_width, styles,
+                    );
+                }
+            }
 
             // AutoNumber(Page) 치환: 셀 내 쪽번호 필드를 현재 페이지 번호로 변환
             let current_pn = self.current_page_number.get();
@@ -1501,6 +1628,7 @@ impl LayoutEngine {
                         is_last_para,
                         0.0,
                         None, Some(para), Some(bin_data_content),
+                        None,  // 셀 컨텍스트 — wrap zone 무관
                     );
 
                     let has_visible_text = composed.lines.iter()
@@ -1603,7 +1731,12 @@ impl LayoutEngine {
                                             _ => inner_area.x + line_margin,
                                         };
                                         if let Some(seg) = para.line_segs.get(target_line) {
-                                            tac_img_y = para_y_before_compose + hwpunit_to_px(seg.vertical_pos, self.dpi);
+                                            // [Task #520 / #624 복원] LineSeg.vertical_pos 는 셀 origin 기준 절대값.
+                                            // para_y_before_compose 에 이미 ls[0].vpos 가 누적되어 있어
+                                            // 상대 오프셋(seg.vpos - ls[0].vpos)만 더해야 이중 합산을 피한다.
+                                            let first_vpos = para.line_segs.first().map(|f| f.vertical_pos).unwrap_or(0);
+                                            tac_img_y = para_y_before_compose
+                                                + hwpunit_to_px(seg.vertical_pos - first_vpos, self.dpi);
                                         }
                                     }
 
@@ -1806,13 +1939,16 @@ impl LayoutEngine {
                                     }
                                     prev_tac_text_pos = tac_pos;
                                 }
+                                // [Task #520 / #624 복원] target_line 기반 tac_img_y 사용 (Picture 분기와 동일).
+                                // para_y_before_compose 사용 시 multi-line paragraph 의 ls[1]+ inline TAC Shape 가
+                                // 항상 line 0 좌표에 떨어져 본문 텍스트와 겹친다 (exam_science p2 7번 글상자 ㉠).
                                 let shape_area = LayoutRect {
                                     x: inline_x,
-                                    y: para_y_before_compose,
+                                    y: tac_img_y,
                                     width: shape_w,
                                     height: inner_area.height,
                                 };
-                                self.layout_cell_shape(tree, &mut cell_node, shape, &shape_area, para_y_before_compose, Alignment::Left, styles, bin_data_content);
+                                self.layout_cell_shape(tree, &mut cell_node, shape, &shape_area, tac_img_y, Alignment::Left, styles, bin_data_content);
                                 inline_x += shape_w;
                             } else {
                                 self.layout_cell_shape(tree, &mut cell_node, shape, &inner_area, para_y, para_alignment, styles, bin_data_content);
@@ -2262,16 +2398,78 @@ impl LayoutEngine {
         // 절대 좌표(cum 기반)와 비교하려면 content_offset 을 더해 절대 끝 좌표로 변환한다.
         // (Task #362 의 도입 시점에 단위 mismatch 가 있었음 — content_offset >= content_limit
         // 케이스에서 셀 내 문단이 즉시 break 되어 빈 페이지로 출력되던 결함 정정.)
+        // [Task #656] abs_limit 그대로 사용 (epsilon 제거).
+        // - Task #485 의 SPLIT_LIMIT_EPSILON = 2.0px 휴리스틱 마진은 typeset/layout 의
+        //   trail_ls 비교 모델 어긋남을 흡수하던 임시방편이었음.
+        // - 본질 정정: break 비교 시 마지막 visible 줄의 trail_ls 제외 (line_break_pos = cum + h).
+        //   typeset 의 split_end_limit = avail_content 추정과 layout 의 셀 마지막 줄 trail_ls
+        //   미렌더 모델 (is_cell_last_line) 과 일관 → epsilon 마진 없이 폰트 무관하게 정합.
         let abs_limit = if has_limit { content_offset + content_limit } else { 0.0 };
 
+        // [Task #485 Bug-1] abs_limit 도달 후 렌더 차단 플래그.
+        // 이전엔 inner break 만 빠져나와 다음 단락에서 같은 cum 으로 재평가 → 셀 마지막 단락(line_spacing 제외로 line_h 작아짐)이
+        // abs_limit 안에 fit 하여 통과하는 out-of-order 결함 발생. 한 번 도달하면 이후 단락 모두 미렌더로 처리.
+        let mut limit_reached = false;
+
         let total_paras = composed_paras.len();
+        // [Task #700] 셀별 가드용 — 셀 첫 paragraph 의 LINE_SEG[0].vpos 가 0 이어야 한컴 정상 인코딩.
+        let cell_first_vpos = cell.paragraphs.first()
+            .and_then(|p| p.line_segs.first().map(|s| s.vertical_pos))
+            .unwrap_or(-1);
+
         for (pi, (comp, para)) in composed_paras.iter().zip(cell.paragraphs.iter()).enumerate() {
+            // [Task #700] paragraph 진입 시 cum 을 LINE_SEG.vpos 절대값으로 동기화.
+            // 한컴은 셀 콘텐츠 위치를 LINE_SEG.vpos 단위로 인코딩 (paragraph 사이 spacing 도 vpos
+            // 차분에 흡수). rhwp 의 line_height + line_spacing + spacing_before/after 누적은
+            // 한컴 vpos 단위와 ~수십 px 어긋나, split_end content_limit (한컴 vpos 단위) 와 비교 시
+            // cut 위치가 어긋나는 회귀 (예: inner-table-01 cell[11] p[17] 까지 cut 해야 하는데
+            // p[19] 까지 visible 처리). cum 을 vpos 절대값으로 동기화하여 한컴 정합화.
+            //
+            // [Task #697] 또한 한컴은 셀 내부 페이지 분할 위치에서 LINE_SEG.vpos 를 0 으로 리셋한
+            // 인코딩을 사용 (예: cell[11] p[20] vpos=0). vpos 리셋 검출 시 cum 을 abs_limit 까지
+            // 강제 진행시켜 후속 paragraph 들이 limit 초과로 cut.
+            //
+            // 가드:
+            // - cell_first_vpos == 0 — 한컴 정상 인코딩 케이스만 (다른 케이스 회피, 회귀 방지)
+            // - target_cum > cum — cum 만 전진 허용 (감소 금지, line metric 가 vpos 보다 큰 paragraph
+            //   영향 차단)
+            // - 차분 누적 (delta) 대신 절대 동기화 — paragraph 사이 spacing mismatch 누적으로 인한
+            //   회귀 (form-002 등) 회피.
+            if pi > 0 && cell_first_vpos == 0 {
+                let prev_para = &cell.paragraphs[pi - 1];
+                let prev_end_vpos = prev_para.line_segs.last()
+                    .map(|s| s.vertical_pos + s.line_height)
+                    .unwrap_or(-1);
+                let cur_first_vpos = para.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1);
+                if cur_first_vpos >= 0 && prev_end_vpos > 0 {
+                    if cur_first_vpos < prev_end_vpos {
+                        // vpos 리셋 — page-break 신호
+                        if has_limit && cum < abs_limit {
+                            cum = abs_limit;
+                        }
+                    } else {
+                        // 정상 누적 — cum 을 vpos 절대값으로 동기화 (전진만)
+                        let target_cum = hwpunit_to_px(cur_first_vpos, self.dpi);
+                        if target_cum > cum {
+                            cum = target_cum;
+                        }
+                    }
+                }
+            }
+
             let para_style = styles.para_styles.get(para.para_shape_id as usize);
             let is_last_para = pi + 1 == total_paras;
             // MeasuredCell 규칙: 첫 문단은 spacing_before 없음, 마지막 문단은 spacing_after 없음
             let spacing_before = if pi > 0 { para_style.map(|s| s.spacing_before).unwrap_or(0.0) } else { 0.0 };
             let spacing_after = if !is_last_para { para_style.map(|s| s.spacing_after).unwrap_or(0.0) } else { 0.0 };
             let line_count = comp.lines.len();
+
+            // [Task #485 Bug-1] 한도 초과 후 후속 단락은 강제 미렌더 (시각 순서 보존).
+            if limit_reached {
+                let visible_count = if line_count == 0 { 0 } else { line_count };
+                result.push((visible_count, visible_count));
+                continue;
+            }
 
             // 중첩 표 포함 문단(atomic) — line_count==0 또는 has_table_in_para
             let has_table_in_para = para.controls.iter().any(|c| matches!(c, Control::Table(_)));
@@ -2313,11 +2511,16 @@ impl LayoutEngine {
                 let was_on_prev = has_offset && para_end_pos <= content_offset;
                 let bigger_than_page = has_limit && para_h > content_limit;
                 // [Task #431] abs_limit (= content_offset + content_limit) 와 비교 (단위 정합)
+                // [Task #656] epsilon 제거 — atomic 단락은 단일 단위로 visible/skip 결정
                 let exceeds_limit = has_limit && para_end_pos > abs_limit && !bigger_than_page;
                 let visible_count = if line_count == 0 { 0 } else { line_count };
                 if was_on_prev || exceeds_limit {
                     // (n,n): 렌더 스킵 마커. line_count==0 이면 (0,0) 동일.
                     result.push((visible_count, visible_count));
+                    // [Task #485 Bug-1] limit 초과 단락 발생 시 후속 단락 차단.
+                    if exceeds_limit {
+                        limit_reached = true;
+                    }
                 } else {
                     result.push((0, visible_count));
                 }
@@ -2352,9 +2555,17 @@ impl LayoutEngine {
                     continue;
                 }
 
-                if has_limit && line_end_pos > abs_limit {
-                    // [Task #431] abs_limit (= content_offset + content_limit) 와 비교 (단위 정합)
-                    // limit 초과 → 이 줄과 이후 모든 콘텐츠 차단
+                // [Task #656] break 비교 시 마지막 visible 줄의 trail_ls 제외.
+                // - cum 누적은 line_h (h+ls) 그대로 (이전 줄들의 ls 는 다음 줄 직전 spacing 이므로 렌더)
+                // - break 비교는 line_break_pos = cum + h (이 줄의 ls 제외) 로 비교
+                //   → 이 줄이 visible 시 마지막 줄이면 trail_ls 미렌더 영역, abs_limit 안에 들어감
+                // typeset 의 split_end_limit = avail_content 추정과 정합. 셀
+                // is_cell_last_line 분기의 trail_ls 미렌더 모델과 동일 본질.
+                // (Task #485 의 epsilon 휴리스틱 본질 정정 — 휴리스틱 마진 없이 일관된 모델, 폰트 무관.)
+                let line_break_pos = cum + h;
+                if has_limit && line_break_pos > abs_limit {
+                    // [Task #485 Bug-1] outer 루프도 차단 — 후속 단락의 작은 line_h slip 방지.
+                    limit_reached = true;
                     break;
                 }
 

@@ -110,13 +110,17 @@ impl SvgLayerRenderer {
             }
             LayerNodeKind::Leaf { ops } => ops
                 .iter()
-                .map(|op| self.paint_op_to_render_node(op, node.source_node_id))
+                .filter_map(|op| self.paint_op_to_render_node(op, node.source_node_id))
                 .collect(),
         }
     }
 
-    fn paint_op_to_render_node(&mut self, op: &PaintOp, source_node_id: Option<u32>) -> RenderNode {
-        match op {
+    fn paint_op_to_render_node(
+        &mut self,
+        op: &PaintOp,
+        source_node_id: Option<u32>,
+    ) -> Option<RenderNode> {
+        let node = match op {
             PaintOp::PageBackground { bbox, background } => RenderNode::new(
                 self.take_node_id(source_node_id),
                 RenderNodeType::PageBackground(background.clone()),
@@ -177,7 +181,13 @@ impl SvgLayerRenderer {
                 RenderNodeType::RawSvg(raw.clone()),
                 *bbox,
             ),
-        }
+            PaintOp::GlyphRun { .. }
+            | PaintOp::CharOverlap { .. }
+            | PaintOp::TextControlMark { .. }
+            | PaintOp::TabLeader { .. }
+            | PaintOp::TextDecoration { .. } => return None,
+        };
+        Some(node)
     }
 
     fn group_kind_to_render_node_type(&self, group_kind: &GroupKind) -> RenderNodeType {
@@ -213,6 +223,9 @@ impl SvgLayerRenderer {
 
 impl LayerRenderer for SvgLayerRenderer {
     fn render_page(&mut self, tree: &PageLayerTree) -> LayerRenderResult<()> {
+        self.renderer.show_paragraph_marks = tree.output_options.show_paragraph_marks;
+        self.renderer.show_control_codes = tree.output_options.show_control_codes;
+        self.renderer.debug_overlay = tree.output_options.debug_overlay;
         let render_tree = self.build_render_tree(tree);
         self.renderer.render_tree(&render_tree);
         Ok(())
@@ -222,7 +235,7 @@ impl LayerRenderer for SvgLayerRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paint::{LayerBuilder, RenderProfile};
+    use crate::paint::{LayerBuilder, LayerOutputOptions, RenderProfile};
     use crate::renderer::render_tree::{
         PageNode, PlaceholderNode, RawSvgNode, RectangleNode, TextRunNode,
     };
@@ -331,5 +344,61 @@ mod tests {
         layer.render_page(&layer_tree).unwrap();
 
         assert_eq!(layer.output(), legacy.output());
+    }
+
+    #[test]
+    fn render_page_consumes_layer_output_options() {
+        let mut render_tree = PageRenderTree::new(0, 80.0, 60.0);
+        render_tree.root.node_type = RenderNodeType::Page(PageNode {
+            page_index: 0,
+            width: 80.0,
+            height: 60.0,
+            section_index: 0,
+        });
+        render_tree.root.children.push(RenderNode::new(
+            31,
+            RenderNodeType::TextRun(TextRunNode {
+                text: "a b".to_string(),
+                style: TextStyle {
+                    font_size: 14.0,
+                    ..Default::default()
+                },
+                char_shape_id: None,
+                para_shape_id: None,
+                section_index: None,
+                para_index: None,
+                char_start: None,
+                cell_context: None,
+                is_para_end: true,
+                is_line_break_end: false,
+                rotation: 0.0,
+                is_vertical: false,
+                char_overlap: None,
+                border_fill_id: 0,
+                baseline: 16.0,
+                field_marker: Default::default(),
+            }),
+            BoundingBox::new(10.0, 15.0, 40.0, 20.0),
+        ));
+
+        let mut builder =
+            LayerBuilder::new(RenderProfile::Screen).with_output_options(LayerOutputOptions {
+                show_paragraph_marks: true,
+                show_control_codes: true,
+                ..Default::default()
+            });
+        let layer_tree = builder.build(&render_tree);
+        let mut layer = SvgLayerRenderer::new();
+        layer.render_page(&layer_tree).unwrap();
+
+        let output = layer.output();
+        assert!(
+            output.contains("\u{2228}"),
+            "layer output options should enable visible space marks:\n{output}"
+        );
+        assert!(
+            output.contains("\u{21b5}"),
+            "layer output options should enable paragraph end marks:\n{output}"
+        );
     }
 }
