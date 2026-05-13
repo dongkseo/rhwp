@@ -45,6 +45,23 @@ cd bindings/swift
 swift test -Xlinker -L../../bindings/Native/target/debug
 ```
 
+## Examples
+
+`Examples/read_text_ffi.swift` — FFI 직접 호출로 HWP 파일의 텍스트를 읽어 출력하는 예제.
+
+```sh
+# 1. 네이티브 라이브러리 빌드
+cargo build --manifest-path bindings/Native/Cargo.toml --release
+
+# 2. 예제 실행 (기본: samples/KTX.hwp 전체 페이지)
+swift bindings/swift/Examples/read_text_ffi.swift
+
+# 3. 특정 파일 + 특정 페이지
+swift bindings/swift/Examples/read_text_ffi.swift samples/aift.hwp 0
+```
+
+## XCFramework
+
 For app integration, package the native library as an `XCFramework` from the
 repository root:
 
