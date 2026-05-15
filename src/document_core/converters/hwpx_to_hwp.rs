@@ -16,6 +16,7 @@
 //!
 //! Stage 1 (현재): 진입점만 노출. 영역별 매핑은 Stage 2~ 에서 추가.
 
+use crate::model::bin_data::{BinDataCompression, BinDataStatus, BinDataType};
 use crate::model::control::Control;
 use crate::model::document::{Document, Section};
 use crate::model::paragraph::Paragraph;
@@ -53,6 +54,10 @@ pub struct AdapterReport {
     pub cells_list_attr_bit16_set: u32,
     /// paragraph/char shape 참조 BorderFill 무채움 정규화 횟수
     pub border_fills_no_fill_normalized: u32,
+    /// HWPX 출처 embedded BinData attr/type/status 정규화 횟수
+    pub embedded_bindata_normalized: u32,
+    /// HWPX 출처 DocProperties.section_count 보정 횟수
+    pub doc_properties_section_count_normalized: u32,
     /// `Control::SectionDef` 컨트롤 삽입 횟수 (Stage 4 — 섹션 개수)
     pub section_def_controls_inserted: u32,
 }
@@ -80,6 +85,8 @@ impl AdapterReport {
                 + self.table_record_row_sizes_materialized
                 + self.cells_list_attr_bit16_set
                 + self.border_fills_no_fill_normalized
+                + self.embedded_bindata_normalized
+                + self.doc_properties_section_count_normalized
                 + self.section_def_controls_inserted)
                 > 0
     }
@@ -107,6 +114,9 @@ impl AdapterReport {
 pub fn convert_hwpx_to_hwp_ir(doc: &mut Document) -> AdapterReport {
     let mut report = AdapterReport::new();
 
+    normalize_doc_properties_for_hwp(doc, &mut report);
+    normalize_embedded_bindata_for_hwp(doc, &mut report);
+
     // Stage 4: SectionDef 컨트롤 삽입 (HWPX 파서가 만들지 않으므로 직렬화기가 PAGE_DEF 출력 못 함)
     for section in &mut doc.sections {
         insert_section_def_control(section, &mut report);
@@ -122,6 +132,70 @@ pub fn convert_hwpx_to_hwp_ir(doc: &mut Document) -> AdapterReport {
     }
 
     report
+}
+
+/// HWP `DOCUMENT_PROPERTIES`의 구역 개수를 실제 BodyText 섹션 수와 동기화한다.
+///
+/// HWPX header.xml 파싱 경로는 `DocProperties.section_count`를 기본값 1로 남길 수 있다.
+/// 한컴 HWP 로더는 이 값을 BodyText 섹션 스트림 해석의 상한으로 사용하므로, 실제 섹션이
+/// 2개 이상인 문서에서 마지막 섹션이 렌더링되지 않는 문제가 생긴다.
+fn normalize_doc_properties_for_hwp(doc: &mut Document, report: &mut AdapterReport) {
+    let section_count = doc.sections.len().min(u16::MAX as usize) as u16;
+    let changed =
+        doc.doc_properties.section_count != section_count || doc.doc_properties.raw_data.is_some();
+
+    doc.doc_properties.section_count = section_count;
+    doc.doc_properties.raw_data = None;
+
+    if changed {
+        report.doc_properties_section_count_normalized += 1;
+        doc.doc_info.raw_stream_dirty = true;
+    }
+}
+
+/// HWPX 출처 embedded BinData를 HWP `HWPTAG_BIN_DATA` 직렬화 규약에 맞춘다.
+///
+/// HWPX 파서는 이미지 payload를 `bin_data_content`에 올리고 `data_type=Embedding`도 설정하지만,
+/// HWP 레코드의 실제 판정 기준인 `attr`는 기본값 0으로 남을 수 있다. HWP 파서는
+/// `attr & 0x000f`가 0이면 Link로 해석하므로, 저장 후 재로드 시 이미지가 모두 외부 링크
+/// ID 0처럼 보이는 손상이 발생한다.
+fn normalize_embedded_bindata_for_hwp(doc: &mut Document, report: &mut AdapterReport) {
+    let loaded_ids: std::collections::HashSet<u16> = doc
+        .bin_data_content
+        .iter()
+        .map(|content| content.id)
+        .collect();
+    if loaded_ids.is_empty() {
+        return;
+    }
+
+    for bin_data in &mut doc.doc_info.bin_data_list {
+        if !matches!(bin_data.data_type, BinDataType::Embedding) {
+            continue;
+        }
+        if !loaded_ids.contains(&bin_data.storage_id) {
+            continue;
+        }
+
+        let changed = bin_data.attr != 0x0101
+            || !matches!(bin_data.compression, BinDataCompression::Default)
+            || !matches!(bin_data.status, BinDataStatus::Success)
+            || bin_data.raw_data.is_some();
+
+        bin_data.attr = 0x0101;
+        bin_data.data_type = BinDataType::Embedding;
+        bin_data.compression = BinDataCompression::Default;
+        bin_data.status = BinDataStatus::Success;
+        bin_data.raw_data = None;
+
+        if changed {
+            report.embedded_bindata_normalized += 1;
+        }
+    }
+
+    if report.embedded_bindata_normalized > 0 {
+        doc.doc_info.raw_stream_dirty = true;
+    }
 }
 
 /// 섹션의 `section_def` 를 첫 문단의 `controls` 시작 위치에 `Control::SectionDef` 로 삽입한다.
@@ -292,14 +366,17 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
     if table.raw_ctrl_data.is_empty() {
         let materialize_hancom_table = should_materialize_hancom_table_attr(table);
         let materialize_tac_table = should_materialize_tac_table_ctrl_attr(table);
+        materialize_table_outer_margin(table, report);
+
         if materialize_hancom_table {
-            materialize_table_outer_margin(table, report);
             materialize_table_page_break(table, report);
             materialize_table_record_attr(table, report);
             materialize_table_record_row_sizes(table, report);
             materialize_table_ctrl_header_height(table, report);
             materialize_table_ctrl_header_attr(table, report);
         } else if materialize_tac_table {
+            materialize_table_page_break(table, report);
+            materialize_table_record_attr(table, report);
             materialize_table_record_row_sizes(table, report);
             materialize_table_ctrl_header_attr(table, report);
         }
@@ -314,14 +391,9 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
                 table.raw_ctrl_data[2],
                 table.raw_ctrl_data[3],
             ]);
-            if materialize_hancom_table || materialize_tac_table {
-                if table.attr != packed {
-                    table.attr = packed;
-                    report.tables_attr_packed += 1;
-                }
-            } else {
-                table.raw_ctrl_data[0..4].copy_from_slice(&0u32.to_le_bytes());
-                table.attr = 0;
+            if table.attr != packed {
+                table.attr = packed;
+                report.tables_attr_packed += 1;
             }
         }
     }
