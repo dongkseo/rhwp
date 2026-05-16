@@ -41,6 +41,8 @@ pub struct PaginationResult {
     pub hidden_empty_paras: std::collections::HashSet<usize>,
     /// 섹션별 미주 목록 (문서 끝 또는 섹션 끝에 렌더)
     pub endnotes: Vec<EndnoteRef>,
+    /// [Task #836] 미주 paragraphs (endnote_para_base + idx 로 lookup)
+    pub endnote_paragraphs: Vec<crate::model::paragraph::Paragraph>,
 }
 
 /// 한 페이지에 배치될 콘텐츠

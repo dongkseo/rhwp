@@ -18,6 +18,9 @@ use crate::renderer::height_measurer::MeasuredTable;
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::ResolvedStyleSet;
 use crate::renderer::{hwpunit_to_px, DEFAULT_DPI};
+
+// [Task #836] 미주 paragraph의 가상 para_index = paragraphs.len() + endnote 내 순번.
+// rendering.rs에서 paragraphs + endnote_paragraphs를 합쳐서 전달.
 use super::pagination::{
     PaginationResult, PageContent, ColumnContent, PageItem,
     HeaderFooterRef, FootnoteRef, FootnoteSource, EndnoteRef,
@@ -134,6 +137,7 @@ struct TypesetState {
     hidden_empty_paras: std::collections::HashSet<usize>,
     /// [Task #836] 미주 목록 (섹션별 수집, 문서 끝에 렌더).
     endnotes: Vec<EndnoteRef>,
+    endnote_paragraphs: Vec<Paragraph>,
     /// [Task #362] Square wrap 표의 column_start (HU). -1 = 비활성. 후속 같은 cs/sw paragraph 흡수용.
     wrap_around_cs: i32,
     /// [Task #362] Square wrap 표의 segment_width (HU). -1 = 비활성.
@@ -201,6 +205,7 @@ impl TypesetState {
             hidden_empty_page_idx: usize::MAX,
             hidden_empty_paras: std::collections::HashSet::new(),
             endnotes: Vec::new(),
+            endnote_paragraphs: Vec::new(),
             wrap_around_cs: -1,
             wrap_around_sw: -1,
             wrap_around_table_para: 0,
@@ -1042,6 +1047,33 @@ impl TypesetEngine {
             }
         }
 
+        // [Task #836] 미주 paragraphs를 본문 흐름에 가상 삽입
+        // 한컴 정합: 미주는 섹션 마지막에 일반 본문처럼 2단 레이아웃 플로우를 따름
+        // 미주 paragraphs를 endnote_paragraphs Vec에 모으고, ENDNOTE_PARA_BASE 이상 인덱스로 마킹
+        if !st.endnotes.is_empty() {
+            let endnote_refs: Vec<EndnoteRef> = st.endnotes.clone();
+            for en_ref in &endnote_refs {
+                if let Some(para) = paragraphs.get(en_ref.para_index) {
+                    if let Some(Control::Endnote(en_ctrl)) = para.controls.get(en_ref.control_index) {
+                        for en_para in en_ctrl.paragraphs.iter() {
+                            let en_para_idx = paragraphs.len() + st.endnote_paragraphs.len();
+                            st.endnote_paragraphs.push(en_para.clone());
+
+                            let composed = crate::renderer::composer::compose_paragraph(en_para);
+                            let fmt = self.format_paragraph(en_para, Some(&composed), &styles);
+                            let available = st.available_height();
+
+                            if st.current_height + fmt.height_for_fit > available && !st.current_items.is_empty() {
+                                st.advance_column_or_new_page();
+                            }
+                            st.current_items.push(PageItem::FullParagraph { para_index: en_para_idx });
+                            st.current_height += if st.col_count > 1 { fmt.height_for_fit } else { fmt.total_height };
+                        }
+                    }
+                }
+            }
+        }
+
         // 마지막 항목 처리
         if !st.current_items.is_empty() {
             st.flush_column_always();
@@ -1054,7 +1086,7 @@ impl TypesetEngine {
             &new_page_numbers, &page_hides, section_index,
         );
 
-        PaginationResult { pages: st.pages, wrap_around_paras: Vec::new(), hidden_empty_paras: st.hidden_empty_paras, endnotes: st.endnotes }
+        PaginationResult { pages: st.pages, wrap_around_paras: Vec::new(), hidden_empty_paras: st.hidden_empty_paras, endnotes: st.endnotes, endnote_paragraphs: st.endnote_paragraphs }
     }
 
     // ========================================================
