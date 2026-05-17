@@ -19,6 +19,12 @@ fn main() {
         Some("diag") => diag_document(&args[2..]),
         Some("convert") => convert_hwp(&args[2..]),
         Some("build-from-ingest") => build_from_ingest(&args[2..]),
+        Some("hwp5-inventory") => rhwp::diagnostics::hwp5_inventory::run(&args[2..]),
+        Some("hwp5-inventory-diff") => rhwp::diagnostics::hwp5_inventory_diff::run(&args[2..]),
+        Some("hwp5-contract-analyze") => rhwp::diagnostics::hwp5_contract_analyze::run(&args[2..]),
+        Some("hwp5-ctrl-data-trace") => rhwp::diagnostics::hwp5_ctrl_data_trace::run(&args[2..]),
+        Some("hwp5-contract-probe") => rhwp::diagnostics::hwp5_contract_probe::run(&args[2..]),
+        Some("hwp5-table-probe") => rhwp::diagnostics::hwp5_table_probe::run(&args[2..]),
         Some("dump-records") => dump_raw_records(&args[2..]),
         Some("test-shape") => test_shape_roundtrip(&args[2..]),
         Some("test-caption") => test_caption(&args[2..]),
@@ -99,7 +105,25 @@ fn print_help() {
     println!("  diag <파일.hwp>");
     println!("      문서 구조 진단 (번호/글머리표/개요 분석)");
     println!();
-    println!("  convert <입력.hwp> <출력.hwp>");
+    println!("  hwp5-inventory <파일.hwp> [--format jsonl|md] [--section N] [--out <path>]");
+    println!("      HWP5 DocInfo/BodyText record inventory 생성 (HWPX→HWP contract 분석용)");
+    println!();
+    println!("  hwp5-inventory-diff <oracle.hwp> <generated.hwp> [--align index|lcs] [--report diff|hints|bundles|table-fields|table-probe-plan] [--focus all|table|shape|ctrl|missing|docinfo] [--window N] [--format jsonl|md] [--section N] [--out <path>]");
+    println!("      HWP5 inventory 비교 결과, contract 후보 힌트, 후보 주변 bundle 생성");
+    println!();
+    println!("  hwp5-contract-analyze <source.hwpx> <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      HWPX/HWP oracle/generated record-control contract graph 분석 보고서 생성");
+    println!();
+    println!("  hwp5-ctrl-data-trace <oracle.hwp> <generated.hwp> --out <path> [--section N] [--record-index N]");
+    println!("      oracle/generated CTRL_DATA ParameterSet 구조 추적 보고서 생성");
+    println!();
+    println!("  hwp5-contract-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      DocInfo MEMO_SHAPE/ID_MAPPINGS와 누락 CTRL_DATA 축별 판정용 HWP probe 생성");
+    println!();
+    println!("  hwp5-table-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      TABLE/CTRL_HEADER(Table) field 축별 판정용 HWP probe 생성");
+    println!();
+    println!("  convert <입력.hwp|입력.hwpx> <출력.hwp>");
     println!("      배포용(읽기전용) HWP를 편집 가능한 HWP로 변환");
     println!();
     println!("  ir-diff <파일A.hwpx> <파일B.hwp> [-s <구역>] [-p <문단>]");
@@ -2288,7 +2312,7 @@ fn diag_document(args: &[String]) {
 fn convert_hwp(args: &[String]) {
     if args.len() < 2 {
         eprintln!("오류: 입력 파일과 출력 파일 경로를 지정해주세요.");
-        eprintln!("사용법: rhwp convert <입력.hwp> <출력.hwp>");
+        eprintln!("사용법: rhwp convert <입력.hwp|입력.hwpx> <출력.hwp>");
         return;
     }
 
@@ -2332,7 +2356,7 @@ fn convert_hwp(args: &[String]) {
     }
 
     // 직렬화
-    match doc.export_hwp_native() {
+    match doc.export_hwp_with_adapter() {
         Ok(bytes) => {
             match fs::write(output_path, &bytes) {
                 Ok(_) => {

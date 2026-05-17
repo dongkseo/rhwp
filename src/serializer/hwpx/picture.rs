@@ -49,6 +49,7 @@ pub fn write_picture<W: Write>(
     let tw = text_wrap_str(pic.common.text_wrap);
     let tf = text_flow_str(pic.common.text_wrap);
     let instid = pic.instance_id.to_string();
+    let href = pic.href.as_deref().unwrap_or("");
 
     start_tag_attrs(
         w,
@@ -61,7 +62,7 @@ pub fn write_picture<W: Write>(
             ("textFlow", tf),
             ("lock", "0"),
             ("dropcapstyle", "None"),
-            ("href", ""),
+            ("href", href),
             ("groupLevel", "0"),
             ("instid", &instid),
             ("reverse", "0"),
@@ -120,7 +121,12 @@ fn write_rotation_info<W: Write>(w: &mut Writer<W>) -> Result<(), SerializeError
     empty_tag(
         w,
         "hp:rotationInfo",
-        &[("angle", "0"), ("centerX", "0"), ("centerY", "0"), ("rotateimage", "0")],
+        &[
+            ("angle", "0"),
+            ("centerX", "0"),
+            ("centerY", "0"),
+            ("rotateimage", "0"),
+        ],
     )
 }
 
@@ -188,8 +194,12 @@ fn write_in_margin<W: Write>(w: &mut Writer<W>, p: &Picture) -> Result<(), Seria
 
 fn write_img_dim<W: Write>(w: &mut Writer<W>, p: &Picture) -> Result<(), SerializeError> {
     // imgDim은 원본 크기의 clip 적용 결과. 간이 구현.
-    let dw = (p.common.width as i32 - p.crop.left - p.crop.right).max(0).to_string();
-    let dh = (p.common.height as i32 - p.crop.top - p.crop.bottom).max(0).to_string();
+    let dw = (p.common.width as i32 - p.crop.left - p.crop.right)
+        .max(0)
+        .to_string();
+    let dh = (p.common.height as i32 - p.crop.top - p.crop.bottom)
+        .max(0)
+        .to_string();
     empty_tag(w, "hp:imgDim", &[("dimwidth", &dw), ("dimheight", &dh)])
 }
 
@@ -284,7 +294,11 @@ fn write_out_margin<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<()
 // ---------- 변환 헬퍼 ----------
 
 fn bool01(b: bool) -> &'static str {
-    if b { "1" } else { "0" }
+    if b {
+        "1"
+    } else {
+        "0"
+    }
 }
 
 fn text_wrap_str(w: TextWrap) -> &'static str {
@@ -430,7 +444,11 @@ mod tests {
         let err = write_picture(&mut w, &pic, &ctx).unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("binaryItemIDRef"), "error msg: {}", msg);
-        assert!(msg.contains("99"), "error should include bin_data_id: {}", msg);
+        assert!(
+            msg.contains("99"),
+            "error should include bin_data_id: {}",
+            msg
+        );
     }
 
     #[test]

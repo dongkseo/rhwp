@@ -780,6 +780,11 @@ fn parse_table(
             b"colCnt" => table.col_count = parse_u16(&attr),
             b"cellSpacing" => table.cell_spacing = parse_i16(&attr),
             b"borderFillIDRef" => table.border_fill_id = parse_u16(&attr),
+            b"noAdjust" => {
+                if attr_str(&attr) == "1" {
+                    table.attr |= 0x08;
+                }
+            }
             b"pageBreak" => {
                 let val = attr_str(&attr);
                 table.page_break = match val.as_str() {
@@ -1231,6 +1236,7 @@ fn parse_picture(
     let mut padding = crate::model::Padding::default();
     let mut border_x = [0i32; 4];
     let mut border_y = [0i32; 4];
+    let mut href: Option<String> = None;
 
     // <hp:pic> 요소 자체의 속성 파싱
     for attr in e.attributes().flatten() {
@@ -1248,6 +1254,12 @@ fn parse_picture(
                 };
             }
             b"instid" => common.instance_id = parse_u32(&attr),
+            b"href" => {
+                let value = attr_str(&attr);
+                if !value.is_empty() {
+                    href = Some(value);
+                }
+            }
             b"groupLevel" => shape_attr.group_level = attr_str(&attr).parse().unwrap_or(0),
             _ => {}
         }
@@ -1498,6 +1510,7 @@ fn parse_picture(
     pic.image_attr = img_attr;
     pic.common = common;
     pic.shape_attr = shape_attr;
+    pic.href = href;
     pic.crop = crop;
     pic.padding = padding;
     pic.border_x = border_x;
@@ -2097,11 +2110,18 @@ fn parse_draw_text(reader: &mut Reader<&[u8]>, text_box: &mut TextBox) -> Result
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
                                 b"vertAlign" => {
-                                    text_box.vertical_align = match attr_str(&attr).as_str() {
-                                        "CENTER" => VerticalAlign::Center,
-                                        "BOTTOM" => VerticalAlign::Bottom,
+                                    let align_code = match attr_str(&attr).as_str() {
+                                        "CENTER" => 1_u32,
+                                        "BOTTOM" => 2_u32,
+                                        _ => 0_u32,
+                                    };
+                                    text_box.vertical_align = match align_code {
+                                        1 => VerticalAlign::Center,
+                                        2 => VerticalAlign::Bottom,
                                         _ => VerticalAlign::Top,
                                     };
+                                    text_box.list_attr =
+                                        (text_box.list_attr & !(0b11 << 5)) | (align_code << 5);
                                 }
                                 _ => {}
                             }
@@ -2164,6 +2184,9 @@ fn parse_shape_object(
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"shapeComment" => {
+                common.description = read_dutmal_text(reader, b"shapeComment")?;
+            }
             Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());

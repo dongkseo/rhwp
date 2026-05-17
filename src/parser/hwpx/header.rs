@@ -6,8 +6,9 @@
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use crate::model::document::{DocInfo, DocProperties};
+use crate::model::document::{DocInfo, DocProperties, RawRecord};
 use crate::model::style::*;
+use crate::parser::tags;
 
 use super::HwpxError;
 use super::utils::{local_name, attr_str, parse_u8, parse_i8, parse_u16, parse_i16, parse_u32, parse_i32, parse_color, parse_bool, parse_hatch_style};
@@ -140,6 +141,9 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                     b"numbering" => {
                         parse_numbering(e, &mut reader, &mut doc_info)?;
                     }
+                    b"memoPr" => {
+                        parse_memo_shape(e, &mut doc_info);
+                    }
                     _ => {}
                 }
             }
@@ -161,6 +165,9 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                         }
                         doc_info.tab_defs.push(td);
                     }
+                    b"memoPr" => {
+                        parse_memo_shape(e, &mut doc_info);
+                    }
                     _ => {}
                 }
             }
@@ -174,6 +181,75 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
     doc_props.section_count = 1; // content.hpf에서 갱신됨
 
     Ok((doc_info, doc_props))
+}
+
+fn parse_memo_shape(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
+    let mut width = 0u32;
+    let mut line_width = 0u8;
+    let mut line_type = 0u8;
+    let mut line_color = 0u32;
+    let mut fill_color = 0u32;
+    let mut active_color = 0u32;
+    let mut memo_type = 0u32;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"width" => width = parse_u32(&attr),
+            b"lineWidth" => line_width = parse_u8(&attr),
+            b"lineType" => line_type = parse_memo_line_type(&attr_str(&attr)),
+            b"lineColor" => line_color = parse_color(&attr),
+            b"fillColor" => fill_color = parse_color(&attr),
+            b"activeColor" => active_color = parse_color(&attr),
+            b"memoType" => memo_type = parse_memo_type(&attr_str(&attr)),
+            _ => {}
+        }
+    }
+
+    let mut data = Vec::with_capacity(22);
+    data.extend_from_slice(&width.to_le_bytes());
+    data.push(line_type);
+    data.push(line_width);
+    data.extend_from_slice(&line_color.to_le_bytes());
+    data.extend_from_slice(&fill_color.to_le_bytes());
+    data.extend_from_slice(&active_color.to_le_bytes());
+    data.extend_from_slice(&memo_type.to_le_bytes());
+
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_MEMO_SHAPE,
+        level: 1,
+        data,
+    });
+    doc_info.memo_shape_count = doc_info
+        .extra_records
+        .iter()
+        .filter(|record| record.tag_id == tags::HWPTAG_MEMO_SHAPE)
+        .count() as u32;
+}
+
+fn parse_memo_line_type(value: &str) -> u8 {
+    match value {
+        "SOLID" => 0,
+        "DOT" => 1,
+        "DASH_DOT" => 2,
+        "DASH" => 3,
+        "DASH_DOT_DOT" => 4,
+        "LONG_DASH" => 5,
+        "CIRCLE" => 6,
+        "DOUBLE_SLIM" => 7,
+        "SLIM_THICK" => 8,
+        "THICK_SLIM" => 9,
+        "SLIM_THICK_SLIM" => 10,
+        "WAVE" => 11,
+        "DOUBLE_WAVE" => 12,
+        _ => 0,
+    }
+}
+
+fn parse_memo_type(value: &str) -> u32 {
+    match value {
+        "NOMAL" | "NORMAL" | "" => 0,
+        _ => 0,
+    }
 }
 
 // ─── beginNum ───
@@ -1334,6 +1410,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_parse_hwpx_memo_shape_record() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:memoProperties itemCnt="1">
+      <hh:memoPr id="1" width="15591" lineWidth="5" lineType="DASH"
+        lineColor="#A9A9A9" fillColor="#FDFCC6" activeColor="#C0DBFB"
+        memoType="NOMAL"/>
+    </hh:memoProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let memo_records: Vec<_> = doc_info
+            .extra_records
+            .iter()
+            .filter(|record| record.tag_id == tags::HWPTAG_MEMO_SHAPE)
+            .collect();
+
+        assert_eq!(doc_info.memo_shape_count, 1);
+        assert_eq!(memo_records.len(), 1);
+        assert_eq!(
+            memo_records[0].data,
+            vec![
+                0xe7, 0x3c, 0x00, 0x00, 0x03, 0x05, 0xa9, 0xa9, 0xa9, 0x00, 0xfd, 0xfc,
+                0xc6, 0x00, 0xc0, 0xdb, 0xfb, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ]
+        );
     }
 
     #[test]

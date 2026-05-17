@@ -130,19 +130,21 @@ pub fn serialize_control(
         }
     }
 
-    // CTRL_DATA 레코드 복원: CTRL_HEADER 바로 다음에 삽입 (라운드트립 보존)
-    // Picture/Shape 컨트롤은 SHAPE_COMPONENT 내부(level+2)에도 추가 배치됨
+    // CTRL_DATA 레코드 복원: 일반 컨트롤은 CTRL_HEADER 바로 다음에 삽입한다.
+    // Picture/Shape 컨트롤은 각 serializer가 SHAPE_COMPONENT 자식(level+2)으로 배치한다.
     if let Some(data) = ctrl_data_record {
-        let ctrl_data_pos = insert_pos + 1; // CTRL_HEADER 바로 다음
-        records.insert(
-            ctrl_data_pos,
-            Record {
-                tag_id: tags::HWPTAG_CTRL_DATA,
-                level: level + 1,
-                size: data.len() as u32,
-                data: data.to_vec(),
-            },
-        );
+        if !matches!(ctrl, Control::Picture(_) | Control::Shape(_)) {
+            let ctrl_data_pos = insert_pos + 1; // CTRL_HEADER 바로 다음
+            records.insert(
+                ctrl_data_pos,
+                Record {
+                    tag_id: tags::HWPTAG_CTRL_DATA,
+                    level: level + 1,
+                    size: data.len() as u32,
+                    data: data.to_vec(),
+                },
+            );
+        }
     }
 }
 

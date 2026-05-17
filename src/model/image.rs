@@ -1,8 +1,8 @@
 //! 그림 개체 (Picture, ImageData, CropInfo)
 
-use super::*;
 use super::shape::{CommonObjAttr, ShapeComponentAttr};
 use super::style::ShapeBorderLine;
+use super::*;
 
 /// 그림 개체 (HWPTAG_SHAPE_COMPONENT_PICTURE)
 #[derive(Debug, Default, Clone)]
@@ -27,6 +27,11 @@ pub struct Picture {
     pub padding: Padding,
     /// 그림 속성
     pub image_attr: ImageAttr,
+    /// HWPX `<hp:pic href="...">` 값.
+    ///
+    /// 한컴 HWP 저장 결과에서는 이 값이 그림 컨트롤 뒤의 CTRL_DATA ParameterSet
+    /// (`ps_id=0x021b -> ps_id=0x026f -> id=0x0265 string`) 으로 materialize된다.
+    pub href: Option<String>,
     /// 테두리 투명도
     pub border_opacity: u8,
     /// 인스턴스 ID
@@ -68,8 +73,7 @@ impl ImageAttr {
     /// 워터마크 효과가 적용되어 있는지 식별 (Task #516).
     /// effect 가 RealPic 이 아니고 brightness/contrast 중 하나라도 변경된 경우.
     pub fn is_watermark(&self) -> bool {
-        !matches!(self.effect, ImageEffect::RealPic)
-            && (self.brightness != 0 || self.contrast != 0)
+        !matches!(self.effect, ImageEffect::RealPic) && (self.brightness != 0 || self.contrast != 0)
     }
 
     /// 한컴 자동 워터마크 프리셋 정합 여부 (Task #516).
@@ -144,7 +148,12 @@ mod tests {
 
     #[test]
     fn test_crop_info() {
-        let crop = CropInfo { left: 100, top: 200, right: 300, bottom: 400 };
+        let crop = CropInfo {
+            left: 100,
+            top: 200,
+            right: 300,
+            bottom: 400,
+        };
         assert_eq!(crop.left, 100);
     }
 

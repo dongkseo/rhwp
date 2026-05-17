@@ -35,6 +35,24 @@ fn test_serialize_document_properties() {
 }
 
 #[test]
+fn test_serialize_id_mappings_uses_modern_count_table_size() {
+    let mut doc_info = DocInfo::default();
+    doc_info.font_faces = vec![Vec::new(); 7];
+    doc_info.memo_shape_count = 1;
+
+    let data = serialize_id_mappings(&doc_info);
+    assert_eq!(data.len(), 72);
+
+    let mut r = crate::parser::byte_reader::ByteReader::new(&data);
+    for _ in 0..15 {
+        r.read_u32().unwrap();
+    }
+    assert_eq!(r.read_u32().unwrap(), 1);
+    assert_eq!(r.read_u32().unwrap(), 0);
+    assert_eq!(r.read_u32().unwrap(), 0);
+}
+
+#[test]
 fn test_serialize_face_name_simple() {
     let font = Font {
         raw_data: None,

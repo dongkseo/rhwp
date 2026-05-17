@@ -5,6 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 pub mod document_core;
+pub mod diagnostics;
 pub mod error;
 pub mod model;
 pub mod paint;

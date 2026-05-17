@@ -169,6 +169,11 @@ pub fn serialize_id_mappings(doc_info: &DocInfo) -> Vec<u8> {
     w.write_u32(doc_info.styles.len() as u32).unwrap();
     // memo_shape_count (5.0.2.x 이후, 파싱 시 보존된 값 사용)
     w.write_u32(doc_info.memo_shape_count).unwrap();
+    // 최근 한컴 생성 HWP는 ID_MAPPINGS 뒤쪽 reserved count 2개까지 포함한
+    // 18개 u32 테이블을 쓴다. HWPX에서 DocInfo를 새로 구성할 때도 이
+    // 길이를 맞춰 한컴의 DocInfo contract와 동일한 형태로 직렬화한다.
+    w.write_u32(0).unwrap();
+    w.write_u32(0).unwrap();
 
     w.into_bytes()
 }

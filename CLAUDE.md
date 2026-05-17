@@ -290,6 +290,7 @@ HWPX↔HWP 불일치 디버깅 시 추가 단계:
 | `output/re/` | 재현검증용 샘플 (`re_sample_gen.rs` 테스트 자동 생성) |
 | `output/svg/` | SVG 내보내기 기본 출력 (`rhwp export-svg`) |
 | `output/debug/` | 디버그 오버레이 HTML (`rhwp export-svg --debug-overlay`) |
+| `output/poc/` | POC, 작업지시자 시각 판정, HWPX→HWP inventory/probe 산출물 |
 
 ### E2E 테스트
 

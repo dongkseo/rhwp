@@ -9671,6 +9671,7 @@
             crop: ref_pic.crop.clone(),
             padding: ref_pic.padding.clone(),
             image_attr: ref_pic.image_attr.clone(),
+            href: ref_pic.href.clone(),
             border_opacity: ref_pic.border_opacity,
             instance_id: ref_pic.instance_id,
             raw_picture_extra: ref_pic.raw_picture_extra.clone(),
@@ -10499,6 +10500,7 @@
             crop: ref_pic.crop.clone(),
             padding: ref_pic.padding.clone(),
             image_attr: ref_pic.image_attr.clone(),
+            href: ref_pic.href.clone(),
             border_opacity: ref_pic.border_opacity,
             instance_id: ref_pic.instance_id,
             raw_picture_extra: ref_pic.raw_picture_extra.clone(),
@@ -11968,6 +11970,95 @@
         let tree = doc.build_page_tree(1).unwrap(); // 페이지 2 (인덱스 1)
         let images = find_images(&tree.root);
         assert!(images.len() >= 2, "페이지 2에 이미지 2개 이상 렌더링되어야 함 (실제: {}개)", images.len());
+    }
+
+    #[test]
+    fn test_hy001_textbox_inline_pictures_render_for_hwp_and_hwpx() {
+        use crate::model::shape::ShapeObject;
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        fn collect_image_positions(node: &RenderNode, out: &mut Vec<(u16, f64)>) {
+            if let RenderNodeType::Image(img) = &node.node_type {
+                out.push((img.bin_data_id, node.bbox.x));
+            }
+            for child in &node.children {
+                collect_image_positions(child, out);
+            }
+        }
+
+        fn assert_textbox_picture_roundtrip(path: &str) {
+            if !std::path::Path::new(path).exists() {
+                eprintln!("SKIP: {} 없음", path);
+                return;
+            }
+
+            let data = std::fs::read(path).unwrap();
+            let doc = HwpDocument::from_bytes(&data).unwrap();
+            let para = &doc.document.sections[0].paragraphs[27];
+            let shape = para
+                .controls
+                .iter()
+                .find_map(|ctrl| match ctrl {
+                    Control::Shape(shape) => Some(shape.as_ref()),
+                    _ => None,
+                })
+                .expect("hy-001 paragraph 27 should contain a shape control");
+
+            let text_box = match shape {
+                ShapeObject::Rectangle(rect) => rect.drawing.text_box.as_ref(),
+                _ => None,
+            }
+            .expect("hy-001 shape should contain a text box");
+
+            let textbox_picture_ids: Vec<u16> = text_box
+                .paragraphs
+                .iter()
+                .flat_map(|p| &p.controls)
+                .filter_map(|ctrl| match ctrl {
+                    Control::Picture(pic) => Some(pic.image_attr.bin_data_id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                textbox_picture_ids,
+                vec![2, 3],
+                "{}: text box should keep picture controls for BinData 2 and 3",
+                path
+            );
+
+            let tree = doc.build_page_tree(1).unwrap();
+            let mut rendered_images = Vec::new();
+            collect_image_positions(&tree.root, &mut rendered_images);
+            let rendered_image_ids: Vec<u16> =
+                rendered_images.iter().map(|(id, _)| *id).collect();
+            assert!(
+                rendered_image_ids.contains(&2) && rendered_image_ids.contains(&3),
+                "{}: page 2 render tree should contain text box images BinData 2 and 3 (actual: {:?})",
+                path,
+                rendered_image_ids
+            );
+
+            let image2_x = rendered_images
+                .iter()
+                .find_map(|(id, x)| (*id == 2).then_some(*x))
+                .expect("BinData 2 should be rendered");
+            let image3_x = rendered_images
+                .iter()
+                .find_map(|(id, x)| (*id == 3).then_some(*x))
+                .expect("BinData 3 should be rendered");
+            let gap = image3_x - image2_x;
+            assert!(
+                (525.0..=550.0).contains(&gap),
+                "{}: text box TAC pictures should preserve Hancom-width space advance between controls (x2={:.1}, x3={:.1}, gap={:.1})",
+                path,
+                image2_x,
+                image3_x,
+                gap
+            );
+        }
+
+        assert_textbox_picture_roundtrip("samples/hwpx/hancom-hwp/hy-001.hwp");
+        assert_textbox_picture_roundtrip("samples/hwpx/hy-001.hwpx");
     }
 
     /// 타스크 79: 투명선 표시 기능 — show_transparent_borders=true 시 추가 Line 노드 생성 검증

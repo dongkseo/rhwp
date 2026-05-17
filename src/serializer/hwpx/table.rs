@@ -62,6 +62,7 @@ pub fn write_table<W: Write>(
     let col_cnt = table.col_count.to_string();
     let cell_spacing = table.cell_spacing.to_string();
     let border_fill_id_ref = table.border_fill_id.to_string();
+    let no_adjust = bool01(table.attr & 0x08 != 0);
 
     start_tag_attrs(
         w,
@@ -80,7 +81,7 @@ pub fn write_table<W: Write>(
             ("colCnt", &col_cnt),
             ("cellSpacing", &cell_spacing),
             ("borderFillIDRef", &border_fill_id_ref),
-            ("noAdjust", "0"),
+            ("noAdjust", no_adjust),
         ],
     )?;
 

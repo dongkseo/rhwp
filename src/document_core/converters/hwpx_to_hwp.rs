@@ -19,8 +19,9 @@
 use crate::model::bin_data::{BinDataStatus, BinDataType};
 use crate::model::control::Control;
 use crate::model::document::{Document, Section};
+use crate::model::image::Picture;
 use crate::model::paragraph::Paragraph;
-use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
+use crate::model::shape::ShapeObject;
 use crate::model::style::{BorderFill, BorderLineType, FillType};
 use crate::model::table::{Cell, Table, TablePageBreak};
 use crate::parser::FileFormat;
@@ -44,12 +45,12 @@ pub struct AdapterReport {
     pub tables_outer_margin_materialized: u32,
     /// HWPX 표 CTRL_HEADER attr 중 한컴 HWP 저장 관례 비트 보강 횟수
     pub table_ctrl_header_attr_materialized: u32,
-    /// HWPX 표 CTRL_HEADER height 를 TABLE row_sizes 합산값으로 보강한 횟수
-    pub table_ctrl_header_height_materialized: u32,
     /// HWPX 표 TABLE record attr 중 한컴 저장 관례 비트 보강 횟수
     pub table_record_attr_materialized: u32,
     /// HWPX 표 TABLE record row-size payload 를 행별 셀 수로 보강한 횟수
     pub table_record_row_sizes_materialized: u32,
+    /// HWPX 표 TABLE record trailing zone/count payload 를 한컴 저장 관례로 보강한 횟수
+    pub table_record_extra_materialized: u32,
     /// `cell.list_attr bit 16` 보강 횟수 (Stage 3)
     pub cells_list_attr_bit16_set: u32,
     /// paragraph/char shape 참조 BorderFill 무채움 정규화 횟수
@@ -62,6 +63,8 @@ pub struct AdapterReport {
     pub bin_data_metadata_normalized: u32,
     /// `Control::SectionDef` 컨트롤 삽입 횟수 (Stage 4 — 섹션 개수)
     pub section_def_controls_inserted: u32,
+    /// HWPX `hp:pic@href` 를 HWP CTRL_DATA ParameterSet 으로 materialize한 횟수
+    pub picture_href_ctrl_data_materialized: u32,
 }
 
 impl AdapterReport {
@@ -82,15 +85,16 @@ impl AdapterReport {
                 + self.tables_page_break_materialized
                 + self.tables_outer_margin_materialized
                 + self.table_ctrl_header_attr_materialized
-                + self.table_ctrl_header_height_materialized
                 + self.table_record_attr_materialized
                 + self.table_record_row_sizes_materialized
+                + self.table_record_extra_materialized
                 + self.cells_list_attr_bit16_set
                 + self.border_fills_no_fill_normalized
                 + self.file_header_compression_normalized
                 + self.doc_properties_section_count_normalized
                 + self.bin_data_metadata_normalized
-                + self.section_def_controls_inserted)
+                + self.section_def_controls_inserted
+                + self.picture_href_ctrl_data_materialized)
                 > 0
     }
 }
@@ -335,8 +339,29 @@ fn collect_object_border_fill_refs_from_paragraph(
     refs: &mut std::collections::HashSet<u16>,
 ) {
     for ctrl in &para.controls {
-        if let Control::Table(table) = ctrl {
-            collect_table_border_fill_refs(table, refs);
+        match ctrl {
+            Control::Table(table) => collect_table_border_fill_refs(table, refs),
+            Control::Shape(shape) => collect_object_border_fill_refs_from_shape(shape, refs),
+            _ => {}
+        }
+    }
+}
+
+fn collect_object_border_fill_refs_from_shape(
+    shape: &ShapeObject,
+    refs: &mut std::collections::HashSet<u16>,
+) {
+    if let Some(drawing) = shape.drawing() {
+        if let Some(text_box) = &drawing.text_box {
+            for para in &text_box.paragraphs {
+                collect_object_border_fill_refs_from_paragraph(para, refs);
+            }
+        }
+    }
+
+    if let ShapeObject::Group(group) = shape {
+        for child in &group.children {
+            collect_object_border_fill_refs_from_shape(child, refs);
         }
     }
 }
@@ -381,28 +406,98 @@ fn is_transparent_paragraph_no_fill_candidate(border_fill: &BorderFill) -> bool 
 }
 
 fn adapt_paragraph(para: &mut Paragraph, report: &mut AdapterReport) {
-    for ctrl in &mut para.controls {
-        if let Control::Table(table) = ctrl {
-            adapt_table(table, report);
+    if para.ctrl_data_records.len() < para.controls.len() {
+        para.ctrl_data_records
+            .resize_with(para.controls.len(), || None);
+    }
+
+    let controls = &mut para.controls;
+    let ctrl_data_records = &mut para.ctrl_data_records;
+    for (idx, ctrl) in controls.iter_mut().enumerate() {
+        match ctrl {
+            Control::Table(table) => adapt_table(table, report),
+            Control::Picture(pic) => {
+                adapt_picture_href_ctrl_data(pic, &mut ctrl_data_records[idx], report)
+            }
+            Control::Shape(shape) => adapt_shape(shape, report),
+            _ => {}
         }
+    }
+}
+
+fn adapt_shape(shape: &mut ShapeObject, report: &mut AdapterReport) {
+    if let Some(drawing) = shape.drawing_mut() {
+        if let Some(text_box) = &mut drawing.text_box {
+            for para in &mut text_box.paragraphs {
+                adapt_paragraph(para, report);
+            }
+        }
+    }
+
+    if let ShapeObject::Group(group) = shape {
+        for child in &mut group.children {
+            adapt_shape(child, report);
+        }
+    }
+}
+
+fn adapt_picture_href_ctrl_data(
+    pic: &Picture,
+    ctrl_data_slot: &mut Option<Vec<u8>>,
+    report: &mut AdapterReport,
+) {
+    let Some(href) = pic.href.as_deref().filter(|value| !value.is_empty()) else {
+        return;
+    };
+
+    let ctrl_data = build_picture_href_ctrl_data(href);
+    if ctrl_data_slot.as_deref() == Some(ctrl_data.as_slice()) {
+        return;
+    }
+
+    *ctrl_data_slot = Some(ctrl_data);
+    report.picture_href_ctrl_data_materialized += 1;
+}
+
+fn build_picture_href_ctrl_data(href: &str) -> Vec<u8> {
+    let hwp_href = normalize_picture_href_for_hwp_ctrl_data(href);
+    let utf16: Vec<u16> = hwp_href.encode_utf16().collect();
+
+    let mut data = Vec::with_capacity(22 + utf16.len() * 2);
+    data.extend_from_slice(&0x021b_u16.to_le_bytes());
+    data.extend_from_slice(&1_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&0x026f_u16.to_le_bytes());
+    data.extend_from_slice(&0x8000_u16.to_le_bytes());
+    data.extend_from_slice(&0x026f_u16.to_le_bytes());
+    data.extend_from_slice(&1_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&0x0265_u16.to_le_bytes());
+    data.extend_from_slice(&0x0001_u16.to_le_bytes());
+    data.extend_from_slice(&(utf16.len().min(u16::MAX as usize) as u16).to_le_bytes());
+    for ch in utf16.into_iter().take(u16::MAX as usize) {
+        data.extend_from_slice(&ch.to_le_bytes());
+    }
+    data
+}
+
+fn normalize_picture_href_for_hwp_ctrl_data(href: &str) -> String {
+    if href.contains("\\://") {
+        href.to_string()
+    } else {
+        href.replace("://", "\\://")
     }
 }
 
 fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
     // 1. raw_ctrl_data 합성 (HWPX 출처는 비어있음)
     if table.raw_ctrl_data.is_empty() {
-        let materialize_hancom_table = should_materialize_hancom_table_attr(table);
-        let materialize_tac_table = should_materialize_tac_table_ctrl_attr(table);
+        materialize_table_outer_margin(table, report);
+        materialize_table_page_break(table, report);
+        materialize_table_record_attr(table, report);
         materialize_table_record_row_sizes(table, report);
-        if materialize_hancom_table {
-            materialize_table_outer_margin(table, report);
-            materialize_table_page_break(table, report);
-            materialize_table_record_attr(table, report);
-            materialize_table_ctrl_header_height(table, report);
-            materialize_table_ctrl_header_attr(table, report);
-        } else if materialize_tac_table {
-            materialize_table_ctrl_header_attr(table, report);
-        }
+        materialize_table_record_extra(table, report);
+        materialize_table_ctrl_header_attr(table, report);
 
         table.raw_ctrl_data = serialize_common_obj_attr(&table.common);
         report.tables_ctrl_data_synthesized += 1;
@@ -414,14 +509,9 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
                 table.raw_ctrl_data[2],
                 table.raw_ctrl_data[3],
             ]);
-            if materialize_hancom_table || materialize_tac_table {
-                if table.attr != packed {
-                    table.attr = packed;
-                    report.tables_attr_packed += 1;
-                }
-            } else {
-                table.raw_ctrl_data[0..4].copy_from_slice(&0u32.to_le_bytes());
-                table.attr = 0;
+            if table.attr != packed {
+                table.attr = packed;
+                report.tables_attr_packed += 1;
             }
         }
     }
@@ -433,19 +523,6 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
             adapt_paragraph(cpara, report);
         }
     }
-}
-
-fn should_materialize_hancom_table_attr(table: &Table) -> bool {
-    !table.common.treat_as_char
-        && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
-        && matches!(table.common.vert_rel_to, VertRelTo::Para)
-        && matches!(table.common.horz_rel_to, HorzRelTo::Column)
-        && matches!(table.page_break, TablePageBreak::CellBreak)
-        && table.repeat_header
-}
-
-fn should_materialize_tac_table_ctrl_attr(table: &Table) -> bool {
-    table.common.treat_as_char && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
 }
 
 fn materialize_table_outer_margin(table: &mut Table, report: &mut AdapterReport) {
@@ -471,22 +548,16 @@ fn materialize_table_page_break(table: &mut Table, report: &mut AdapterReport) {
 }
 
 fn materialize_table_record_attr(table: &mut Table, report: &mut AdapterReport) {
-    let mut attr = if table.raw_table_record_attr != 0 {
-        table.raw_table_record_attr
-    } else {
-        let mut a = match table.page_break {
-            TablePageBreak::CellBreak => 0x01,
-            TablePageBreak::RowBreak => 0x02,
-            TablePageBreak::None => 0,
-        };
-        if table.repeat_header {
-            a |= 0x04;
-        }
-        a
+    let mut attr = match table.page_break {
+        TablePageBreak::CellBreak => 0x01,
+        TablePageBreak::RowBreak => 0x02,
+        TablePageBreak::None => 0,
     };
-
     if table.repeat_header {
-        attr |= 0x0400_0000;
+        attr |= 0x04;
+    }
+    if table.attr & 0x08 != 0 {
+        attr |= 0x08;
     }
 
     if table.raw_table_record_attr != attr {
@@ -514,52 +585,11 @@ fn materialize_table_record_row_sizes(table: &mut Table, report: &mut AdapterRep
     }
 }
 
-fn materialize_table_ctrl_header_height(table: &mut Table, report: &mut AdapterReport) {
-    let table_height = effective_table_height(table);
-    if table_height == 0 || table.common.height == table_height {
-        return;
+fn materialize_table_record_extra(table: &mut Table, report: &mut AdapterReport) {
+    if table.raw_table_record_extra.is_empty() {
+        table.raw_table_record_extra = vec![0, 0];
+        report.table_record_extra_materialized += 1;
     }
-
-    table.common.height = table_height;
-    report.table_ctrl_header_height_materialized += 1;
-}
-
-fn effective_table_height(table: &Table) -> u32 {
-    let mut row_heights = vec![0u32; table.row_count as usize];
-    row_heights.resize(table.row_count as usize, 0);
-
-    for cell in &table.cells {
-        if cell.row_span != 1 || cell.row as usize >= row_heights.len() {
-            continue;
-        }
-
-        let declared_height = cell.height;
-        let content_height = paragraph_list_height(&cell.paragraphs);
-        let padding_height =
-            (cell.padding.top.max(0) as u32).saturating_add(cell.padding.bottom.max(0) as u32);
-        let visual_height = declared_height.max(content_height.saturating_add(padding_height));
-        if visual_height > row_heights[cell.row as usize] {
-            row_heights[cell.row as usize] = visual_height;
-        }
-    }
-
-    row_heights.into_iter().sum()
-}
-
-fn paragraph_list_height(paragraphs: &[Paragraph]) -> u32 {
-    paragraphs
-        .iter()
-        .filter_map(|para| {
-            let first = para.line_segs.first()?;
-            let last = para.line_segs.last()?;
-            let height = last
-                .vertical_pos
-                .saturating_sub(first.vertical_pos)
-                .saturating_add(last.line_height);
-            Some(height.max(0) as u32)
-        })
-        .max()
-        .unwrap_or(0)
 }
 
 fn materialize_table_ctrl_header_attr(table: &mut Table, report: &mut AdapterReport) {
@@ -567,10 +597,9 @@ fn materialize_table_ctrl_header_attr(table: &mut Table, report: &mut AdapterRep
     const HWPX_TABLE_NUMBERING_BIT: u32 = 0x0800_0000;
 
     let before = table.common.attr;
-    if table.common.attr == 0 {
-        table.common.attr = pack_common_attr_bits(&table.common);
-    }
-    table.common.attr |= HWPX_TABLE_FLOW_WITH_TEXT_BIT | HWPX_TABLE_NUMBERING_BIT;
+    table.common.attr = pack_common_attr_bits(&table.common)
+        | HWPX_TABLE_FLOW_WITH_TEXT_BIT
+        | HWPX_TABLE_NUMBERING_BIT;
 
     if table.common.attr != before {
         report.table_ctrl_header_attr_materialized += 1;
@@ -646,6 +675,71 @@ mod tests {
     }
 
     #[test]
+    fn table_axis_materializes_hancom_record_contract() {
+        use crate::model::shape::{CommonObjAttr, HorzRelTo, TextWrap, VertRelTo};
+        use crate::model::Padding;
+
+        let mut table = Table {
+            row_count: 1,
+            col_count: 3,
+            padding: Padding {
+                left: 141,
+                right: 141,
+                top: 141,
+                bottom: 141,
+            },
+            cells: (0..3)
+                .map(|col| Cell {
+                    col,
+                    row: 0,
+                    col_span: 1,
+                    row_span: 1,
+                    ..Default::default()
+                })
+                .collect(),
+            page_break: TablePageBreak::CellBreak,
+            repeat_header: true,
+            attr: 0x08,
+            common: CommonObjAttr {
+                treat_as_char: true,
+                text_wrap: TextWrap::TopAndBottom,
+                vert_rel_to: VertRelTo::Para,
+                horz_rel_to: HorzRelTo::Para,
+                width: 47697,
+                height: 3525,
+                z_order: 26,
+                ..Default::default()
+            },
+            outer_margin_left: 283,
+            outer_margin_right: 283,
+            outer_margin_top: 283,
+            outer_margin_bottom: 283,
+            border_fill_id: 3,
+            ..Default::default()
+        };
+
+        let mut report = AdapterReport::new();
+        adapt_table(&mut table, &mut report);
+
+        assert_eq!(table.raw_table_record_attr, 0x0000_000e);
+        assert_eq!(table.row_sizes, vec![3]);
+        assert_eq!(table.raw_table_record_extra, vec![0, 0]);
+        assert_eq!(
+            u32::from_le_bytes(table.raw_ctrl_data[0..4].try_into().unwrap()),
+            0x082a_2311
+        );
+        assert_eq!(
+            (
+                i16::from_le_bytes(table.raw_ctrl_data[24..26].try_into().unwrap()),
+                i16::from_le_bytes(table.raw_ctrl_data[26..28].try_into().unwrap()),
+                i16::from_le_bytes(table.raw_ctrl_data[28..30].try_into().unwrap()),
+                i16::from_le_bytes(table.raw_ctrl_data[30..32].try_into().unwrap()),
+            ),
+            (283, 283, 283, 283)
+        );
+    }
+
+    #[test]
     fn idempotent_when_called_twice() {
         let mut doc = Document::default();
         let r1 = convert_hwpx_to_hwp_ir(&mut doc);
@@ -655,6 +749,235 @@ mod tests {
         assert_eq!(r2.tables_ctrl_data_synthesized, 0);
         assert_eq!(r2.file_header_compression_normalized, 0);
         assert!(!r2.changed_anything());
+    }
+
+    #[test]
+    fn picture_href_ctrl_data_matches_hancom_parameter_set_shape() {
+        let data = build_picture_href_ctrl_data("http://www.korea.kr;1;0;0;");
+        assert_eq!(data.len(), 76);
+        assert_eq!(&data[0..2], &0x021b_u16.to_le_bytes());
+        assert_eq!(&data[2..4], &1_u16.to_le_bytes());
+        assert_eq!(&data[6..8], &0x026f_u16.to_le_bytes());
+        assert_eq!(&data[8..10], &0x8000_u16.to_le_bytes());
+        assert_eq!(&data[10..12], &0x026f_u16.to_le_bytes());
+        assert_eq!(&data[16..18], &0x0265_u16.to_le_bytes());
+        assert_eq!(&data[18..20], &0x0001_u16.to_le_bytes());
+        assert_eq!(&data[20..22], &27_u16.to_le_bytes());
+
+        let text: Vec<u16> = data[22..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&text).unwrap(),
+            "http\\://www.korea.kr;1;0;0;"
+        );
+    }
+
+    #[test]
+    fn picture_href_ctrl_data_materializes_on_matching_control_slot() {
+        let mut para = Paragraph::default();
+        let pic = Picture {
+            href: Some("http://www.korea.kr;1;0;0;".to_string()),
+            ..Default::default()
+        };
+        para.controls.push(Control::Picture(Box::new(pic)));
+
+        let mut report = AdapterReport::new();
+        adapt_paragraph(&mut para, &mut report);
+        assert_eq!(report.picture_href_ctrl_data_materialized, 1);
+        assert_eq!(para.ctrl_data_records.len(), 1);
+        assert_eq!(para.ctrl_data_records[0].as_ref().unwrap().len(), 76);
+
+        let mut second = AdapterReport::new();
+        adapt_paragraph(&mut para, &mut second);
+        assert_eq!(second.picture_href_ctrl_data_materialized, 0);
+    }
+
+    #[test]
+    fn picture_href_ctrl_data_materializes_inside_shape_text_box() {
+        use crate::model::shape::{DrawingObjAttr, RectangleShape, TextBox};
+
+        let mut nested_para = Paragraph::default();
+        nested_para
+            .controls
+            .push(Control::Picture(Box::new(Picture {
+                href: Some("http://www.korea.kr;1;0;0;".to_string()),
+                ..Default::default()
+            })));
+
+        let mut shape = ShapeObject::Rectangle(RectangleShape {
+            drawing: DrawingObjAttr {
+                text_box: Some(TextBox {
+                    paragraphs: vec![nested_para],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let mut report = AdapterReport::new();
+        adapt_shape(&mut shape, &mut report);
+        assert_eq!(report.picture_href_ctrl_data_materialized, 1);
+
+        let ShapeObject::Rectangle(rect) = shape else {
+            panic!("expected rectangle");
+        };
+        let text_box = rect.drawing.text_box.unwrap();
+        let ctrl_data = text_box.paragraphs[0].ctrl_data_records[0]
+            .as_ref()
+            .unwrap();
+        assert_eq!(ctrl_data.len(), 76);
+    }
+
+    #[test]
+    fn hwpx_h_03_href_ctrl_data_from_source_contract() {
+        let data = std::fs::read("samples/hwpx/hwpx-h-03.hwpx").expect("sample exists");
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).expect("parse hwpx");
+
+        assert_eq!(count_ctrl_data_records_in_sections(&core.document.sections), 0);
+        let report = convert_hwpx_to_hwp_ir(&mut core.document);
+
+        assert_eq!(report.picture_href_ctrl_data_materialized, 1);
+        assert_eq!(count_ctrl_data_records_in_sections(&core.document.sections), 1);
+    }
+
+    #[test]
+    fn hwpx_h_03_rect_draw_text_contract_from_source() {
+        let data = std::fs::read("samples/hwpx/hwpx-h-03.hwpx").expect("sample exists");
+        let core = crate::document_core::DocumentCore::from_bytes(&data).expect("parse hwpx");
+
+        let shape = find_shape_by_description(&core.document, "사각형입니다.")
+            .expect("hp:rect shapeComment must survive into CommonObjAttr.description");
+        let text_box = shape
+            .drawing()
+            .and_then(|drawing| drawing.text_box.as_ref())
+            .expect("hp:rect/drawText must survive as TextBox");
+
+        assert_eq!(
+            text_box.list_attr & (0b11 << 5),
+            1 << 5,
+            "drawText subList vertAlign=CENTER must materialize LIST_HEADER list_attr bit 5"
+        );
+        assert_eq!(text_box.max_width, 25698);
+        assert_eq!(text_box.paragraphs.len(), 1);
+    }
+
+    fn find_shape_by_description<'a>(
+        doc: &'a Document,
+        description: &str,
+    ) -> Option<&'a ShapeObject> {
+        doc.sections
+            .iter()
+            .flat_map(|section| section.paragraphs.iter())
+            .find_map(|para| find_shape_by_description_in_paragraph(para, description))
+    }
+
+    fn find_shape_by_description_in_paragraph<'a>(
+        para: &'a Paragraph,
+        description: &str,
+    ) -> Option<&'a ShapeObject> {
+        para.controls
+            .iter()
+            .find_map(|control| find_shape_by_description_in_control(control, description))
+    }
+
+    fn find_shape_by_description_in_control<'a>(
+        control: &'a Control,
+        description: &str,
+    ) -> Option<&'a ShapeObject> {
+        match control {
+            Control::Shape(shape) => find_shape_by_description_in_shape(shape, description),
+            Control::Table(table) => table
+                .cells
+                .iter()
+                .flat_map(|cell| cell.paragraphs.iter())
+                .find_map(|para| find_shape_by_description_in_paragraph(para, description)),
+            _ => None,
+        }
+    }
+
+    fn find_shape_by_description_in_shape<'a>(
+        shape: &'a ShapeObject,
+        description: &str,
+    ) -> Option<&'a ShapeObject> {
+        if shape.common().description == description {
+            return Some(shape);
+        }
+
+        if let ShapeObject::Group(group) = shape {
+            return group
+                .children
+                .iter()
+                .find_map(|child| find_shape_by_description_in_shape(child, description));
+        }
+
+        shape
+            .drawing()
+            .and_then(|drawing| drawing.text_box.as_ref())
+            .and_then(|text_box| {
+                text_box
+                    .paragraphs
+                    .iter()
+                    .find_map(|para| find_shape_by_description_in_paragraph(para, description))
+            })
+    }
+
+    fn count_ctrl_data_records_in_sections(sections: &[Section]) -> usize {
+        sections
+            .iter()
+            .map(|section| count_ctrl_data_records_in_paragraphs(&section.paragraphs))
+            .sum()
+    }
+
+    fn count_ctrl_data_records_in_paragraphs(paragraphs: &[Paragraph]) -> usize {
+        paragraphs
+            .iter()
+            .map(|para| {
+                let own = para
+                    .ctrl_data_records
+                    .iter()
+                    .filter(|data| data.is_some())
+                    .count();
+                own + para
+                    .controls
+                    .iter()
+                    .map(count_ctrl_data_records_in_control)
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
+    fn count_ctrl_data_records_in_control(control: &Control) -> usize {
+        match control {
+            Control::Table(table) => table
+                .cells
+                .iter()
+                .map(|cell| count_ctrl_data_records_in_paragraphs(&cell.paragraphs))
+                .sum(),
+            Control::Shape(shape) => count_ctrl_data_records_in_shape(shape),
+            _ => 0,
+        }
+    }
+
+    fn count_ctrl_data_records_in_shape(shape: &ShapeObject) -> usize {
+        let text_box_count = shape
+            .drawing()
+            .and_then(|drawing| drawing.text_box.as_ref())
+            .map(|text_box| count_ctrl_data_records_in_paragraphs(&text_box.paragraphs))
+            .unwrap_or(0);
+
+        let child_count = match shape {
+            ShapeObject::Group(group) => group
+                .children
+                .iter()
+                .map(count_ctrl_data_records_in_shape)
+                .sum(),
+            _ => 0,
+        };
+
+        text_box_count + child_count
     }
 
     // ============================================================
