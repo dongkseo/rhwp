@@ -366,6 +366,20 @@ pub(crate) fn parse_paragraph_list(
                         text_string.push('-'); 
                     }
                     9 => {
+                        // [#929] HWP3 spec §10.5 표 39: 탭 = 8 bytes 구조
+                        //   offset 0: hchar(=9)  [outer read 완료]
+                        //   offset 2: hunit       탭 폭
+                        //   offset 4: word        점끌기 여부
+                        //   offset 6: hchar(=9)  닫기
+                        // char_count 단위는 hchar(2B); 8 bytes = 4 hchar 차지 → i += 3 추가.
+                        let mut buf = [0u8; 6];
+                        if let Err(_) = body_cursor.read_exact(&mut buf) { break; }
+                        for k in 0..3usize {
+                            if i + k < hwp3_char_to_utf16_pos.len() {
+                                hwp3_char_to_utf16_pos[i + k] = utf16_len;
+                            }
+                        }
+                        i += 3;
                         char_offsets.push(utf16_len);
                         utf16_len += 1;
                         text_string.push('\t');
