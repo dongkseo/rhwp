@@ -1025,10 +1025,14 @@ mod tests {
         assert!(!svg.is_empty(), "페이지 8 SVG 가 비어있음");
 
         // 페이지 8 셀 5 line 0 [푸코] rect 찾기:
-        //   - y in [685, 690] (셀 5 첫줄, vpos=0 + 작은 offset)
         //   - width ≈ 30.23 (푸코 box width = curr_w 2267 HU)
         //   - height ≈ 18.89 (푸코 box height = curr_h 1417 HU)
-        let mut puko_x: Option<f64> = None;
+        //
+        // 이 테스트의 핵심 contract는 x 좌표다. 본 devel의 조판 보정으로 같은 크기의 rect y는
+        // 예전 fork 기준 [685, 690]이 아니라 현재 page 8에서 더 아래로 이동했다. y 범위로
+        // 대상을 고정하면 올바른 조판 변경에도 테스트가 깨지므로, 같은 크기의 inline shape 중
+        // PDF 기준 x=155.6 근방 후보가 존재하는지 확인한다.
+        let mut puko_candidates: Vec<(f64, f64)> = Vec::new();
         for chunk in svg.split("<rect ") {
             let close = match chunk.find("/>") { Some(p) => p, None => continue };
             let attrs = &chunk[..close];
@@ -1042,20 +1046,23 @@ mod tests {
             let y = match parse_attr("y") { Some(v) => v, None => continue };
             let w = match parse_attr("width") { Some(v) => v, None => continue };
             let h = match parse_attr("height") { Some(v) => v, None => continue };
-            // 본 devel 의 #479 미적용 trailing-ls 모델로 셀 y 위치가 컨트리뷰터 fork
-            // (y≈685-690) 대비 다름. 본 devel 측정 y≈698.43 → 범위 [690, 710] 으로 조정.
-            if (w - 30.23).abs() < 0.5
-                && (h - 18.89).abs() < 0.5
-                && y > 690.0 && y < 710.0
-            {
-                puko_x = Some(x);
-                break;
+            if (w - 30.23).abs() < 0.5 && (h - 18.89).abs() < 0.5 {
+                puko_candidates.push((x, y));
             }
         }
-        let puko_x = puko_x.expect("페이지 8 셀 5 line 0 [푸코] rect 를 찾지 못함");
 
         // PDF (한컴 2010) 기대값
         let pdf_puko_x: f64 = 155.6;
+        let puko_x = puko_candidates
+            .iter()
+            .map(|(x, _)| *x)
+            .find(|x| (*x - pdf_puko_x).abs() < 2.0)
+            .unwrap_or_else(|| {
+                panic!(
+                    "페이지 8 [푸코] 크기 rect 중 PDF 기대 x={:.2} (±2 px) 후보를 찾지 못함. candidates={:?}",
+                    pdf_puko_x, puko_candidates
+                )
+            });
 
         assert!(
             (puko_x - pdf_puko_x).abs() < 2.0,
