@@ -2818,11 +2818,12 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
         // (Task #987) 기존 (len-1) 0-based 는 off-by-one — Double 대신 인접 빈 border 가
         // 렌더되어 이중선이 화면에 나타나지 않던 원인.
         let bfid = doc_border_fills.len() as u16;
-                                                        // attr bit 0 = paper_based (1) vs body_based (0).
-                                                        // HWP3 spec 명시 없으나 한컴 viewer 의 PDF 출력 정합 비교 결과 paper_based 가 정답
-                                                        // (sample16 페이지 2 목차 우측 페이지 번호가 body_based 박스 밖, paper_based 박스 안).
+        // attr bit 0 = paper_based(1) vs body_based(0). 렌더러 layout.rs 가 이 비트를 존중.
+        // [Task #987] sample16 한컴 정답지 = body 기준 (작업지시자 시각 판정).
+        // 기존 attr=1(paper) 은 bfid off-by-one 으로 잘못된 border_fill 을 읽던
+        // 상태의 착시 정합이었음. off-by-one 수정 후 body 기준이 정답.
         section_def.page_border_fill = crate::model::page::PageBorderFill {
-            attr: 1,
+            attr: 0,
             spacing_left: (doc_info.border_margin_left as i16) * 4,
             spacing_right: (doc_info.border_margin_right as i16) * 4,
             spacing_top: (doc_info.border_margin_top as i16) * 4,

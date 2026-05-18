@@ -933,15 +933,18 @@ impl LayoutEngine {
         if let Some(pbf) = page_border_fill.filter(|p| p.border_fill_id > 0) {
             let bf_idx = (pbf.border_fill_id - 1) as usize;
             if let Some(bs) = styles.border_styles.get(bf_idx) {
-                // [Issue #952] 한컴 viewer 실측 결과 — 외곽선 위치는 항상 paper-spacing 기준.
-                // HWPX 의 attr bit 0 (textBorder=PAPER) 와 textBorder=CONTENT 양쪽 다,
-                // 그리고 HWP5 attr 값 0/1 양쪽 다 한컴 viewer 가 paper-based outline 렌더.
-                // 즉 bit 0 은 outline 위치 결정 비트가 아닌 별도 의미 (text wrap interaction).
-                // 본 fix 이전 회귀 history:
-                //   - task877 시점: paper_based = (attr & 0x01) != 0 — sample16 (attr=1) 정합, 시험지 (attr=0) 회귀
-                //   - #920 (4bb11289): paper_based = (attr & 0x01) == 0 — 시험지 정합, sample16 회귀
-                //   - #952 (현재): paper_based = true — 모든 sample 한컴 정합
-                let paper_based = true;
+                // 외곽선 위치 기준: attr bit 0 (textBorder=PAPER) 존중.
+                //   bit0 = 1 → paper 기준, bit0 = 0 → body 기준 (HWPX/HWP5 본래 의미).
+                // 회귀 history:
+                //   - task877: paper_based = (attr & 0x01) != 0 — sample16 정합, 시험지 회귀
+                //   - #920: paper_based = (attr & 0x01) == 0 — 시험지 정합, sample16 회귀
+                //   - #952: paper_based = true 전역 — 당시 모든 sample 정합 판정
+                // [Task #987] #952 의 "sample16 = paper 정합" 은 bfid off-by-one
+                //   (mod.rs:2816) 으로 잘못된 border_fill 을 읽던 상태의 착시였음.
+                //   off-by-one 수정 후 sample16 한컴 정답지 = body 기준으로 재판정.
+                //   attr 존중 복원: HWPX/HWP5 는 자신의 attr bit0 의미 그대로,
+                //   HWP3 는 파서가 attr=0(body) 주입 (CLAUDE.md HWP3 격리 규칙).
+                let paper_based = (pbf.attr & 0x01) != 0;
                 if std::env::var("RHWP_DEBUG_PAGE_BORDER").is_ok() {
                     eprintln!(
                         "PAGE_BORDER: attr=0x{:08x} bit0={} paper_based={} bfid={} spacing(L={},R={},T={},B={})",
