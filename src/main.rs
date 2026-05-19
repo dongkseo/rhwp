@@ -1680,8 +1680,8 @@ fn dump_controls(args: &[String]) {
                 .as_ref()
                 .map(|img| {
                     format!(
-                        " image(bin_id={}, mode={:?})",
-                        img.bin_data_id, img.fill_mode
+                        " image(bin_id={}, mode={:?}, brightness={}, contrast={}, effect={})",
+                        img.bin_data_id, img.fill_mode, img.brightness, img.contrast, img.effect
                     )
                 })
                 .unwrap_or_default();

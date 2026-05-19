@@ -5,6 +5,7 @@
 
 use super::{hwpunit_to_px, GradientFillInfo, PatternFillInfo, TabStop};
 use crate::model::document::DocInfo;
+use crate::model::image::ImageEffect;
 use crate::model::style::{
     Alignment, BorderFill, BorderLine, Bullet, CharShape, DiagonalLine, FillType, HeadType,
     ImageFillMode, LineSpacingType, Numbering, ParaShape, TabDef, UnderlineType,
@@ -249,6 +250,12 @@ pub struct ResolvedImageFill {
     pub bin_data_id: u16,
     /// 이미지 채우기 모드
     pub fill_mode: ImageFillMode,
+    /// 밝기
+    pub brightness: i8,
+    /// 명암
+    pub contrast: i8,
+    /// 그림 효과
+    pub effect: ImageEffect,
 }
 
 impl Default for ResolvedBorderStyle {
@@ -903,6 +910,9 @@ fn resolve_single_border_style(bf: &BorderFill) -> ResolvedBorderStyle {
         FillType::Image => bf.fill.image.as_ref().map(|img| ResolvedImageFill {
             bin_data_id: img.bin_data_id,
             fill_mode: img.fill_mode,
+            brightness: img.brightness,
+            contrast: img.contrast,
+            effect: image_fill_effect(img.effect),
         }),
         _ => None,
     };
@@ -915,6 +925,15 @@ fn resolve_single_border_style(bf: &BorderFill) -> ResolvedBorderStyle {
         image_fill,
         diagonal_attr: bf.attr,
         diagonal: bf.diagonal,
+    }
+}
+
+fn image_fill_effect(effect: u8) -> ImageEffect {
+    match effect {
+        1 => ImageEffect::GrayScale,
+        2 => ImageEffect::BlackWhite,
+        3 => ImageEffect::Pattern8x8,
+        _ => ImageEffect::RealPic,
     }
 }
 
@@ -1184,6 +1203,38 @@ mod tests {
         };
         let styles = resolve_styles(&doc_info, DEFAULT_DPI);
         assert_eq!(styles.border_styles[0].fill_color, None);
+    }
+
+    #[test]
+    fn test_resolve_border_image_fill_preserves_watermark_attrs() {
+        let mut fill = Fill::default();
+        fill.fill_type = FillType::Image;
+        fill.image = Some(ImageFill {
+            fill_mode: ImageFillMode::Center,
+            brightness: -50,
+            contrast: 70,
+            effect: 1,
+            bin_data_id: 3,
+        });
+        let doc_info = DocInfo {
+            border_fills: vec![BorderFill {
+                fill,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let styles = resolve_styles(&doc_info, DEFAULT_DPI);
+        let image_fill = styles.border_styles[0]
+            .image_fill
+            .as_ref()
+            .expect("image fill");
+
+        assert_eq!(image_fill.bin_data_id, 3);
+        assert_eq!(image_fill.fill_mode, ImageFillMode::Center);
+        assert_eq!(image_fill.brightness, -50);
+        assert_eq!(image_fill.contrast, 70);
+        assert_eq!(image_fill.effect, ImageEffect::GrayScale);
     }
 
     // === 언어 판별 테스트 ===

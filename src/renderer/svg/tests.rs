@@ -249,6 +249,137 @@ fn test_bmp_to_png_invalid_returns_none() {
 }
 
 #[test]
+fn test_page_background_image_fit_to_size_preserves_bbox_output() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::FitToSize,
+        brightness: 0,
+        contrast: 0,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        output.contains(
+            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"none\""
+        ),
+        "FitToSize PageBackground image should keep bbox output: {output}"
+    );
+}
+
+#[test]
+fn test_page_background_image_center_uses_original_image_size() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::Center,
+        brightness: 0,
+        contrast: 0,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        output.contains(
+            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+        ),
+        "Center PageBackground image should render at original size in bbox center: {output}"
+    );
+    assert!(
+        !output.contains(
+            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"none\""
+        ),
+        "Center PageBackground image must not stretch to the full bbox: {output}"
+    );
+}
+
+#[test]
+fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::Center,
+        brightness: -50,
+        contrast: 70,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        !output.contains("rhwp-img-bc-b-50c70"),
+        "RealPic PageBackground watermark should preserve source color without brightness/contrast filter: {output}"
+    );
+    assert!(
+        output.contains("<g filter=\"url(#rhwp-realpic-watermark-tone)\">"),
+        "RealPic PageBackground watermark should apply the Hancom-like color tone boost: {output}"
+    );
+    let defs = renderer.defs.join("");
+    assert!(
+        defs.contains("<feColorMatrix type=\"saturate\" values=\"0.9165\"/>"),
+        "RealPic PageBackground watermark tone filter should apply fitted saturation: {defs}"
+    );
+    assert!(
+        defs.contains("<feFuncR type=\"linear\" slope=\"2.0972\" intercept=\"0.0000\"/>"),
+        "RealPic PageBackground watermark tone filter should apply fitted brightness: {defs}"
+    );
+    assert!(
+        output.contains("<g opacity=\"0.21729612\">"),
+        "PageBackground watermark preset should apply watermark opacity: {output}"
+    );
+    assert!(
+        output.contains(
+            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+        ),
+        "PageBackground watermark should still preserve Center placement: {output}"
+    );
+}
+
+#[test]
+fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let mut image = ImageNode::new(1, Some(png));
+    image.fill_mode = Some(ImageFillMode::FitToSize);
+    image.brightness = -50;
+    image.contrast = 70;
+    image.effect = crate::model::image::ImageEffect::RealPic;
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_image_node(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        !output.contains("rhwp-img-bc-b-50c70"),
+        "RealPic background watermark fill should preserve source color without brightness/contrast filter: {output}"
+    );
+    assert!(
+        output.contains("<g filter=\"url(#rhwp-realpic-watermark-tone)\">"),
+        "RealPic background watermark fill should apply the shared Hancom-like color tone boost: {output}"
+    );
+    assert!(
+        output.contains("<g opacity=\"0.21729612\">"),
+        "RealPic background watermark fill should apply shared watermark opacity: {output}"
+    );
+}
+
+#[test]
 fn test_brightness_contrast_filter_zero_returns_none() {
     let mut renderer = SvgRenderer::new();
     assert!(renderer.ensure_brightness_contrast_filter(0, 0).is_none());

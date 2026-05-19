@@ -13,6 +13,20 @@ use crate::model::shape::TextWrap;
 use crate::model::style::ImageFillMode;
 use crate::model::{ColorRef, Rect};
 
+pub const REAL_PICTURE_WATERMARK_OPACITY: f64 = 0.21729612;
+pub const REAL_PICTURE_WATERMARK_SATURATION: f64 = 0.91646104;
+pub const REAL_PICTURE_WATERMARK_CONTRAST: f64 = 0.93125103;
+pub const REAL_PICTURE_WATERMARK_BRIGHTNESS: f64 = 2.09719097;
+pub const LEGACY_IMAGE_WATERMARK_OPACITY: f64 = 0.17;
+
+pub fn is_real_picture_watermark_tone_preset(
+    effect: ImageEffect,
+    brightness: i8,
+    contrast: i8,
+) -> bool {
+    matches!(effect, ImageEffect::RealPic) && brightness == -50 && contrast == 70
+}
+
 /// 렌더 노드 고유 ID
 pub type NodeId = u32;
 
@@ -381,7 +395,23 @@ pub struct PageBackgroundImage {
     #[serde(skip)]
     pub data: Vec<u8>,
     /// 이미지 채우기 모드
-    pub fill_mode: super::super::model::style::ImageFillMode,
+    pub fill_mode: ImageFillMode,
+    /// 밝기
+    pub brightness: i8,
+    /// 명암
+    pub contrast: i8,
+    /// 그림 효과
+    pub effect: ImageEffect,
+}
+
+impl PageBackgroundImage {
+    pub fn is_watermark_tone_preset(&self) -> bool {
+        self.brightness == -50 && self.contrast == 70
+    }
+
+    pub fn is_real_picture_watermark_tone_preset(&self) -> bool {
+        is_real_picture_watermark_tone_preset(self.effect, self.brightness, self.contrast)
+    }
 }
 
 /// 텍스트 줄 노드
@@ -850,6 +880,14 @@ pub enum HeaderFooterKind {
 }
 
 impl ImageNode {
+    pub fn is_watermark_tone_preset(&self) -> bool {
+        self.brightness == -50 && self.contrast == 70
+    }
+
+    pub fn is_real_picture_watermark_tone_preset(&self) -> bool {
+        is_real_picture_watermark_tone_preset(self.effect, self.brightness, self.contrast)
+    }
+
     pub fn new(bin_data_id: u16, data: Option<Vec<u8>>) -> Self {
         Self {
             bin_data_id,

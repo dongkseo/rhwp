@@ -1670,6 +1670,9 @@ mod tests {
                         image: Some(PageBackgroundImage {
                             data: solid_png([0, 0, 255, 255]),
                             fill_mode: ImageFillMode::FitToSize,
+                            brightness: 0,
+                            contrast: 0,
+                            effect: crate::model::image::ImageEffect::RealPic,
                         }),
                     },
                 }],

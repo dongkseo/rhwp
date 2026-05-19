@@ -923,6 +923,9 @@ mod tests {
             Some(PageBackgroundImage {
                 data: vec![1, 2, 3],
                 fill_mode: ImageFillMode::FitToSize,
+                brightness: 0,
+                contrast: 0,
+                effect: crate::model::image::ImageEffect::RealPic,
             }),
             None,
         );
