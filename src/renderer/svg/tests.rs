@@ -326,17 +326,12 @@ fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
         "RealPic PageBackground watermark should preserve source color without brightness/contrast filter: {output}"
     );
     assert!(
-        output.contains("<g filter=\"url(#rhwp-realpic-watermark-tone)\">"),
-        "RealPic PageBackground watermark should apply the Hancom-like color tone boost: {output}"
-    );
-    let defs = renderer.defs.join("");
-    assert!(
-        defs.contains("<feColorMatrix type=\"saturate\" values=\"0.9165\"/>"),
-        "RealPic PageBackground watermark tone filter should apply fitted saturation: {defs}"
+        !output.contains("rhwp-realpic-watermark-tone"),
+        "RealPic PageBackground watermark should bake the shared tone transform into image pixels: {output}"
     );
     assert!(
-        defs.contains("<feFuncR type=\"linear\" slope=\"2.0972\" intercept=\"0.0000\"/>"),
-        "RealPic PageBackground watermark tone filter should apply fitted brightness: {defs}"
+        output.contains("data:image/png;base64,"),
+        "RealPic PageBackground watermark should render as a tone-baked PNG: {output}"
     );
     assert!(
         output.contains("<g opacity=\"0.21729612\">"),
@@ -370,8 +365,8 @@ fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
         "RealPic background watermark fill should preserve source color without brightness/contrast filter: {output}"
     );
     assert!(
-        output.contains("<g filter=\"url(#rhwp-realpic-watermark-tone)\">"),
-        "RealPic background watermark fill should apply the shared Hancom-like color tone boost: {output}"
+        !output.contains("rhwp-realpic-watermark-tone"),
+        "RealPic background watermark fill should bake the shared tone transform into image pixels: {output}"
     );
     assert!(
         output.contains("<g opacity=\"0.21729612\">"),

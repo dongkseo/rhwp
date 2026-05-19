@@ -2,7 +2,11 @@ use std::io::Cursor;
 
 use crate::model::image::ImageEffect;
 use crate::paint::{ResolvedImageKind, ResolvedImagePayload};
-use crate::renderer::render_tree::ImageNode;
+use crate::renderer::render_tree::{
+    ImageNode, REAL_PICTURE_WATERMARK_BRIGHTNESS, REAL_PICTURE_WATERMARK_CONTRAST,
+    REAL_PICTURE_WATERMARK_CORRECTION_BIAS, REAL_PICTURE_WATERMARK_CORRECTION_MATRIX,
+    REAL_PICTURE_WATERMARK_SATURATION,
+};
 
 pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePayload> {
     let data = image.data.as_deref()?;
@@ -131,6 +135,65 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         }
     }
     let img = RgbaImage::from_raw(width, height, rgba)?;
+    let mut out = Vec::new();
+    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+        .ok()?;
+    Some(out)
+}
+
+fn apply_real_picture_watermark_tone_rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
+    let mut rgb = [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0];
+
+    let saturation = REAL_PICTURE_WATERMARK_SATURATION;
+    rgb = [
+        (0.213 + 0.787 * saturation) * rgb[0]
+            + (0.715 - 0.715 * saturation) * rgb[1]
+            + (0.072 - 0.072 * saturation) * rgb[2],
+        (0.213 - 0.213 * saturation) * rgb[0]
+            + (0.715 + 0.285 * saturation) * rgb[1]
+            + (0.072 - 0.072 * saturation) * rgb[2],
+        (0.213 - 0.213 * saturation) * rgb[0]
+            + (0.715 - 0.715 * saturation) * rgb[1]
+            + (0.072 + 0.928 * saturation) * rgb[2],
+    ];
+
+    let contrast = REAL_PICTURE_WATERMARK_CONTRAST;
+    let contrast_intercept = 0.5 - 0.5 * contrast;
+    let brightness = REAL_PICTURE_WATERMARK_BRIGHTNESS;
+    for channel in &mut rgb {
+        *channel = (*channel * contrast + contrast_intercept) * brightness;
+    }
+
+    let corrected = [
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[0],
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[1],
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[2],
+    ];
+
+    corrected.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+/// RealPic 색상 워터마크 preset을 한컴 뷰어에 가까운 색상 PNG로 변환한다.
+pub(crate) fn real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+    data: &[u8],
+) -> Option<Vec<u8>> {
+    use image::{ImageFormat, load_from_memory};
+
+    let mut img = load_from_memory(data).ok()?.to_rgba8();
+    for px in img.pixels_mut() {
+        let [r, g, b] = apply_real_picture_watermark_tone_rgb(px.0[0], px.0[1], px.0[2]);
+        px.0 = [r, g, b, px.0[3]];
+    }
+
     let mut out = Vec::new();
     img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .ok()?;

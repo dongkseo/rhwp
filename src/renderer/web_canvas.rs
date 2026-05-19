@@ -375,8 +375,26 @@ impl WebCanvasRenderer {
                     // PageBackground RealPic 워터마크 프리셋은 한컴의 색상 있는 배경 워터마크에 맞춰
                     // 색감을 살린 뒤 반투명으로 합성한다.
                     let preserve_color_watermark = img.is_real_picture_watermark_tone_preset();
+                    let mut baked_color_watermark = false;
+                    let render_data: std::borrow::Cow<[u8]> = if preserve_color_watermark {
+                        match crate::renderer::svg::real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+                            &img.data,
+                        ) {
+                            Some(png) => {
+                                baked_color_watermark = true;
+                                std::borrow::Cow::Owned(png)
+                            }
+                            None => std::borrow::Cow::Borrowed(img.data.as_slice()),
+                        }
+                    } else {
+                        std::borrow::Cow::Borrowed(img.data.as_slice())
+                    };
                     let filter_str = if preserve_color_watermark {
-                        Some(real_picture_watermark_tone_filter())
+                        if baked_color_watermark {
+                            None
+                        } else {
+                            Some(real_picture_watermark_tone_filter())
+                        }
                     } else {
                         compose_image_filter(img.effect, img.brightness, img.contrast)
                     };
@@ -392,7 +410,7 @@ impl WebCanvasRenderer {
                         self.ctx.set_global_alpha(opacity);
                     }
                     self.draw_image_with_fill_mode(
-                        &img.data,
+                        render_data.as_ref(),
                         &node.bbox,
                         Some(img.fill_mode),
                         None,
@@ -603,7 +621,17 @@ impl WebCanvasRenderer {
                         !matches!(img.effect, crate::model::image::ImageEffect::RealPic)
                             && (img.brightness != 0 || img.contrast != 0);
                     let mut baked_watermark = false;
-                    let render_data: std::borrow::Cow<[u8]> = if is_watermark_image
+                    let render_data: std::borrow::Cow<[u8]> = if preserve_color_watermark {
+                        match crate::renderer::svg::real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+                            data,
+                        ) {
+                            Some(png) => {
+                                baked_watermark = true;
+                                std::borrow::Cow::Owned(png)
+                            }
+                            None => std::borrow::Cow::Borrowed(data.as_slice()),
+                        }
+                    } else if is_watermark_image
                         && crate::renderer::svg::detect_image_mime_type(data) == "image/jpeg"
                     {
                         match crate::renderer::svg::watermark_jpeg_bytes_to_hancom_baked_png_bytes(
