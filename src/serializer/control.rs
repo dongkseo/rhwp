@@ -227,9 +227,16 @@ fn serialize_section_def(sd: &SectionDef, level: u16, records: &mut Vec<Record>)
     w.write_u16(sd.picture_num).unwrap();
     w.write_u16(sd.table_num).unwrap();
     w.write_u16(sd.equation_num).unwrap();
+    // [Task #1058] HWP5 spec 표 129 정합 — SectionDef payload 26 byte (위 24 + 2 Language):
+    //   UINT16 대표Language (5.0.1.5 이상)
+    // 한컴 정답지는 26 byte payload + 8 byte zero (확장 영역) = 34 byte payload + 4 byte ctrl_id = 38 byte CTRL_HEADER.
     // 원본 추가 바이트 복원 (라운드트립용)
     if !sd.raw_ctrl_extra.is_empty() {
         w.write_bytes(&sd.raw_ctrl_extra).unwrap();
+    } else {
+        // HWPX 출처: 한컴 default 10 byte (Language 0 + zero 8)
+        w.write_u16(0).unwrap(); // 대표Language = 0 (Application 지정)
+        w.write_bytes(&[0u8; 8]).unwrap(); // 추가 zero padding (관찰된 한컴 정답지 패턴)
     }
 
     records.push(make_ctrl_record(

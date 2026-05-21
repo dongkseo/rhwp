@@ -78,6 +78,16 @@ fn parse_section_def_start(e: &quick_xml::events::BytesStart, sec_def: &mut Sect
             b"tabStop" => {
                 sec_def.default_tab_spacing = parse_u32(&attr);
             }
+            // [Task #1058] 한컴 HWP5 spec 표 129 정합:
+            //   - spaceColumns → column_spacing (HWPUNIT16, default 1134 for 다단)
+            //   - outlineShapeIDRef → outline_numbering_id (UINT16, 1=기본 번호 문단 모양)
+            b"spaceColumns" => {
+                let v = parse_u32(&attr);
+                sec_def.column_spacing = v as i16;
+            }
+            b"outlineShapeIDRef" => {
+                sec_def.outline_numbering_id = parse_u16(&attr);
+            }
             _ => {}
         }
     }
@@ -124,8 +134,17 @@ fn parse_paragraph(
     let mut sec_def: Option<SectionDef> = None;
 
     // 문단 어트리뷰트
+    // [Task #1058 후속] HWPX `<hp:p id>` → HWP PARA_HEADER instance_id (UINT32) 직접 매핑.
+    // HWPX 의 id 값 ("0" 또는 "2147483648"=0x80000000) 이 한컴 정답지의 instance_id 패턴과
+    // 정확 일치. 누락 시 한컴편집기가 각주 추가 시 본문 다단계 목록 부여 (Task #1058 본질).
+    let mut hp_p_id: u32 = 0;
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
+            b"id" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    hp_p_id = s.parse::<u32>().unwrap_or(0);
+                }
+            }
             b"paraPrIDRef" => para.para_shape_id = parse_u16(&attr),
             b"styleIDRef" => para.style_id = parse_u8(&attr),
             b"columnBreak" => {
@@ -380,13 +399,39 @@ fn parse_paragraph(
     para.has_para_text = !para.text.is_empty() || !para.controls.is_empty();
 
     // char_shapes는 원본 문단 순서(text_parts)를 기준으로 계산한 위치를 그대로 사용한다.
-    para.char_shapes = char_shape_changes
-        .into_iter()
-        .map(|(pos, id)| CharShapeRef {
+    // [Task #1058 후속] 같은 char_shape_id 연속 dedup — HWPX 의 여러 run 이 같은
+    // charPrIDRef 일 때 HWP PARA_CHAR_SHAPE 는 첫 entry 1개만 유지하므로 정합.
+    let mut deduped_cs: Vec<CharShapeRef> = Vec::new();
+    for (pos, id) in char_shape_changes {
+        if let Some(last) = deduped_cs.last() {
+            if last.char_shape_id == id {
+                continue;
+            }
+        }
+        deduped_cs.push(CharShapeRef {
             start_pos: pos,
             char_shape_id: id,
-        })
-        .collect();
+        });
+    }
+    para.char_shapes = deduped_cs;
+
+    // [Task #1058 후속] column_type/raw_break_type — HWP 정합 (스펙 표 59):
+    //   bit 0 (0x01) = 구역 나누기, bit 1 (0x02) = 다단 나누기,
+    //   bit 2 (0x04) = 쪽 나누기,  bit 3 (0x08) = 단 나누기
+    // 본문 첫 paragraph (sec_def 보유 또는 colPr 보유) 의 break_type 정합:
+    //   - sec_def Some + ColumnDef → 0x03 (구역 + 다단)
+    //   - sec_def Some 만 → 0x01 (구역)
+    // ColumnDef 는 para.controls 에 push 되었음. sec_def 는 별도 변수.
+    let has_section = sec_def.is_some();
+    let has_column_def = para
+        .controls
+        .iter()
+        .any(|c| matches!(c, Control::ColumnDef(_)));
+    if has_section && has_column_def && para.raw_break_type == 0 {
+        para.raw_break_type = 0x03;
+    } else if has_section && para.raw_break_type == 0 {
+        para.raw_break_type = 0x01;
+    }
 
     // 기본 line_seg (빈 문단이라도 최소 1개)
     if para.line_segs.is_empty() {
@@ -396,6 +441,18 @@ fn parse_paragraph(
             ..Default::default()
         });
     }
+
+    // [Task #1058 후속] HWPX `<hp:p id>` → HWP PARA_HEADER instance_id 매핑.
+    // raw_header_extra 구조 (serializer 정합 — body_text.rs:241):
+    //   raw_header_extra[0..6] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2)
+    //                              ← serializer 가 건너뜀 (실제 데이터 기반 재계산)
+    //   raw_header_extra[6..10] = instanceId (UINT32 LE) ← HWPX `id` 매핑
+    // raw_header_extra 가 비어 있으면 serializer 가 instance_id=0 으로 작성.
+    // 한컴편집기 호환을 위해 HWPX 의 id 값을 정확히 보존.
+    let mut header_extra = Vec::with_capacity(10);
+    header_extra.extend_from_slice(&[0u8; 6]); // numCharShapes/numRangeTags/numLineSegs 자리
+    header_extra.extend_from_slice(&hp_p_id.to_le_bytes()); // instanceId
+    para.raw_header_extra = header_extra;
 
     Ok((para, sec_def))
 }
@@ -4269,8 +4326,10 @@ mod tests {
         let para = &section.paragraphs[0];
         assert_eq!(para.text, "AB");
         assert_eq!(para.char_offsets, vec![0, 9]);
+        // [Task #1058] 같은 char_shape_id 연속 dedup — HWP PARA_CHAR_SHAPE 는 첫 entry 1개만 유지.
+        // 두 run 모두 charPrIDRef="0" 이므로 dedup 후 char_shapes.len() = 1.
         assert_eq!(para.char_shapes[0].start_pos, 0);
-        assert_eq!(para.char_shapes[1].start_pos, 9);
+        assert_eq!(para.char_shapes.len(), 1);
         assert_eq!(para.controls.len(), 1);
     }
 

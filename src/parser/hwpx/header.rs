@@ -148,6 +148,13 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                     b"memoPr" => {
                         parse_memo_shape(e, &mut doc_info);
                     }
+                    // [Task #1058 후속] BULLET 누락 시 한컴이 default 글머리표를 본문
+                    // paragraph 에 자동 부여. HWPX `<hh:bullet id="N" char="❏" useImage="0">`
+                    // 4개 → HWP BULLET record 4개. 누락 시 일반 문단 시작 글머리표 부작용.
+                    b"bullet" => {
+                        let bullet = parse_bullet_hwpx(e, &mut reader)?;
+                        doc_info.bullets.push(bullet);
+                    }
                     _ => {}
                 }
             }
@@ -586,6 +593,17 @@ fn parse_para_shape(
         }
     }
 
+    // [Task #1058 후속] line_spacing_v2 (UINT32, 5.0.2.5 이상) 보정.
+    // HWPX 미명시 시 line_spacing (INT32) 값과 동기화 — 한컴 정답지의 모든 ParaShape 가
+    // line_spacing_v2 보유.
+    //
+    // 주의: attr1 bit 7 강제 set 은 부작용 (정답지가 0 인 ParaShape (예: ps[5]) 까지
+    // 한컴 default 와 다르게 만들어 글머리표 등 부정합 trigger). 본 본질은 Style record 의
+    // lang_id 필드 (Task #1058 의 Style 정정) 영역.
+    if ps.line_spacing_v2 == 0 {
+        ps.line_spacing_v2 = ps.line_spacing as u32;
+    }
+
     doc_info.para_shapes.push(ps);
     Ok(())
 }
@@ -945,6 +963,7 @@ fn parse_para_shape_switch(
 
 fn parse_style(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
     let mut style = Style::default();
+    style.lang_id = 1042; // default 한국어 (HWPX 미지정 시)
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"name" => style.local_name = attr_str(&attr),
@@ -960,6 +979,15 @@ fn parse_style(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
             b"paraPrIDRef" => style.para_shape_id = parse_u16(&attr),
             b"charPrIDRef" => style.char_shape_id = parse_u16(&attr),
             b"nextStyleIDRef" => style.next_style_id = parse_u8(&attr),
+            // [Task #1058 후속] HWPX `langID` → Style.lang_id (spec 표 47).
+            // HWPX 의 `langID="1042"` 가 한컴 정답지의 Style record 의 INT16 lang_id.
+            b"langID" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if let Ok(v) = s.parse::<i16>() {
+                        style.lang_id = v;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1311,6 +1339,56 @@ fn parse_tab_def(
 }
 
 // ─── Numbering ───
+
+/// [Task #1058 후속] `<hh:bullet>` 파싱 — HWP BULLET record (표 44).
+/// HWPX 의 4개 bullet 정의를 IR 의 bullets 에 매핑. 누락 시 한컴이 default 글머리표를
+/// 본문 paragraph 에 자동 부여 (글머리표 부작용).
+fn parse_bullet_hwpx(
+    e: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+) -> Result<Bullet, HwpxError> {
+    let mut bullet = Bullet::default();
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"char" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if let Some(c) = s.chars().next() {
+                        bullet.bullet_char = c;
+                    }
+                }
+            }
+            b"useImage" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if s == "1" {
+                        bullet.image_bullet = 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 자식 <hh:paraHead>, <hh:image> 등 skip
+    if !is_empty_event(e) {
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::End(ref ee)) => {
+                    if local_name(ee.name().as_ref()) == b"bullet" {
+                        break;
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(HwpxError::XmlError(format!("bullet: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+
+    Ok(bullet)
+}
 
 fn parse_numbering(
     e: &quick_xml::events::BytesStart,

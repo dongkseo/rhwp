@@ -336,10 +336,15 @@ pub struct Style {
     pub local_name: String,
     /// 영문 스타일 이름
     pub english_name: String,
-    /// 스타일 종류 (0: 문단, 1: 글자)
+    /// 스타일 종류 (0: 문단, 1: 글자) — 표 47/48
     pub style_type: u8,
     /// 다음 스타일 ID
     pub next_style_id: u8,
+    /// [Task #1058 후속] 언어 아이디 (INT16, default 1042=한국어).
+    /// 한컴 spec 표 47 의 next_style_id 다음 필드. 누락 시 ps_id/cs_id 가
+    /// 2 byte 앞당겨져 한컴이 잘못된 ParaShape 적용. footnote-01 의 정답지
+    /// 비교로 입증 — rhwp 의 style record size=28 vs 정답지 size=32 (4 byte 누락).
+    pub lang_id: i16,
     /// 문단 모양 ID 참조
     pub para_shape_id: u16,
     /// 글자 모양 ID 참조

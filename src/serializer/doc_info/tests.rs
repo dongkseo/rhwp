@@ -204,6 +204,7 @@ fn test_serialize_style_roundtrip() {
         english_name: "Normal".to_string(),
         style_type: 0,
         next_style_id: 0,
+        lang_id: 1042,
         para_shape_id: 1,
         char_shape_id: 2,
     };
@@ -214,8 +215,12 @@ fn test_serialize_style_roundtrip() {
     assert_eq!(r.read_hwp_string().unwrap(), "Normal");
     assert_eq!(r.read_u8().unwrap(), 0);
     assert_eq!(r.read_u8().unwrap(), 0);
+    // [Task #1058 후속] lang_id (INT16) — HWP5 spec 표 47
+    assert_eq!(r.read_i16().unwrap(), 1042);
     assert_eq!(r.read_u16().unwrap(), 1);
     assert_eq!(r.read_u16().unwrap(), 2);
+    // trailing 2 byte zero
+    assert_eq!(r.read_u16().unwrap(), 0);
 }
 
 #[test]
@@ -403,6 +408,7 @@ fn test_serialize_doc_info_roundtrip() {
         english_name: "Normal".to_string(),
         style_type: 0,
         next_style_id: 0,
+        lang_id: 1042,
         para_shape_id: 0,
         char_shape_id: 0,
     });

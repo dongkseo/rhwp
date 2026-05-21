@@ -615,8 +615,21 @@ pub fn serialize_style(style: &Style) -> Vec<u8> {
     w.write_hwp_string(&style.english_name).unwrap();
     w.write_u8(style.style_type).unwrap();
     w.write_u8(style.next_style_id).unwrap();
+    // [Task #1058 후속] HWP5 spec 표 47 정합 — lang_id (INT16) 추가.
+    // 누락 시 ps_id/cs_id 가 2 byte 앞당겨져 한컴이 잘못된 ParaShape 적용 →
+    // 신규 각주 추가 시 본문 paragraph 의 ParaShape (60.0 pt 여백 + 160% 줄간격) 부여.
+    let lang_id = if style.lang_id == 0 {
+        1042
+    } else {
+        style.lang_id
+    };
+    w.write_i16(lang_id).unwrap();
     w.write_u16(style.para_shape_id).unwrap();
     w.write_u16(style.char_shape_id).unwrap();
+    // [Task #1058 후속] 한컴 정답지 STYLE record 마지막 2 byte zero — 스펙 미문서화 영역.
+    // footnote-01.hwp 의 모든 STYLE record 가 끝에 0x0000 (UINT16) 보유.
+    // 누락 시 record size mismatch + DocInfo record 순서 shift.
+    w.write_u16(0).unwrap();
     w.into_bytes()
 }
 

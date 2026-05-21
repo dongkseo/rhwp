@@ -237,12 +237,14 @@ fn serialize_para_header_with_mask(
 
     // instanceId + 추가 바이트: raw_header_extra에서 복원
     // raw_header_extra[0..5] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2) → 건너뜀
-    // raw_header_extra[6..] = instanceId(4) + 나머지
+    // raw_header_extra[6..] = instanceId(4) + (옵션) 변경추적 UINT16 (2, 5.0.3.2 이상)
     if para.raw_header_extra.len() >= 10 {
         let extra = &para.raw_header_extra[6..];
         w.write_bytes(extra).unwrap();
     } else {
-        // 새 문단 (raw_header_extra 없음): instanceId(4)만 기록
+        // 새 문단 (HWPX 출처, raw_header_extra 없음): instanceId(4)만 기록.
+        // 한컴 정답지 footnote-01.hwp 의 PARA_HEADER size=22 = 18 (heading) + 4 (instanceId).
+        // 변경추적 UINT16 (size=24 형식) 은 한컴 정답지에 미사용.
         w.write_u32(0).unwrap();
     }
 

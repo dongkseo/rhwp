@@ -832,8 +832,12 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
 
     let style_type = r.read_u8().unwrap_or(0);
     let next_style_id = r.read_u8().unwrap_or(0);
+    // [Task #1058 후속] HWP5 spec 표 47 정합 — lang_id (INT16, default 1042=한국어)
+    let lang_id = r.read_i16().unwrap_or(1042);
     let para_shape_id = r.read_u16().unwrap_or(0);
     let char_shape_id = r.read_u16().unwrap_or(0);
+    // [Task #1058 후속] 끝 UINT16 (스펙 미문서화) — 한컴 정답지 STYLE 의 마지막 2 byte zero 흡수.
+    let _trailing = r.read_u16().unwrap_or(0);
 
     Ok(Style {
         raw_data: None,
@@ -841,6 +845,7 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
         english_name,
         style_type,
         next_style_id,
+        lang_id,
         para_shape_id,
         char_shape_id,
     })

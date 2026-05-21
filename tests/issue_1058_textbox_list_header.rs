@@ -1,14 +1,27 @@
-//! Issue #1058: 글상자 (TextBox) LIST_HEADER 13 byte contract 정합 회귀 가드.
+//! Issue #1058: 한컴편집기 신규 각주 추가 시 본문 다단계 목록 + 글머리표 부작용 회귀 가드.
 //!
-//! 결함 본질: HWPX → HWP 저장 시 글상자 LIST_HEADER 가 마지막 13 byte (zero 8 +
-//! editableAtFormMode 4 + fieldName flag 1) 누락 → 한컴편집기가 글상자 안 paragraph
-//! 를 본문 list 로 인식하여 신규 paragraph (각주) 추가 시 본문 다단계 목록
-//! "1.1.1.1.1.1" 자동 부여.
+//! 본 task 는 작업지시자 통찰 "정답지와 저장 버전과 차이를 통해 추론" 패턴으로
+//! 4 단계 정정:
 //!
-//! 참조: `hwplib::ForTextBox::listHeader`.
+//! 1. **PARA_HEADER instance_id (HWPX `<hp:p id>`)** — 다단계 목록 "1.1.1.1.1.1" 부작용 해소
+//!    (src/parser/hwpx/section.rs, raw_header_extra)
+//! 2. **ParaShape line_spacing_v2 (UINT32, 5.0.2.5)** — 각주 추가 시 줄간격 160% 부작용 해소
+//!    (src/parser/hwpx/header.rs::parse_para_shape)
+//! 3. **Style lang_id (INT16) + trailing 2 byte** — 각주 추가 시 왼쪽 여백 60.0pt 부작용 해소
+//!    (src/model/style.rs, src/parser/doc_info.rs, src/serializer/doc_info.rs,
+//!     src/parser/hwpx/header.rs::parse_style)
+//! 4. **HWPX `<hh:bullet>` 파싱 추가** — 일반 문단 자동 글머리표 부작용 해소
+//!    (src/parser/hwpx/header.rs, parse_bullet_hwpx)
 //!
-//! 정정 (Stage 2): src/serializer/control.rs::serialize_text_box_if_present —
-//! raw_list_header_extra 가 비어 있을 때 (HWPX 출처) 13 byte zero default 적용.
+//! 추가 정정: TextBox LIST_HEADER 13 byte (글상자 paragraph 한컴 contract).
+//!
+//! 참조: `hwplib::ForTextBox::listHeader` + HWP5 spec 표 47/58/65.
+//!
+//! 작업지시자 한컴 한글 2020 시각 판정 4 라운드 통과:
+//! - 다단계 목록 부여 없음 (Stage 9)
+//! - 각주 본문 정상 스타일 (Stage 12)
+//! - 일반 문단 글머리표 없음 (Stage 14)
+//! - 부작용 없음 (Stage 15)
 
 use std::fs;
 use std::path::Path;
@@ -179,5 +192,137 @@ fn issue_1058_textbox_list_header_byte_contract() {
     assert_eq!(
         payload[32], 0,
         "TextBox LIST_HEADER offset 32: fieldName flag = 0"
+    );
+}
+
+/// HWPX `<hp:p id>` → HWP PARA_HEADER instance_id 매핑 (다단계 목록 부작용 정정).
+#[test]
+fn issue_1058_paragraph_instance_id_mapped() {
+    let doc = load("samples/hwpx/footnote-01.hwpx");
+    let document = doc.document();
+    // HWPX paragraph 중 id="2147483648" (=0x80000000) 인 것이 존재해야 함
+    let mut has_msb = false;
+    for sec in &document.sections {
+        for p in &sec.paragraphs {
+            if p.raw_header_extra.len() >= 10 {
+                let iid = u32::from_le_bytes([
+                    p.raw_header_extra[6],
+                    p.raw_header_extra[7],
+                    p.raw_header_extra[8],
+                    p.raw_header_extra[9],
+                ]);
+                if iid & 0x80000000 != 0 {
+                    has_msb = true;
+                }
+            }
+        }
+    }
+    assert!(
+        has_msb,
+        "HWPX `<hp:p id>` 의 MSB set (예: 2147483648) paragraph 가 raw_header_extra 에 보존되어야 함"
+    );
+}
+
+/// ParaShape line_spacing_v2 (UINT32, 5.0.2.5) 보정 — 각주 줄간격 160% 부작용 정정.
+#[test]
+fn issue_1058_para_shape_line_spacing_v2_synced() {
+    let doc = load("samples/hwpx/footnote-01.hwpx");
+    let document = doc.document();
+    // 모든 ParaShape 의 line_spacing_v2 가 line_spacing 과 동기화되어야 함 (0 인 경우 제외)
+    for (i, ps) in document.doc_info.para_shapes.iter().enumerate() {
+        if ps.line_spacing != 0 {
+            assert_ne!(
+                ps.line_spacing_v2, 0,
+                "ps[{}]: line_spacing={} 이면 line_spacing_v2 도 보정되어야 함",
+                i, ps.line_spacing
+            );
+        }
+    }
+}
+
+/// Style record 의 lang_id (INT16) 필드 — 각주 왼쪽 여백 60.0pt 부작용 정정.
+#[test]
+fn issue_1058_style_lang_id_preserved() {
+    let doc = load("samples/hwpx/footnote-01.hwpx");
+    let document = doc.document();
+    // HWPX 의 langID="1042" (한국어) 가 모든 Style 에 보존
+    for (i, st) in document.doc_info.styles.iter().enumerate() {
+        assert_eq!(
+            st.lang_id, 1042,
+            "style[{}] ({}): HWPX langID=1042 매핑 필요 (Task #1058 본질)",
+            i, st.local_name
+        );
+    }
+}
+
+/// HWPX `<hh:bullet>` 파싱 — 일반 문단 글머리표 부작용 정정.
+#[test]
+fn issue_1058_bullet_records_preserved() {
+    let doc = load("samples/hwpx/footnote-01.hwpx");
+    let document = doc.document();
+    // HWPX <hh:bullets itemCnt="4"> → IR bullets 4 개 보존
+    assert_eq!(
+        document.doc_info.bullets.len(),
+        4,
+        "HWPX <hh:bullet> 4개가 IR.bullets 에 보존되어야 함. \
+         누락 시 한컴이 default 글머리표를 본문 paragraph 에 부여 (글머리표 부작용)"
+    );
+    // 첫 bullet 의 char = '❏'
+    let first = &document.doc_info.bullets[0];
+    assert_ne!(
+        first.bullet_char as u32, 0,
+        "bullet[0].bullet_char 가 HWPX char 속성에서 매핑되어야 함"
+    );
+}
+
+/// 직렬화 후 BULLET record 4개 작성 단언 (한컴 정답지 정합).
+#[test]
+fn issue_1058_serialized_bullet_count() {
+    let mut doc = load("samples/hwpx/footnote-01.hwpx");
+    let hwp_bytes = doc.export_hwp_with_adapter().expect("export");
+
+    // DocInfo stream 의 BULLET tag (24) 개수 카운트
+    use std::io::Read;
+    let cursor = std::io::Cursor::new(&hwp_bytes);
+    let mut comp = cfb::CompoundFile::open(cursor).expect("cfb open");
+    let mut fh = comp.open_stream("/FileHeader").expect("FileHeader");
+    let mut fh_data = Vec::new();
+    fh.read_to_end(&mut fh_data).expect("read FileHeader");
+    let is_compressed = fh_data.get(36).map(|b| (b & 0x01) != 0).unwrap_or(false);
+    drop(fh);
+
+    let mut docinfo = comp.open_stream("/DocInfo").expect("DocInfo");
+    let mut raw = Vec::new();
+    docinfo.read_to_end(&mut raw).expect("read DocInfo");
+    let data = if is_compressed {
+        let mut decoder = flate2::read::DeflateDecoder::new(&raw[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).expect("inflate");
+        decompressed
+    } else {
+        raw
+    };
+
+    let mut pos = 0;
+    let mut bullet_count = 0;
+    while pos + 4 <= data.len() {
+        let hdr = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+        let tag = hdr & 0x3FF;
+        let mut size = ((hdr >> 20) & 0xFFF) as usize;
+        pos += 4;
+        if size == 0xFFF && pos + 4 <= data.len() {
+            size = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                as usize;
+            pos += 4;
+        }
+        if tag == 24 {
+            bullet_count += 1;
+        }
+        pos += size;
+    }
+    assert_eq!(
+        bullet_count, 4,
+        "DocInfo BULLET (tag=24) record 4개 작성 필요 (한컴 정답지 footnote-01.hwp 정합). \
+         누락 시 한컴이 default 글머리표 부여"
     );
 }

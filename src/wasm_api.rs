@@ -4374,6 +4374,7 @@ impl HwpDocument {
             english_name,
             style_type,
             next_style_id,
+            lang_id: 1042, // 한국어 default (HWP5 spec 표 47)
             para_shape_id,
             char_shape_id,
         };
