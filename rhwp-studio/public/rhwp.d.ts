@@ -684,6 +684,13 @@ export class HwpDocument {
      */
     getSelectionRectsInCell(section_idx: number, parent_para_idx: number, control_idx: number, cell_idx: number, start_cell_para_idx: number, start_char_offset: number, end_cell_para_idx: number, end_char_offset: number): string;
     /**
+     * [Task #919] 글상자/도형 컨트롤의 페이지 좌표 바운딩박스를 반환한다.
+     *
+     * 반환: JSON `{"pageIndex":<N>,"x":<f>,"y":<f>,"width":<f>,"height":<f>}`
+     * studio 의 `isShapeBorderClick` 헬퍼에서 외곽 경계선 클릭 판별에 사용.
+     */
+    getShapeBBox(section_idx: number, parent_para_idx: number, control_idx: number): string;
+    /**
      * Shape(글상자) 속성을 조회한다.
      *
      * 반환: JSON `{ width, height, treatAsChar, tbMarginLeft, ... }`
@@ -1555,6 +1562,7 @@ export interface InitOutput {
     readonly hwpdocument_getSectionDef: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_getSelectionRects: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_getSelectionRectsInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
+    readonly hwpdocument_getShapeBBox: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getShapeProperties: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getShowControlCodes: (a: number) => number;
     readonly hwpdocument_getShowTransparentBorders: (a: number) => number;

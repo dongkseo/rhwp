@@ -442,6 +442,19 @@ impl DocumentCore {
             cell_context: Option<CellContext>,
         }
 
+        /// [Task #919] 글상자(TextBox) bbox 정보 — Shape 컨트롤의 외곽 도형 노드
+        /// (Rectangle/Ellipse/Path) 가 layout_textbox_content 로 자식에 텍스트를 가진 경우.
+        /// 글상자 안 빈 영역 클릭 시 첫 paragraph 진입에 사용.
+        struct TextBoxBboxInfo {
+            section_index: usize,
+            parent_para_index: usize,
+            control_index: usize,
+            x: f64,
+            y: f64,
+            w: f64,
+            h: f64,
+        }
+
         fn table_ctx_from_node(
             node: &RenderNode,
             current_table_ctx: Option<&CellContext>,
@@ -523,6 +536,7 @@ impl DocumentCore {
             runs: &mut Vec<RunInfo>,
             guide_runs: &mut Vec<GuideRunInfo>,
             cell_bboxes: &mut Vec<CellBboxInfo>,
+            textbox_bboxes: &mut Vec<TextBoxBboxInfo>,
             current_column: Option<u16>,
             current_table_id: Option<u32>,
             // Table 노드에서 전파되는 (section_index, parent_para_index, control_index)
@@ -561,6 +575,40 @@ impl DocumentCore {
                 current_table_meta
             };
             let mut child_cell_ctx = current_cell_ctx.clone();
+            // [Task #919] 글상자(TextBox) bbox 수집 — Shape 컨트롤 (Rectangle/Ellipse/Path)
+            // 노드가 layout_textbox_content 로 자식에 텍스트를 가진 경우. 외곽 도형 노드의
+            // section/para/control 메타 + bbox 가 모두 채워져 있으므로 그대로 사용.
+            // (글상자 안 빈 영역 클릭 시 첫 paragraph 진입에 사용)
+            let textbox_meta: Option<(usize, usize, usize)> = match &node.node_type {
+                RenderNodeType::Rectangle(r) => {
+                    match (r.section_index, r.para_index, r.control_index) {
+                        (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                        _ => None,
+                    }
+                }
+                RenderNodeType::Ellipse(e) => {
+                    match (e.section_index, e.para_index, e.control_index) {
+                        (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                        _ => None,
+                    }
+                }
+                RenderNodeType::Path(p) => match (p.section_index, p.para_index, p.control_index) {
+                    (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((si, pi, ci)) = textbox_meta {
+                textbox_bboxes.push(TextBoxBboxInfo {
+                    section_index: si,
+                    parent_para_index: pi,
+                    control_index: ci,
+                    x: node.bbox.x,
+                    y: node.bbox.y,
+                    w: node.bbox.width,
+                    h: node.bbox.height,
+                });
+            }
             // TableCell 노드의 bbox 수집
             if let RenderNodeType::TableCell(ref tc) = node.node_type {
                 if let Some(cell_idx) = tc.model_cell_index {
@@ -639,6 +687,7 @@ impl DocumentCore {
                     runs,
                     guide_runs,
                     cell_bboxes,
+                    textbox_bboxes,
                     col,
                     current_table_id,
                     table_meta,
@@ -697,14 +746,40 @@ impl DocumentCore {
             }
         }
 
+        /// [Task #919] 글상자 빈 영역 클릭 시 글상자 첫 paragraph (cellParaIndex=0)
+        /// 시작 위치로 진입 응답을 만든다. table-in-tbox.hwp 의 글상자 안 표 셀
+        /// 빈 영역 등을 한컴 UX 정합으로 처리.
+        fn format_textbox_entry(tb: &TextBoxBboxInfo, page_num: u32) -> String {
+            // cell_index=0 (글상자 외곽 자체), cellParaIndex=0 (글상자 첫 paragraph)
+            // 캐럿: 글상자 좌상단 + 약간 안쪽 패딩.
+            let caret_h = (tb.h - 4.0).max(12.0).min(20.0);
+            format!(
+                "{{\"sectionIndex\":{},\"paragraphIndex\":0,\"charOffset\":0,\
+                 \"parentParaIndex\":{},\"controlIndex\":{},\"cellIndex\":0,\"cellParaIndex\":0,\
+                 \"cellPath\":[{{\"controlIndex\":{},\"cellIndex\":0,\"cellParaIndex\":0}}],\
+                 \"isTextBox\":true,\
+                 \"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}}}",
+                tb.section_index,
+                tb.parent_para_index,
+                tb.control_index,
+                tb.control_index,
+                page_num,
+                tb.x + 2.0,
+                tb.y + 2.0,
+                caret_h
+            )
+        }
+
         let mut runs: Vec<RunInfo> = Vec::new();
         let mut guide_runs: Vec<GuideRunInfo> = Vec::new();
         let mut cell_bboxes: Vec<CellBboxInfo> = Vec::new();
+        let mut textbox_bboxes: Vec<TextBoxBboxInfo> = Vec::new();
         collect_runs(
             &tree.root,
             &mut runs,
             &mut guide_runs,
             &mut cell_bboxes,
+            &mut textbox_bboxes,
             None,
             None,
             None,
@@ -836,6 +911,36 @@ impl DocumentCore {
                             _ => continue,
                         };
                         if x >= sx && x <= sx + sw && y >= sy && y <= sy + sh {
+                            // [Task #919] 글상자(Shape with text_box) 영역 hit — 본문
+                            // TextRun 위치가 아닌 메인 매칭으로 fall-through 한다.
+                            // 메인 매칭 (cell hit / textbox hit / body hit) 이 글상자
+                            // 안 표 셀 / 글상자 빈 영역 / 본문 우선순위로 처리.
+                            // (이 분기에서 글상자 안 표 셀을 가로채면 안 됨)
+                            let shape_has_textbox = match ctrl {
+                                Control::Shape(s) => match s.as_ref() {
+                                    crate::model::shape::ShapeObject::Rectangle(r) => {
+                                        r.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Ellipse(e) => {
+                                        e.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Polygon(p) => {
+                                        p.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Arc(a) => {
+                                        a.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Curve(c) => {
+                                        c.drawing.text_box.is_some()
+                                    }
+                                    _ => false,
+                                },
+                                _ => false,
+                            };
+                            if shape_has_textbox {
+                                // 글상자는 메인 매칭에서 처리 — 0.5 분기 break.
+                                break;
+                            }
                             let ctrl_positions =
                                 crate::document_core::find_control_text_positions(para);
                             let char_offset = ctrl_positions.get(ci).copied().unwrap_or(0);
@@ -907,15 +1012,24 @@ impl DocumentCore {
                 }
             }
         }
-        // 셀/글상자 히트가 있으면 우선, 없으면 본문 히트
-        if let Some((idx, offset)) = hit_cell.or(hit_body) {
+
+        // [Task #919] 우선순위 — 가장 specific 한 매칭부터:
+        //   1. hit_cell (셀 안 텍스트 위 hit — best-match area)
+        //   2. clicked_cell (셀 bbox 매칭 — 텍스트가 없는 빈 셀 포함)
+        //      ⇒ 글상자 안 표의 빈 셀도 여기서 매칭
+        //   3. textbox_hit (글상자 안 빈 영역 — 셀 없는 영역)
+        //   4. hit_body (본문 fall-through)
+        //
+        // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
+        // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
+        if let Some((idx, offset)) = hit_cell {
             return Ok(format_hit(&runs[idx], offset, page_num));
         }
 
         // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
         let click_column = self.find_column_at_x(page_num, x);
 
-        // 2. 셀 bbox 기반으로 클릭한 셀 판별
+        // 2. 셀 bbox 기반으로 클릭한 셀 판별 (글상자 안 표 셀 포함)
         let clicked_cell: Option<&CellBboxInfo> = cell_bboxes
             .iter()
             .filter(|cb| cb.has_meta)
@@ -1023,6 +1137,22 @@ impl DocumentCore {
                     cb.x + 2.0, cb.y + 2.0, caret_h
                 ));
             }
+        }
+
+        // [Task #919] 글상자 빈 영역 매칭 — clicked_cell 매칭 안 됐으면 글상자 시도.
+        // 글상자 안 표 셀은 위쪽 clicked_cell 분기에서 이미 처리됨.
+        // 후보 여럿이면 가장 작은 (가장 specific) 것 선택.
+        let textbox_hit: Option<&TextBoxBboxInfo> = textbox_bboxes
+            .iter()
+            .filter(|tb| x >= tb.x && x <= tb.x + tb.w && y >= tb.y && y <= tb.y + tb.h)
+            .min_by_key(|tb| ((tb.w.max(0.0) * tb.h.max(0.0)) * 1000.0) as i64);
+        if let Some(tb) = textbox_hit {
+            return Ok(format_textbox_entry(tb, page_num));
+        }
+
+        // 본문 hit (1차 hit 검사에서 발견된 본문 paragraph)
+        if let Some((idx, offset)) = hit_body {
+            return Ok(format_hit(&runs[idx], offset, page_num));
         }
 
         // 같은 줄(y 범위)에서 가장 가까운 본문 TextRun 찾기

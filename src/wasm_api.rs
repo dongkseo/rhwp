@@ -2048,6 +2048,25 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [Task #919] 글상자/도형 컨트롤의 페이지 좌표 바운딩박스를 반환한다.
+    ///
+    /// 반환: JSON `{"pageIndex":<N>,"x":<f>,"y":<f>,"width":<f>,"height":<f>}`
+    /// studio 의 `isShapeBorderClick` 헬퍼에서 외곽 경계선 클릭 판별에 사용.
+    #[wasm_bindgen(js_name = getShapeBBox)]
+    pub fn get_shape_bbox(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_shape_bbox_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표 컨트롤을 문단에서 삭제한다.
     ///
     /// 반환: JSON `{"ok":true}`

@@ -929,13 +929,30 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     }
   }
 
-  // ─── Esc: 글상자 편집 → 글상자 객체 선택 / 셀 편집 → 표 객체 선택 ──
+  // ─── Esc: 가장 안쪽 컨테이너부터 escape ──
+  //  - 글상자 안 표 셀 → 표 객체 선택 (안 표가 가장 안쪽)
+  //  - 글상자 안 (안 표 외 위치) → 글상자 객체 선택
+  //  - 본문 표 셀 → 표 객체 선택
+  //  한컴 UX 정합 (`feedback_visual_judgment_authority`).
   if (e.key === 'Escape') {
     e.preventDefault();
     const inCell = this.cursor.isInCell();
     const inTextBox = this.cursor.isInTextBox();
-    if (inTextBox) {
-      // 글상자/캡션 편집 → 객체 선택
+    const nestingDepth = this.cursor.nestingDepth();
+    // [Task #919] 글상자 안 표 셀 (cellPath.length >= 2 + isTextBox) → 표 객체 선택.
+    // enterTableObjectSelection 이 가장 안쪽 셀 (innermost) 의 표를 선택.
+    const inNestedTableInTextBox = inTextBox && nestingDepth >= 2;
+    if (inNestedTableInTextBox) {
+      // 글상자 안 표 → 표 객체 선택 (가장 안쪽)
+      const entered = this.cursor.enterTableObjectSelection();
+      if (entered) {
+        this.caret.hide();
+        this.selectionRenderer.clear();
+        this.renderTableObjectSelection();
+        this.eventBus.emit('table-object-selection-changed', true);
+      }
+    } else if (inTextBox) {
+      // 글상자 편집 (안 표 외 영역) → 글상자 객체 선택
       const pos = this.cursor.getPosition();
       const sec = pos.sectionIndex;
       const ppi = pos.parentParaIndex!;
@@ -950,7 +967,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.renderPictureObjectSelection();
       this.eventBus.emit('picture-object-selection-changed', true);
     } else if (inCell) {
-      // 셀 편집 모드 → 표 객체 선택
+      // 본문 셀 편집 모드 → 표 객체 선택
       const entered = this.cursor.enterTableObjectSelection();
       if (entered) {
         this.caret.hide();

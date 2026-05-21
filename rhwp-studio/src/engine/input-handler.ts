@@ -1123,6 +1123,52 @@ export class InputHandler {
     }
   }
 
+  /** [Task #919] 클릭 좌표가 (sec, ppi, ci) 글상자의 외곽 경계선 위인지 판정.
+   *  isShapeBorderClick(picture 모듈) 의 sec/ppi/ci 변형 — getShapeBBox API 사용
+   *  tolerance 5px 한컴 정합 (Native bbox + 5px 안). */
+  isShapeBorderClickByRef(
+    pageX: number, pageY: number,
+    sec: number, ppi: number, ci: number,
+  ): boolean {
+    try {
+      const bbox = this.wasm.getShapeBBox(sec, ppi, ci);
+      const tolerance = 5;
+      const nearLeft = Math.abs(pageX - bbox.x) <= tolerance;
+      const nearRight = Math.abs(pageX - (bbox.x + bbox.width)) <= tolerance;
+      const nearTop = Math.abs(pageY - bbox.y) <= tolerance;
+      const nearBottom = Math.abs(pageY - (bbox.y + bbox.height)) <= tolerance;
+      const inVertRange = pageY >= bbox.y - tolerance && pageY <= bbox.y + bbox.height + tolerance;
+      const inHorzRange = pageX >= bbox.x - tolerance && pageX <= bbox.x + bbox.width + tolerance;
+      return (nearLeft && inVertRange) || (nearRight && inVertRange) ||
+             (nearTop && inHorzRange) || (nearBottom && inHorzRange);
+    } catch {
+      return false;
+    }
+  }
+
+  /** [Task #919] 클릭 좌표 근처에 글상자가 있는지 확인 (글상자 바깥에서 외곽 근처 클릭) */
+  findShapeByOuterClick(
+    pageX: number, pageY: number,
+    sec: number, paragraphIndex: number,
+  ): { sec: number; ppi: number; ci: number } | null {
+    // 현재 문단 및 인접 문단 (±2) 검사 — findTableByOuterClick 동일 패턴
+    for (let offset = 0; offset <= 2; offset++) {
+      const candidates = offset === 0
+        ? [paragraphIndex]
+        : [paragraphIndex - offset, paragraphIndex + offset];
+      for (const ppi of candidates) {
+        if (ppi < 0) continue;
+        // Shape 컨트롤은 paragraph 의 어느 위치든 있을 수 있으므로 0..N 시도
+        for (let ci = 0; ci < 10; ci++) {
+          if (this.isShapeBorderClickByRef(pageX, pageY, sec, ppi, ci)) {
+            return { sec, ppi, ci };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   /**
    * 클릭 좌표 근처에 표가 있는지 확인한다 (표 바깥에서 클릭한 경우).
    * hitTest 결과의 문단과 인접 문단을 검사하여 표 외곽 근처인지 판별한다.

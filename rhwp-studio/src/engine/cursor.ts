@@ -1127,11 +1127,18 @@ export class CursorState {
 
   // ─── 표 객체 선택 모드 ─────────────────────────────────
 
-  /** 현재 셀 위치의 표를 객체 선택한다. 셀 내부가 아니면 false. */
+  /** 현재 셀 위치의 표를 객체 선택한다. 셀 내부가 아니면 false.
+   *
+   *  [Task #919] 글상자 안 표 셀 (isInTextBox + cellPath.length >= 2) 도
+   *  허용 — 가장 안쪽 표를 객체 선택한다. 한컴 UX 정합 (글상자 안 표 Esc).
+   *  글상자 직접 셀 (cellPath.length === 1, 글상자 자체) 은 표가 아니므로 제외.
+   */
   enterTableObjectSelection(): boolean {
-    if (!this.isInCell() || this.isInTextBox()) return false;
+    if (!this.isInCell()) return false;
     const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellPath } = this.position;
     if (ppi === undefined || ci === undefined) return false;
+    // 글상자 안 본문 (cellPath.length === 1, 글상자 자체) → 표 객체 선택 대상 아님
+    if (this.isInTextBox() && (cellPath?.length ?? 0) < 2) return false;
     this._tableObjectSelected = true;
     if (cellPath && cellPath.length > 1) {
       // 중첩 표: 내부 표를 선택 (cellPath 포함)
@@ -1177,8 +1184,13 @@ export class CursorState {
 
     if (cellPath && cellPath.length > 1) {
       // 중첩 표 객체 선택 → 외부 셀로 이동 (한 단계 위)
+      // [Task #919] 글상자 안 표였으면 (가장 바깥이 글상자 = isTextBox) 유지.
+      const wasInTextBox = this.position.isTextBox === true;
       const outerPath = cellPath.slice(0, -1);
       const lastOuter = outerPath[outerPath.length - 1];
+      // outerPath.length === 1 이고 글상자였으면 isTextBox 유지 → 다음 Esc 시
+      // 글상자 객체 선택으로 전이 가능
+      const stillInTextBox = wasInTextBox && outerPath.length === 1;
       this.position = {
         sectionIndex: sec,
         paragraphIndex: lastOuter.cellParaIndex,
@@ -1188,6 +1200,7 @@ export class CursorState {
         cellIndex: lastOuter.cellIndex,
         cellParaIndex: lastOuter.cellParaIndex,
         cellPath: outerPath,
+        isTextBox: stillInTextBox ? true : undefined,
       };
     } else {
       // 단일 표 객체 선택 → 표 밖으로 이동

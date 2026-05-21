@@ -1493,6 +1493,89 @@ impl DocumentCore {
         )))
     }
 
+    /// [Task #919] 글상자/도형 컨트롤의 페이지 좌표 바운딩박스를 반환한다 (네이티브).
+    ///
+    /// render_tree 의 Rectangle/Ellipse/Path 노드 중 (sec, ppi, ci) 매칭되는 것을 찾아
+    /// bbox 를 반환. `getTableBBox` 동등 패턴. studio 의 `isShapeBorderClick` 에서 사용.
+    pub(crate) fn get_shape_bbox_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        // 해당 문단에 Shape 컨트롤이 실제로 있는지 사전 확인
+        let has_shape = self
+            .document
+            .sections
+            .get(section_idx)
+            .and_then(|s| s.paragraphs.get(parent_para_idx))
+            .and_then(|p| p.controls.get(control_idx))
+            .map(|c| matches!(c, Control::Shape(_)))
+            .unwrap_or(false);
+        if !has_shape {
+            return Err(HwpError::RenderError(format!(
+                "글상자/도형 노드를 찾을 수 없습니다 (sec={}, ppi={}, ci={})",
+                section_idx, parent_para_idx, control_idx
+            )));
+        }
+
+        fn find_shape_bbox(
+            node: &RenderNode,
+            sec: usize,
+            ppi: usize,
+            ci: usize,
+            page_idx: usize,
+        ) -> Option<String> {
+            let meta: Option<(Option<usize>, Option<usize>, Option<usize>)> = match &node.node_type
+            {
+                RenderNodeType::Rectangle(r) => {
+                    Some((r.section_index, r.para_index, r.control_index))
+                }
+                RenderNodeType::Ellipse(e) => {
+                    Some((e.section_index, e.para_index, e.control_index))
+                }
+                RenderNodeType::Path(p) => Some((p.section_index, p.para_index, p.control_index)),
+                _ => None,
+            };
+            if let Some((Some(si), Some(pi), Some(cidx))) = meta {
+                if si == sec && pi == ppi && cidx == ci {
+                    return Some(format!(
+                        "{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"width\":{:.1},\"height\":{:.1}}}",
+                        page_idx,
+                        node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height
+                    ));
+                }
+            }
+            for child in &node.children {
+                if let Some(result) = find_shape_bbox(child, sec, ppi, ci, page_idx) {
+                    return Some(result);
+                }
+            }
+            None
+        }
+
+        let total_pages = self.page_count() as usize;
+        for page_num in 0..total_pages {
+            let tree = self.build_page_tree_cached(page_num as u32)?;
+            if let Some(result) = find_shape_bbox(
+                &tree.root,
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                page_num,
+            ) {
+                return Ok(result);
+            }
+        }
+
+        Err(HwpError::RenderError(format!(
+            "글상자/도형 노드를 찾을 수 없습니다 (sec={}, ppi={}, ci={})",
+            section_idx, parent_para_idx, control_idx
+        )))
+    }
+
     /// 표 컨트롤을 문단에서 삭제한다 (네이티브).
     ///
     /// 확장 컨트롤은 para.text에 포함되지 않고 char_offsets 간의 갭(8 code unit)에 배치된다.
