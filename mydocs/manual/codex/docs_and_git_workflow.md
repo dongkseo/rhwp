@@ -59,6 +59,25 @@ mydocs/orders/YYYYMMDD.md
 10. 커밋
 11. 작업지시자 승인 후 이슈 close
 
+## GitHub CLI Usage
+
+GitHub connector가 읽기는 가능하지만 mutation 권한 부족으로 403을 반환할 수 있다.
+이슈 assignee 지정, 이슈/PR metadata 수정, 코멘트 작성 등 GitHub 변경 작업은
+로컬 인증된 `gh` CLI를 사용한다.
+
+예:
+
+```bash
+gh issue edit 1063 --add-assignee edwardkim -R edwardkim/rhwp
+```
+
+운영 규칙:
+
+- connector mutation이 403으로 실패하면 `gh` CLI로 재시도한다.
+- sandbox 네트워크 제한으로 `api.github.com` 연결 실패가 나면 동일 `gh` 명령을 escalation으로 재시도한다.
+- `gh`로 수행한 GitHub 변경은 오늘할일, 계획서, 보고서 중 관련 문서에 기록한다.
+- `gh` 사용도 하이퍼-워터폴 절차를 대체하지 않는다. 이슈 확인, 브랜치, 문서, 승인 게이트는 그대로 유지한다.
+
 ## PR Workflow
 
 외부 기여자 PR은 내부 task와 다르게 처리한다.
@@ -88,6 +107,8 @@ PR 댓글 톤은 과장하지 않는다. "정말 감사합니다", "정성스러
 
 ## Current Branch Memory
 
-현재는 사용자 지시로 `local/devel`에 있다.
+2026-05-22 현재 작업 브랜치는 `local/task_m100_1063` 이다.
 
-Task #854 재작업을 다시 시작하려면 이슈와 브랜치 절차를 다시 확인해야 한다. 곧바로 구현하지 않는다.
+Task #1063은 용지설정 대화창의 세로/가로 방향 가이드 아이콘 식별성 정정이다.
+계획서와 구현 계획서는 작성되었고, GitHub assignee 지정은 `gh` CLI로 완료했다.
+소스 구현은 작업지시자 승인 후 진행한다.

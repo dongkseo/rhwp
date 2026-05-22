@@ -1,6 +1,6 @@
 # Codex Memory Dump
 
-덤프 시점: 2026-05-13, Asia/Seoul
+덤프 시점: 2026-05-22, Asia/Seoul
 
 이 폴더는 Codex가 현재 세션에서 들고 있는 작업 기억을 재사용 가능한 형태로 분류한 덤프이다.
 `mydocs/manual/memory/`의 Claude 메모리 덤프를 읽어 Codex 작업 방식에 반영한 내용과, Task #854 진행 중 새로 확인된 세션 기억을 함께 정리한다.
@@ -31,3 +31,12 @@ Codex는 이 프로젝트에서 구현부터 시작하면 안 된다.
 7. 보고서와 커밋
 
 Task #854의 현재 교훈은 특히 강하다. HWPX 파싱, IR 매핑, rhwp-studio 렌더링은 일단 정상 영역으로 보고, 문제는 IR clone/materialize 후 HWP5 저장에서 누락되거나 잘못 매핑되는 구조를 찾는 것이다.
+
+## 2026-05-22 Addendum
+
+- 현재 macOS 작업 경로는 `/Users/edwardkim/vspace/rhwp` 이다.
+- GitHub connector가 mutation 권한 부족으로 403을 반환할 수 있다.
+- 이슈 assignee 지정, 이슈/PR 메타데이터 수정 등 GitHub 변경 작업은 로컬 인증된 `gh` CLI를 사용한다.
+- 예: `gh issue edit 1063 --add-assignee edwardkim -R edwardkim/rhwp`
+- sandbox 네트워크 제한으로 `gh`가 `api.github.com` 연결 실패를 내면, 동일 명령을 escalation으로 재시도한다.
+- Task #1063은 `local/task_m100_1063` 브랜치에서 시작했고, 계획서 작성, assignee 지정, Stage 1 방향 아이콘 정정, Stage 2 새 빈 문서 A4 프리셋 매칭 정정, E2E 검증, Stage 1/2 작업지시자 시각 판정, 보고서 작성까지 완료했다. 커밋 및 이후 merge/close 절차는 작업지시자 지시에 따른다.
