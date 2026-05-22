@@ -576,6 +576,81 @@ PageBorderFillBasis:
 
 ---
 
+## EQEDIT (HWPTAG_EQEDIT) — `baseline` 과 `version_info` 사이 UINT2 zero 필드 누락
+
+### 스펙 문제
+
+`mydocs/tech/한글문서파일형식_5.0_revision1.3.md` 의 표 105 (수식 개체 속성) 가
+EQEDIT record 의 byte order 를 다음과 같이 정의:
+
+| 자료형 | 길이 | 설명 |
+|--------|------|------|
+| UINT32 | 4 | 속성 (스크립트 범위) |
+| WORD | 2 | 스크립트 길이 |
+| WCHAR array | 2×len | 글 수식 스크립트 |
+| HWPUNIT | 4 | 수식 글자 크기 |
+| COLORREF | 4 | 글자 색상 |
+| INT16 | 2 | base line |
+| WCHAR array | 2×len | 수식 버전 정보 |
+| WCHAR array | 2×len | 수식 폰트 이름 |
+
+→ baseline (INT16) 직후 바로 version_info 의 length 필드 (WORD) 가 오는 구조.
+
+### 실제 데이터
+
+`samples/math-001.hwp` 의 EQEDIT raw payload 분석:
+
+```
+0058: 4C 04 00 00       letter_size = 1100
+      00 00 00 00       color = 0
+      5D 00             baseLine = 93
+      00 00             ← 스펙 표 105 누락! (UINT16 zero)
+      13 00             version_info length = 19
+      [Equation Version 60]
+      07 00             font_name length = 7
+      [HYhwpEQ]
+```
+
+baseline 과 version_info length 사이에 **UINT16 zero (2 byte)** 가 위치.
+
+### hwplib 정합
+
+```java
+// hwplib/src/main/java/kr/dogfoot/hwplib/reader/bodytext/paragraph/control/eqed/ForEQEdit.java
+eqEdit.setBaseLine(sr.readSInt2());
+eqEdit.setUnknown(sr.readUInt2());        // ← 스펙 누락 영역
+eqEdit.getVersionInfo().setBytes(sr.readHWPString());
+eqEdit.getFontName().setBytes(sr.readHWPString());
+```
+
+hwplib 가 spec 누락 영역을 `unknown` UINT2 로 정확 처리. write 측도 동일 (`writeUInt2`).
+
+### 누락 시 증상
+
+UINT2 zero 를 read 하지 않으면 `[00 00]` 이 version_info length 로 오인되어:
+- 첫 string = "" (length 0)
+- 둘째 string = "Equation Version 60" (그 다음 `[13 00]` 을 length 19 로 읽음)
+
+→ (version_info, font_name) 자리값 **swap**. 한컴이 잘못된 byte align 으로 후속
+record (PARA_TEXT 등) 를 읽어 **본문 텍스트 미표시** (수식만 보임).
+
+### 정정 (Task #1061)
+
+- `src/model/control.rs::Equation` 에 `unknown: u16` 필드 추가
+- `src/parser/control.rs::parse_equation_control` — baseline 후 `read_u16()` 추가
+- `src/serializer/control.rs::serialize_equation_control` — baseline 후 `write_u16(eq.unknown)` 추가
+
+### 관련 commits
+
+Task #1061 (2026-05-22).
+
+### 메모리 룰
+
+- `feedback_diagnosis_layer_attribution` — EQEDIT raw byte 직접 분석으로 본질 정확 식별
+- `reference_hwp2hwpx_library` — hwplib 권위 자료가 spec errata 의 결정적 근거
+
+---
+
 ## 검증 원칙
 
 1. **바이너리 우선**: 스펙 문서보다 실제 바이너리 데이터를 신뢰한다

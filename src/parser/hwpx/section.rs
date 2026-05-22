@@ -3778,6 +3778,7 @@ fn parse_equation(
         font_size,
         color,
         baseline,
+        unknown: 0,
         font_name,
         version_info,
         raw_ctrl_data: Vec::new(),

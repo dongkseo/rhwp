@@ -813,6 +813,11 @@ fn parse_equation_control(ctrl_data: &[u8], child_records: &[Record]) -> Control
         // baseline: i16 (2바이트)
         equation.baseline = r.read_i16().unwrap_or(0);
 
+        // [Task #1061] unknown: u16 (2바이트) — HWP5 spec 표 105 누락 영역.
+        // hwplib ForEQEdit.readUInt2() 정합. 한컴 실제 저장본에 baseline 과
+        // version_info 사이 UINT16 zero 가 위치.
+        equation.unknown = r.read_u16().unwrap_or(0);
+
         // version_info: WCHAR 문자열
         if let Ok(ver) = r.read_hwp_string() {
             equation.version_info = ver;

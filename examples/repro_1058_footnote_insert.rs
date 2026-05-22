@@ -80,7 +80,10 @@ fn main() {
                 if let Control::Footnote(fn_) = ctrl {
                     if let Some(inner) = fn_.paragraphs.first() {
                         if inner.text.contains("기술") {
-                            println!("\n== 재파싱 신규 footnote (#{}, section {} pi {}) ==", footnote_idx, si, pi);
+                            println!(
+                                "\n== 재파싱 신규 footnote (#{}, section {} pi {}) ==",
+                                footnote_idx, si, pi
+                            );
                             println!("  text={:?}", inner.text);
                             println!("  char_offsets={:?}", inner.char_offsets);
                             println!("  char_count={}", inner.char_count);

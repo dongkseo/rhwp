@@ -265,6 +265,7 @@ mod tests {
             font_size: 1000,
             color: 0x000000FF,
             baseline: 120,
+            unknown: 0,
             font_name: "HYhwpEQ".to_string(),
             version_info: "Equation Version 60".to_string(),
             raw_ctrl_data: Vec::new(),

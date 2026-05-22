@@ -1902,6 +1902,8 @@ fn serialize_equation_control(eq: &Equation, level: u16, records: &mut Vec<Recor
     w.write_u32(eq.color).unwrap();
     // baseline: i16
     w.write_i16(eq.baseline).unwrap();
+    // [Task #1061] unknown: u16 — HWP5 spec 표 105 누락 영역, hwplib 정합
+    w.write_u16(eq.unknown).unwrap();
     // version_info: HWP string
     w.write_hwp_string(&eq.version_info).unwrap();
     // font_name: HWP string
