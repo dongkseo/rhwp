@@ -93,24 +93,41 @@ export class WasmBridge {
   }
 
   loadDocument(data: Uint8Array, fileName?: string): DocumentInfo {
-    if (this.doc) {
-      this.doc.free();
+    this.releaseDocument();
+    const nextFileName = fileName ?? 'document.hwp';
+    let nextDoc: HwpDocument | null = null;
+
+    try {
+      nextDoc = new HwpDocument(data);
+      this.doc = nextDoc;
+      this._fileName = nextFileName;
+      this.doc.convertToEditable();
+      this.ensureParagraphStableIds();
+      this.doc.setFileName(this._fileName);
+      const info: DocumentInfo = JSON.parse(this.doc.getDocumentInfo());
+      console.log(`[WasmBridge] 문서 로드: ${info.pageCount}페이지`);
+
+      // [Task #741 후속] 외부 file path 그림 영역 영역 dev 환경 영역 영역 fetch (basename 영역
+      // 영역 영역 same dir 영역 image 영역 영역 영역 — 본 환경 dev 영역 영역 samples/ 영역
+      // Vite asset). 영역 영역 영역 영역 영역 부재 영역 영역 placeholder 표시.
+      void this.populateExternalImagesFromDevServer();
+
+      return info;
+    } catch (error) {
+      if (this.doc === nextDoc) {
+        this.doc = null;
+      }
+      if (nextDoc) {
+        try {
+          nextDoc.free();
+        } catch {
+          /* noop */
+        }
+      }
+      this._fileName = 'document.hwp';
+      this._currentFileHandle = null;
+      throw error;
     }
-    this._fileName = fileName ?? 'document.hwp';
-    this._currentFileHandle = null;
-    this.doc = new HwpDocument(data);
-    this.doc.convertToEditable();
-    this.ensureParagraphStableIds();
-    this.doc.setFileName(this._fileName);
-    const info: DocumentInfo = JSON.parse(this.doc.getDocumentInfo());
-    console.log(`[WasmBridge] 문서 로드: ${info.pageCount}페이지`);
-
-    // [Task #741 후속] 외부 file path 그림 영역 영역 dev 환경 영역 영역 fetch (basename 영역
-    // 영역 영역 same dir 영역 image 영역 영역 영역 — 본 환경 dev 영역 영역 samples/ 영역
-    // Vite asset). 영역 영역 영역 영역 영역 부재 영역 영역 placeholder 표시.
-    void this.populateExternalImagesFromDevServer();
-
-    return info;
   }
 
   /** [Task #741 후속] 외부 file path 그림 영역 영역 dev 서버 영역 영역 fetch + inject. */

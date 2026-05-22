@@ -43,11 +43,20 @@ pub enum FileFormat {
     Hwp,
     /// HWPX (XML 기반, ZIP 컨테이너)
     Hwpx,
-    /// HWP 3.0 바이너리 (미지원 — 감지만, Issue #265)
+    /// HWP 3.0 바이너리
     Hwp3,
+    /// Legacy raw HWPML XML (미지원 — 감지만, Issue #1053)
+    LegacyHwpml,
     /// 알 수 없는 포맷
     Unknown,
 }
+
+const FORMAT_PROBE_SCAN_LIMIT: usize = 4096;
+const UNSUPPORTED_HWPML_CODE: &str = "UNSUPPORTED_HWPML";
+const UNSUPPORTED_FILE_FORMAT_CODE: &str = "UNSUPPORTED_FILE_FORMAT";
+const SUPPORTED_FORMATS_HINT: &str = "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다.";
+const UNSUPPORTED_HWPML_HINT: &str =
+    "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다. 한컴오피스에서 HWP 5.0 또는 HWPX로 다시 저장한 뒤 열어주세요.";
 
 /// 파일 데이터의 매직 바이트로 포맷을 감지한다.
 pub fn detect_format(data: &[u8]) -> FileFormat {
@@ -66,7 +75,82 @@ pub fn detect_format(data: &[u8]) -> FileFormat {
     if data.len() >= 17 && &data[0..17] == b"HWP Document File" {
         return FileFormat::Hwp3;
     }
+    if detect_legacy_hwpml(data) {
+        return FileFormat::LegacyHwpml;
+    }
     FileFormat::Unknown
+}
+
+fn format_probe_prefix(data: &[u8]) -> &[u8] {
+    &data[..data.len().min(FORMAT_PROBE_SCAN_LIMIT)]
+}
+
+fn trim_format_probe_prefix(data: &[u8]) -> &[u8] {
+    let mut start = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    while start < data.len() && data[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    &data[start..]
+}
+
+fn ascii_lower(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + 32
+    } else {
+        byte
+    }
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+}
+
+fn starts_with_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
+    data.get(..needle.len())
+        .is_some_and(|head| ascii_eq_ignore_case(head, needle))
+}
+
+fn contains_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && data
+            .windows(needle.len())
+            .any(|window| ascii_eq_ignore_case(window, needle))
+}
+
+fn detect_legacy_hwpml(data: &[u8]) -> bool {
+    let prefix = trim_format_probe_prefix(format_probe_prefix(data));
+    let looks_like_xml = starts_with_ascii_ignore_case(prefix, b"<?xml")
+        || starts_with_ascii_ignore_case(prefix, b"<hwpml");
+
+    looks_like_xml && contains_ascii_ignore_case(prefix, b"<hwpml")
+}
+
+fn detect_legacy_hwpml_format_name(data: &[u8]) -> &'static str {
+    let prefix = format_probe_prefix(data);
+    let versions: &[(&[u8], &'static str)] = &[
+        (b"version=\"2.1\"", "HWPML 2.1"),
+        (b"version='2.1'", "HWPML 2.1"),
+        (b"hwpml=\"2.1\"", "HWPML 2.1"),
+        (b"hwpml='2.1'", "HWPML 2.1"),
+        (b"version=\"2.0\"", "HWPML 2.0"),
+        (b"version='2.0'", "HWPML 2.0"),
+        (b"version=\"1.0\"", "HWPML 1.0"),
+        (b"version='1.0'", "HWPML 1.0"),
+    ];
+    for (needle, format_name) in versions {
+        if contains_ascii_ignore_case(prefix, needle) {
+            return format_name;
+        }
+    }
+    "HWPML"
 }
 
 /// 파싱 에러 (통합)
@@ -80,8 +164,9 @@ pub enum ParseError {
     HwpxError(hwpx::HwpxError),
     Hwp3Error(hwp3::Hwp3Error),
     EncryptedDocument,
-    /// 감지는 되었으나 지원하지 않는 포맷 (Issue #265)
+    /// 감지는 되었으나 지원하지 않는 포맷
     UnsupportedFormat {
+        code: &'static str,
         format: &'static str,
         hint: &'static str,
     },
@@ -98,8 +183,11 @@ impl std::fmt::Display for ParseError {
             ParseError::HwpxError(e) => write!(f, "HWPX 오류: {}", e),
             ParseError::Hwp3Error(e) => write!(f, "HWP 3.0 오류: {}", e),
             ParseError::EncryptedDocument => write!(f, "암호화된 문서는 지원하지 않습니다"),
-            ParseError::UnsupportedFormat { format, hint } => {
-                write!(f, "지원하지 않는 포맷입니다: {format}. {hint}")
+            ParseError::UnsupportedFormat { code, format, hint } => {
+                write!(
+                    f,
+                    "지원하지 않는 포맷입니다: {format}. 오류코드: {code}. {hint}"
+                )
             }
         }
     }
@@ -751,9 +839,19 @@ impl DocumentParser for Hwp3Parser {
 /// 포맷 자동 감지 후 적절한 파서로 파싱
 pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
     match detect_format(data) {
+        FileFormat::Hwp => HwpParser.parse(data),
         FileFormat::Hwpx => HwpxParser.parse(data),
         FileFormat::Hwp3 => Hwp3Parser.parse(data),
-        _ => HwpParser.parse(data),
+        FileFormat::LegacyHwpml => Err(ParseError::UnsupportedFormat {
+            code: UNSUPPORTED_HWPML_CODE,
+            format: detect_legacy_hwpml_format_name(data),
+            hint: UNSUPPORTED_HWPML_HINT,
+        }),
+        FileFormat::Unknown => Err(ParseError::UnsupportedFormat {
+            code: UNSUPPORTED_FILE_FORMAT_CODE,
+            format: "알 수 없는 파일 형식",
+            hint: SUPPORTED_FORMATS_HINT,
+        }),
     }
 }
 
@@ -1080,6 +1178,19 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_format_legacy_hwpml_21() {
+        let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<HWPML Version="2.1"></HWPML>"#;
+        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+    }
+
+    #[test]
+    fn test_detect_format_legacy_hwpml_with_bom_and_space() {
+        let hwpml = b"\xEF\xBB\xBF  \n<?xml version='1.0'?><hwpml version='2.1'></hwpml>";
+        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+    }
+
+    #[test]
     fn test_parse_document_dispatches_hwp() {
         // CFB 시그니처 → HwpParser 경로로 디스패치
         let result = parse_document(&[0xD0, 0xCF, 0x11, 0xE0, 0x00, 0x00, 0x00, 0x00]);
@@ -1091,6 +1202,39 @@ mod tests {
         // ZIP 시그니처 → HwpxParser 경로로 디스패치
         let result = parse_document(&[0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]);
         assert!(result.is_err()); // 유효하지 않은 ZIP이므로 에러
+    }
+
+    #[test]
+    fn test_parse_document_legacy_hwpml_returns_unsupported_code() {
+        let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<HWPML Version="2.1"></HWPML>"#;
+        let err = parse_document(hwpml).unwrap_err();
+        match err {
+            ParseError::UnsupportedFormat { code, format, hint } => {
+                assert_eq!(code, "UNSUPPORTED_HWPML");
+                assert_eq!(format, "HWPML 2.1");
+                assert!(
+                    hint.contains("HWP 5.0"),
+                    "hint must explain support: {hint}"
+                );
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_document_unknown_returns_unsupported_file_format() {
+        let err = parse_document(b"not a document").unwrap_err();
+        let msg = format!("{err}");
+        match err {
+            ParseError::UnsupportedFormat { code, format, .. } => {
+                assert_eq!(code, "UNSUPPORTED_FILE_FORMAT");
+                assert_eq!(format, "알 수 없는 파일 형식");
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+        assert!(msg.contains("UNSUPPORTED_FILE_FORMAT"));
+        assert!(!msg.contains("CFB 오류"), "CFB detail leaked: {msg}");
     }
 
     #[test]
