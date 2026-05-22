@@ -45,7 +45,7 @@ fn main() {
         let composed = rhwp::renderer::composer::compose_section(section);
         let styles = rhwp::renderer::style_resolver::resolve_styles(&doc.document().doc_info, dpi);
         let measurer = rhwp::renderer::height_measurer::HeightMeasurer::new(dpi);
-        let measured = measurer.measure_section(&section.paragraphs, &composed, &styles);
+        let measured = measurer.measure_section(&section.paragraphs, &composed, &styles, None);
 
         println!(
             "\n=== section {} ({} paragraphs) ===",

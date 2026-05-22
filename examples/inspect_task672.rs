@@ -62,7 +62,7 @@ fn main() {
         for (s_idx, sec) in doc.sections.iter().enumerate() {
             // composed paragraphs
             let composed: Vec<_> = sec.paragraphs.iter().map(compose_paragraph).collect();
-            let measured = measurer.measure_section(&sec.paragraphs, &composed, &styles);
+            let measured = measurer.measure_section(&sec.paragraphs, &composed, &styles, None);
 
             for mt in &measured.tables {
                 let pi = mt.para_index;
