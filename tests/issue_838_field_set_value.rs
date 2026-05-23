@@ -24,7 +24,11 @@ fn set_field_value_removes_guide_text() {
     assert!(!field_name.is_empty(), "first field should have a name");
 
     let result = core.set_field_value_by_name(field_name, "테스트회사");
-    assert!(result.is_ok(), "set_field_value_by_name failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "set_field_value_by_name failed: {:?}",
+        result.err()
+    );
 
     let fields_after = core.collect_all_fields();
     let updated = fields_after
