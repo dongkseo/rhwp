@@ -784,7 +784,7 @@ impl LayoutEngine {
                         y_offset = self.layout_table(
                             tree,
                             area_node,
-                            t,
+                            t.as_ref(),
                             0,
                             styles,
                             area,
@@ -800,6 +800,7 @@ impl LayoutEngine {
                             None,
                             None,
                             None,
+                            is_header,
                         );
                     }
                 }
@@ -871,6 +872,7 @@ impl LayoutEngine {
                             Alignment::Left,
                             bin_data_content,
                             &std::collections::HashMap::new(),
+                            is_header,
                         );
                     }
                 }
@@ -950,6 +952,135 @@ impl LayoutEngine {
             }
             line.runs = new_runs;
         }
+    }
+
+    /// `AutoNumber(Page)` 컨트롤의 placeholder 문자만 현재 쪽번호로 치환한다.
+    ///
+    /// HWPX는 `<hp:autoNum numType="PAGE">` 뒤에 `<hp:fwSpace/>` 같은 공백 텍스트를
+    /// 같은 문단에 둘 수 있다. 공백 run 전체를 쪽번호로 바꾸면 짝수 머리말처럼
+    /// `쪽번호 + 전각공백 + 제목` 구조에서 쪽번호가 두 번 출력될 수 있으므로,
+    /// 컨트롤 placeholder 한 글자만 치환한다.
+    pub(crate) fn substitute_page_auto_numbers_in_composed(
+        &self,
+        para: &Paragraph,
+        comp: &mut ComposedParagraph,
+        page_number: u32,
+    ) {
+        if page_number == 0 {
+            return;
+        }
+
+        let page_str = page_number.to_string();
+
+        for line in &mut comp.lines {
+            for run in &mut line.runs {
+                if run.text.contains('\u{0015}') {
+                    run.text = run.text.replace('\u{0015}', &page_str);
+                    run.display_text = None;
+                }
+            }
+        }
+
+        let mut positions = self.page_auto_number_placeholder_positions(para);
+        positions.sort_unstable();
+        positions.dedup();
+        for pos in positions.into_iter().rev() {
+            Self::replace_composed_char(comp, pos, &page_str);
+        }
+    }
+
+    fn page_auto_number_placeholder_positions(&self, para: &Paragraph) -> Vec<usize> {
+        let ctrl_positions = crate::document_core::helpers::find_control_text_positions(para);
+        let text_chars: Vec<char> = para.text.chars().collect();
+        let mut positions = Vec::new();
+        let mut search_from = 0usize;
+
+        for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
+            if !matches!(
+                ctrl,
+                Control::AutoNumber(an)
+                    if an.number_type == crate::model::control::AutoNumberType::Page
+            ) {
+                continue;
+            }
+
+            let direct_pos = ctrl_positions.get(ctrl_idx).copied().filter(|&pos| {
+                text_chars
+                    .get(pos)
+                    .map_or(false, |ch| Self::is_auto_number_placeholder_char(*ch))
+            });
+
+            let pos = direct_pos.or_else(|| {
+                Self::find_auto_number_placeholder_char(para, &text_chars, search_from)
+            });
+
+            if let Some(pos) = pos {
+                positions.push(pos);
+                search_from = pos.saturating_add(1);
+            }
+        }
+
+        positions
+    }
+
+    fn is_auto_number_placeholder_char(ch: char) -> bool {
+        ch == '\u{0015}' || ch.is_whitespace()
+    }
+
+    fn find_auto_number_placeholder_char(
+        para: &Paragraph,
+        text_chars: &[char],
+        search_from: usize,
+    ) -> Option<usize> {
+        let preferred = text_chars
+            .iter()
+            .enumerate()
+            .skip(search_from)
+            .find(|(idx, ch)| {
+                if !Self::is_auto_number_placeholder_char(**ch) {
+                    return false;
+                }
+                para.char_offsets
+                    .get(idx.saturating_add(1))
+                    .zip(para.char_offsets.get(*idx))
+                    .map_or(false, |(next, current)| next.saturating_sub(*current) >= 8)
+            })
+            .map(|(idx, _)| idx);
+
+        preferred.or_else(|| {
+            text_chars
+                .iter()
+                .enumerate()
+                .skip(search_from)
+                .find(|(_, ch)| Self::is_auto_number_placeholder_char(**ch))
+                .map(|(idx, _)| idx)
+        })
+    }
+
+    fn replace_composed_char(
+        comp: &mut ComposedParagraph,
+        abs_pos: usize,
+        replacement: &str,
+    ) -> bool {
+        for line in &mut comp.lines {
+            let mut run_start = line.char_start;
+            for run in &mut line.runs {
+                let run_len = run.text.chars().count();
+                let run_end = run_start + run_len;
+                if abs_pos >= run_start && abs_pos < run_end {
+                    let rel_pos = abs_pos - run_start;
+                    let mut chars = run.text.chars();
+                    let before: String = chars.by_ref().take(rel_pos).collect();
+                    let _ = chars.next();
+                    let after: String = chars.collect();
+                    run.text = format!("{before}{replacement}{after}");
+                    run.display_text = None;
+                    return true;
+                }
+                run_start = run_end;
+            }
+        }
+        false
     }
 
     /// 페이지 배경 노드를 생성하여 tree에 추가한다.
@@ -1181,8 +1312,14 @@ impl LayoutEngine {
             if mp.text_width == 0 && mp.text_height == 0 {
                 return;
             }
-            self.current_page_number.set(page_number);
             if !mp.paragraphs.is_empty() {
+                let previous_page_number = self.current_page_number.get();
+                // HWPX masterPage@pageNumber/hasNumRef is not a reliable signal to suppress
+                // inline autoNum(PAGE) controls. exam_social.hwpx uses pageNumber=0 and
+                // hasNumRef=0 even though the bottom master-page table contains the visible
+                // page number. Header duplicate page numbers are handled at the AutoNumber
+                // placeholder level instead of disabling master-page numbering wholesale.
+                self.current_page_number.set(page_number);
                 let mp_id = tree.next_id();
                 let paper_area = LayoutRect {
                     x: 0.0,
@@ -1230,6 +1367,7 @@ impl LayoutEngine {
                                         Alignment::Left,
                                         bin_data_content,
                                         &std::collections::HashMap::new(),
+                                        false,
                                     );
                                 }
                                 Control::Picture(pic) => {
@@ -1295,6 +1433,7 @@ impl LayoutEngine {
                                         None,
                                         None,
                                         None,
+                                        false,
                                     );
                                 }
                                 _ => {}
@@ -1340,6 +1479,7 @@ impl LayoutEngine {
                     }
                 }
                 tree.root.children.push(mp_node);
+                self.current_page_number.set(previous_page_number);
             }
         }
     }
@@ -3675,6 +3815,7 @@ impl LayoutEngine {
                         tbl_inline_x,
                         None,
                         Some(para_y_for_table),
+                        false,
                     );
                     for child in tmp_node.children.drain(..) {
                         paper_images.push(child);
@@ -3706,6 +3847,7 @@ impl LayoutEngine {
                         tbl_inline_x,
                         None,
                         Some(para_y_for_table),
+                        false,
                     );
                 }
                 let table_y_end = y_offset; // layout_table 반환값 보존
@@ -3952,6 +4094,7 @@ impl LayoutEngine {
                                 inline_x,
                                 None,
                                 None,
+                                false,
                             );
                             y_offset = y_offset.max(tac_new_y);
                         }
@@ -4111,6 +4254,7 @@ impl LayoutEngine {
             pt_margin_left,
             pt_margin_right,
             pt_mt,
+            false,
         );
         if let Some(para) = paragraphs.get(para_index) {
             let comp = composed.get(para_index);
@@ -5161,6 +5305,7 @@ impl LayoutEngine {
                         None,
                         None,
                         None,
+                        false,
                     );
                     for child in temp_parent.children.drain(..) {
                         paper_images.push(child);
@@ -5187,6 +5332,7 @@ impl LayoutEngine {
                     alignment,
                     bin_data_content,
                     &overflow_map,
+                    false,
                 );
                 for child in temp_parent.children.drain(..) {
                     paper_images.push(child);
@@ -5207,6 +5353,7 @@ impl LayoutEngine {
                     alignment,
                     bin_data_content,
                     &overflow_map,
+                    false,
                 );
             }
             // [Task #525] 비-TAC Picture/Shape Square wrap 의 어울림 문단 렌더링은

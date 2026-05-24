@@ -819,7 +819,7 @@ fn materialize_table_record_attr(table: &mut Table, report: &mut AdapterReport) 
     if table.repeat_header {
         attr |= 0x04;
     }
-    if table.attr & 0x08 != 0 {
+    if (table.attr | table.raw_table_record_attr) & 0x08 != 0 {
         attr |= 0x08;
     }
     // HWPX inMargin 값만 쓰면 한컴 에디터의 "셀 안쪽 여백 지정"이 꺼진

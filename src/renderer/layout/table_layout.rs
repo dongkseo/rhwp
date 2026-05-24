@@ -195,6 +195,7 @@ impl LayoutEngine {
         inline_x_override: Option<f64>,
         nested_split: Option<&NestedTableSplit>,
         para_y: Option<f64>,
+        clamp_header_negative_para_offset: bool,
     ) -> f64 {
         if table.cells.is_empty() {
             if depth == 0 {
@@ -299,6 +300,7 @@ impl LayoutEngine {
                             inline_x_override,
                             nested_split,
                             para_y,
+                            clamp_header_negative_para_offset,
                         );
 
                         if let Some(bs_borders) = outer_border_meta {
@@ -616,6 +618,7 @@ impl LayoutEngine {
             &mut v_edges,
             split_row_range,
             row_y_shift,
+            clamp_header_negative_para_offset,
         );
 
         // ── 5-1. 표 전체 외곽 테두리 보충 ──
@@ -1598,6 +1601,7 @@ impl LayoutEngine {
         v_edges: &mut Vec<Vec<Option<BorderLine>>>,
         row_filter: Option<(usize, usize)>,
         row_y_shift: f64,
+        clamp_header_negative_para_offset: bool,
     ) {
         for (cell_idx, cell) in table.cells.iter().enumerate() {
             let c = cell.col as usize;
@@ -1715,22 +1719,12 @@ impl LayoutEngine {
             let current_pn = self.current_page_number.get();
             if current_pn > 0 {
                 for (cpi, para) in cell.paragraphs.iter().enumerate() {
-                    let has_page_auto = para.controls.iter().any(|c| {
+                    if para.controls.iter().any(|c| {
                         matches!(c, Control::AutoNumber(an)
                             if an.number_type == crate::model::control::AutoNumberType::Page)
-                    });
-                    if has_page_auto {
-                        let page_str = current_pn.to_string();
+                    }) {
                         if let Some(comp) = composed_paras.get_mut(cpi) {
-                            for line in &mut comp.lines {
-                                for run in &mut line.runs {
-                                    if run.text.contains('\u{0015}') {
-                                        run.text = run.text.replace('\u{0015}', &page_str);
-                                    } else if run.text.trim().is_empty() {
-                                        run.text = page_str.clone();
-                                    }
-                                }
-                            }
+                            self.substitute_page_auto_numbers_in_composed(para, comp, current_pn);
                         }
                     }
                 }
@@ -2542,18 +2536,28 @@ impl LayoutEngine {
                                         Alignment::Left,
                                         styles,
                                         bin_data_content,
+                                        clamp_header_negative_para_offset,
                                     );
                                     inline_x += shape_w;
                                 } else {
+                                    let shape_anchor_y = if matches!(
+                                        shape.common().vert_rel_to,
+                                        crate::model::shape::VertRelTo::Para
+                                    ) {
+                                        para_y_before_compose
+                                    } else {
+                                        para_y
+                                    };
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
                                         shape,
                                         &inner_area,
-                                        para_y,
+                                        shape_anchor_y,
                                         para_alignment,
                                         styles,
                                         bin_data_content,
+                                        clamp_header_negative_para_offset,
                                     );
                                 }
                             }
@@ -2688,6 +2692,7 @@ impl LayoutEngine {
                                             Some(inline_x),
                                             None,
                                             None,
+                                            clamp_header_negative_para_offset,
                                         );
                                         inline_x += tac_w;
                                         // para_y는 TAC 표 높이만큼 갱신 (같은 문단 내 다음 표도 같은 y)
@@ -2815,6 +2820,7 @@ impl LayoutEngine {
                                         None,
                                         None,
                                         None,
+                                        clamp_header_negative_para_offset,
                                     );
                                     para_y = nested_y + table_h;
                                 }

@@ -244,6 +244,7 @@ impl LayoutEngine {
         alignment: Alignment,
         bin_data_content: &[BinDataContent],
         overflow_map: &std::collections::HashMap<(usize, usize), Vec<Paragraph>>,
+        clamp_negative_para_offset: bool,
     ) {
         use crate::model::shape::ShapeObject;
 
@@ -317,6 +318,25 @@ impl LayoutEngine {
         };
 
         let common = shape.common();
+        let adjusted_common;
+        let common_for_position = if clamp_negative_para_offset
+            && !common.treat_as_char
+            && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+            && matches!(
+                common.vert_align,
+                crate::model::shape::VertAlign::Top | crate::model::shape::VertAlign::Inside
+            )
+            && (common.vertical_offset as i32) < 0
+        {
+            adjusted_common = {
+                let mut common = common.clone();
+                common.vertical_offset = 0;
+                common
+            };
+            &adjusted_common
+        } else {
+            common
+        };
 
         let (mut shape_w, mut shape_h) =
             self.resolve_object_size(common, col_area, body_area, paper_area);
@@ -377,7 +397,7 @@ impl LayoutEngine {
             (ix, iy)
         } else {
             self.compute_object_position(
-                common,
+                common_for_position,
                 shape_w,
                 shape_h,
                 &shape_container,
@@ -1784,22 +1804,12 @@ impl LayoutEngine {
         let current_pn = self.current_page_number.get();
         if current_pn > 0 {
             for (pi, para) in text_box.paragraphs[..para_count].iter().enumerate() {
-                let has_page_auto = para.controls.iter().any(|c| {
+                if para.controls.iter().any(|c| {
                     matches!(c, crate::model::control::Control::AutoNumber(an)
                         if an.number_type == crate::model::control::AutoNumberType::Page)
-                });
-                if has_page_auto {
-                    let page_str = current_pn.to_string();
+                }) {
                     if let Some(comp) = composed_paras.get_mut(pi) {
-                        for line in &mut comp.lines {
-                            for run in &mut line.runs {
-                                if run.text.contains('\u{0015}') {
-                                    run.text = run.text.replace('\u{0015}', &page_str);
-                                } else if run.text.trim().is_empty() {
-                                    run.text = page_str.clone();
-                                }
-                            }
-                        }
+                        self.substitute_page_auto_numbers_in_composed(para, comp, current_pn);
                     }
                 }
             }

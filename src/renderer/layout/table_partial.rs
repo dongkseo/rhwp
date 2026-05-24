@@ -103,6 +103,7 @@ impl LayoutEngine {
         host_margin_left: f64,
         host_margin_right: f64,
         measured_table: Option<&MeasuredTable>,
+        clamp_header_negative_para_offset: bool,
     ) -> f64 {
         let para = match paragraphs.get(para_index) {
             Some(p) => p,
@@ -985,19 +986,29 @@ impl LayoutEngine {
                                         Alignment::Left,
                                         styles,
                                         bin_data_content,
+                                        clamp_header_negative_para_offset,
                                     );
                                     inline_x += shape_w;
                                 } else {
                                     // 비인라인 도형: 기존 동작
+                                    let shape_anchor_y = if matches!(
+                                        shape.common().vert_rel_to,
+                                        crate::model::shape::VertRelTo::Para
+                                    ) {
+                                        para_y_before_compose
+                                    } else {
+                                        para_y
+                                    };
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
                                         shape,
                                         &inner_area,
-                                        para_y,
+                                        shape_anchor_y,
                                         para_alignment,
                                         styles,
                                         bin_data_content,
+                                        clamp_header_negative_para_offset,
                                     );
                                 }
                             }
@@ -1164,6 +1175,7 @@ impl LayoutEngine {
                                         None,
                                         split_ref,
                                         None,
+                                        clamp_header_negative_para_offset,
                                     );
                                     para_y = nested_y + table_h_rendered;
                                     has_preceding_text = true;

@@ -18,8 +18,8 @@ use crate::model::page::{ColumnDef, ColumnDirection, ColumnType, PageBorderFill,
 use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
 use crate::model::shape::{
     ArcShape, CommonObjAttr, CurveShape, DrawingObjAttr, EllipseShape, GroupShape, HorzAlign,
-    HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject, TextBox,
-    TextWrap, VertAlign, VertRelTo,
+    HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject,
+    SizeCriterion, TextBox, TextWrap, VertAlign, VertRelTo,
 };
 use crate::model::style::{Fill, ShapeBorderLine};
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
@@ -143,6 +143,7 @@ fn parse_master_page_start(e: &quick_xml::events::BytesStart, master_page: &mut 
                 page_duplicate = Some(duplicate);
                 master_page.overlap = duplicate;
             }
+            b"pageNumber" => master_page.hwpx_page_number = Some(parse_u16(&attr)),
             _ => {}
         }
     }
@@ -1184,6 +1185,7 @@ fn parse_table(
     reader: &mut Reader<&[u8]>,
 ) -> Result<Table, HwpxError> {
     let mut table = Table::default();
+    let mut table_record_flags = 0u32;
 
     // 표 기본 속성
     for attr in e.attributes().flatten() {
@@ -1196,7 +1198,7 @@ fn parse_table(
             b"borderFillIDRef" => table.border_fill_id = parse_u16(&attr),
             b"noAdjust" => {
                 if attr_str(&attr) == "1" {
-                    table.attr |= 0x08;
+                    table_record_flags |= 0x08;
                 }
             }
             b"pageBreak" => {
@@ -1265,6 +1267,14 @@ fn parse_table(
                                 b"height" => {
                                     table.common.height = parse_u32(&attr);
                                 }
+                                b"widthRelTo" => {
+                                    table.common.width_criterion =
+                                        parse_size_criterion(&attr_str(&attr), true);
+                                }
+                                b"heightRelTo" => {
+                                    table.common.height_criterion =
+                                        parse_size_criterion(&attr_str(&attr), false);
+                                }
                                 _ => {}
                             }
                         }
@@ -1275,6 +1285,12 @@ fn parse_table(
                                 b"treatAsChar" => {
                                     table.common.treat_as_char =
                                         attr_str(&attr) == "1" || attr_str(&attr) == "true";
+                                }
+                                b"flowWithText" => table.common.flow_with_text = parse_bool(&attr),
+                                b"allowOverlap" => table.common.allow_overlap = parse_bool(&attr),
+                                b"holdAnchorAndSO" => {
+                                    table.common.prevent_page_break =
+                                        if parse_bool(&attr) { 1 } else { 0 };
                                 }
                                 b"vertRelTo" => {
                                     table.common.vert_rel_to = match attr_str(&attr).as_str() {
@@ -1390,8 +1406,110 @@ fn parse_table(
     }
     table.row_sizes = row_sizes;
 
+    materialize_hwpx_table_attrs(&mut table, table_record_flags);
     table.rebuild_grid();
     Ok(table)
+}
+
+fn parse_size_criterion(value: &str, allow_column_para: bool) -> SizeCriterion {
+    match value {
+        "PAPER" => SizeCriterion::Paper,
+        "PAGE" => SizeCriterion::Page,
+        "COLUMN" if allow_column_para => SizeCriterion::Column,
+        "PARA" if allow_column_para => SizeCriterion::Para,
+        _ => SizeCriterion::Absolute,
+    }
+}
+
+fn materialize_hwpx_table_attrs(table: &mut Table, table_record_flags: u32) {
+    const HWPX_TABLE_NUMBERING_BIT: u32 = 0x0800_0000;
+
+    table.common.attr = pack_hwpx_common_obj_attr(&table.common) | HWPX_TABLE_NUMBERING_BIT;
+    // HWP/HWP3 parsers synchronize table.attr with CommonObjAttr.attr because parts of
+    // layout still use table.attr for legacy TAC/text-wrap decisions.
+    table.attr = table.common.attr;
+
+    let mut record_attr = match table.page_break {
+        TablePageBreak::CellBreak => 0x01,
+        TablePageBreak::RowBreak => 0x02,
+        TablePageBreak::None => 0,
+    };
+    if table.repeat_header {
+        record_attr |= 0x04;
+    }
+    if table_record_flags & 0x08 != 0 {
+        record_attr |= 0x08;
+    }
+    if table.padding.left != 0
+        || table.padding.right != 0
+        || table.padding.top != 0
+        || table.padding.bottom != 0
+    {
+        record_attr |= 0x0400_0000;
+    }
+    table.raw_table_record_attr = record_attr;
+}
+
+fn pack_hwpx_common_obj_attr(common: &CommonObjAttr) -> u32 {
+    let mut attr = 0u32;
+    if common.treat_as_char {
+        attr |= 0x01;
+    }
+    if common.flow_with_text {
+        attr |= 1 << 13;
+    }
+    if common.allow_overlap {
+        attr |= 1 << 14;
+    }
+    if common.hwp5_gen_shape_attr_bit26 {
+        attr |= 1 << 26;
+    }
+
+    attr |= (match common.vert_rel_to {
+        VertRelTo::Paper => 0,
+        VertRelTo::Page => 1,
+        VertRelTo::Para => 2,
+    }) << 3;
+    attr |= (match common.vert_align {
+        VertAlign::Top => 0,
+        VertAlign::Center => 1,
+        VertAlign::Bottom => 2,
+        VertAlign::Inside => 3,
+        VertAlign::Outside => 4,
+    }) << 5;
+    attr |= (match common.horz_rel_to {
+        HorzRelTo::Paper => 0,
+        HorzRelTo::Page => 1,
+        HorzRelTo::Column => 2,
+        HorzRelTo::Para => 3,
+    }) << 8;
+    attr |= (match common.horz_align {
+        HorzAlign::Left => 0,
+        HorzAlign::Center => 1,
+        HorzAlign::Right => 2,
+        HorzAlign::Inside => 3,
+        HorzAlign::Outside => 4,
+    }) << 10;
+    attr |= (match common.width_criterion {
+        SizeCriterion::Paper => 0,
+        SizeCriterion::Page => 1,
+        SizeCriterion::Column => 2,
+        SizeCriterion::Para => 3,
+        SizeCriterion::Absolute => 4,
+    }) << 15;
+    attr |= (match common.height_criterion {
+        SizeCriterion::Paper => 0,
+        SizeCriterion::Page => 1,
+        _ => 2,
+    }) << 18;
+    attr |= (match common.text_wrap {
+        TextWrap::Square | TextWrap::Tight | TextWrap::Through => 0,
+        TextWrap::TopAndBottom => 1,
+        TextWrap::BehindText => 2,
+        TextWrap::InFrontOfText => 3,
+    }) << 21;
+
+    attr
 }
 
 /// 표 캡션 파싱
@@ -2001,6 +2119,7 @@ fn materialize_shape_hwp_storage_defaults(
     kind: ShapeStorageKind,
 ) {
     materialize_shape_current_size_from_original(common, shape_attr);
+    common.attr = pack_hwpx_common_obj_attr(common);
 
     if shape_attr.local_file_version == 0
         && (shape_attr.original_width > 0
@@ -2094,6 +2213,12 @@ fn parse_object_layout_child(
                         if v > 0 {
                             common.height = v;
                         }
+                    }
+                    b"widthRelTo" => {
+                        common.width_criterion = parse_size_criterion(&attr_str(&attr), true);
+                    }
+                    b"heightRelTo" => {
+                        common.height_criterion = parse_size_criterion(&attr_str(&attr), false);
                     }
                     _ => {}
                 }
@@ -2835,6 +2960,24 @@ fn parse_shape_object(
                         }
                         polygon_points.push(crate::model::Point { x: px, y: py });
                     }
+                    b"startPt" => {
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"x" => x_coords[0] = parse_i32(&attr),
+                                b"y" => y_coords[0] = parse_i32(&attr),
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"endPt" => {
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"x" => x_coords[1] = parse_i32(&attr),
+                                b"y" => y_coords[1] = parse_i32(&attr),
+                                _ => {}
+                            }
+                        }
+                    }
                     b"renderingInfo" => {
                         parse_rendering_info(reader, &mut shape_attr)?;
                     }
@@ -2900,6 +3043,14 @@ fn parse_shape_object(
         b"line" => ShapeObject::Line(LineShape {
             common,
             drawing,
+            start: crate::model::Point {
+                x: x_coords[0],
+                y: y_coords[0],
+            },
+            end: crate::model::Point {
+                x: x_coords[1],
+                y: y_coords[1],
+            },
             ..Default::default()
         }),
         b"arc" => ShapeObject::Arc(ArcShape {
@@ -4749,6 +4900,92 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_hwpx_table_materializes_hwp_common_attrs() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:tbl numberingType="TABLE" textWrap="TOP_AND_BOTTOM" pageBreak="CELL"
+            repeatHeader="1" rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0"
+            noAdjust="1">
+      <hp:sz width="30613" widthRelTo="ABSOLUTE" height="8580" heightRelTo="ABSOLUTE"/>
+      <hp:pos treatAsChar="1" flowWithText="1" allowOverlap="0"
+              vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT"
+              vertOffset="0" horzOffset="0"/>
+      <hp:outMargin left="141" right="141" top="141" bottom="141"/>
+      <hp:inMargin left="0" right="0" top="283" bottom="283"/>
+      <hp:tr>
+        <hp:tc borderFillIDRef="0">
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="30613" height="8580"/>
+        </hp:tc>
+      </hp:tr>
+    </hp:tbl>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let table = match &section.paragraphs[0].controls[0] {
+            crate::model::control::Control::Table(table) => table,
+            other => panic!("expected table, got {:?}", other),
+        };
+
+        assert!(table.common.treat_as_char);
+        assert_eq!(table.common.text_wrap, TextWrap::TopAndBottom);
+        assert_eq!(table.common.attr, 0x082a_2211);
+        assert_eq!(table.attr, table.common.attr);
+        assert_eq!(table.raw_table_record_attr, 0x0400_000e);
+    }
+
+    #[test]
+    fn test_parse_hwpx_masterpage_line_materializes_shape_common_attr() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<masterPage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+            xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core"
+            id="masterpage0" type="BOTH" pageNumber="0">
+  <hp:subList textWidth="66502" textHeight="91136">
+    <hp:p paraPrIDRef="0" styleIDRef="0">
+      <hp:run charPrIDRef="0">
+        <hp:line id="1" zOrder="0" textWrap="BEHIND_TEXT" instid="2">
+          <hp:offset x="0" y="0"/>
+          <hp:orgSz width="100" height="100"/>
+          <hp:curSz width="1" height="92409"/>
+          <hp:rotationInfo angle="0" centerX="0" centerY="46204" rotateimage="1"/>
+          <hp:lineShape color="#000000" width="113" style="SOLID"/>
+          <hp:sz width="1" widthRelTo="ABSOLUTE" height="92409" heightRelTo="ABSOLUTE"/>
+          <hp:pos treatAsChar="0" flowWithText="0" allowOverlap="1"
+                  vertRelTo="PAPER" horzRelTo="PARA" vertAlign="TOP" horzAlign="CENTER"
+                  vertOffset="9912" horzOffset="0"/>
+          <hc:startPt x="0" y="0"/>
+          <hc:endPt x="100" y="100"/>
+        </hp:line>
+      </hp:run>
+    </hp:p>
+  </hp:subList>
+</masterPage>"##;
+
+        let master_page = parse_hwpx_master_page(xml).unwrap();
+        assert_eq!(master_page.hwpx_page_number, Some(0));
+        let line = match &master_page.paragraphs[0].controls[0] {
+            crate::model::control::Control::Shape(shape) => match shape.as_ref() {
+                ShapeObject::Line(line) => line,
+                other => panic!("expected line shape, got {:?}", other),
+            },
+            other => panic!("expected shape control, got {:?}", other),
+        };
+
+        assert_eq!(line.common.attr, 0x044a_4700);
+        assert_eq!(line.common.text_wrap, TextWrap::BehindText);
+        assert_eq!(line.common.width_criterion, SizeCriterion::Absolute);
+        assert_eq!(line.common.height_criterion, SizeCriterion::Absolute);
+        assert_eq!(line.start.x, 0);
+        assert_eq!(line.start.y, 0);
+        assert_eq!(line.end.x, 100);
+        assert_eq!(line.end.y, 100);
+    }
+
+    #[test]
     fn test_parse_field_begin_end_materializes_field_range() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -4963,6 +5200,7 @@ mod tests {
         assert!(master_page.overlap);
         assert!(!master_page.replace_base);
         assert_eq!(master_page.ext_flags, 0x0007);
+        assert_eq!(master_page.hwpx_page_number, Some(4));
         assert_eq!(master_page.raw_list_header.len(), 34);
     }
 

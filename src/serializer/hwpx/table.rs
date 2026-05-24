@@ -62,7 +62,7 @@ pub fn write_table<W: Write>(
     let col_cnt = table.col_count.to_string();
     let cell_spacing = table.cell_spacing.to_string();
     let border_fill_id_ref = table.border_fill_id.to_string();
-    let no_adjust = bool01(table.attr & 0x08 != 0);
+    let no_adjust = bool01((table.attr | table.raw_table_record_attr) & 0x08 != 0);
 
     start_tag_attrs(
         w,

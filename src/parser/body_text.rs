@@ -706,6 +706,7 @@ fn parse_master_pages_from_raw(raw_records: &[RawRecord]) -> Vec<MasterPage> {
             text_height,
             text_ref,
             num_ref,
+            hwpx_page_number: None,
             raw_list_header,
         });
     }

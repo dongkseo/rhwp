@@ -324,6 +324,7 @@ impl LayoutEngine {
         para_alignment: Alignment,
         styles: &ResolvedStyleSet,
         bin_data_content: &[BinDataContent],
+        clamp_header_negative_para_offset: bool,
     ) {
         let child_common = shape.common();
 
@@ -342,9 +343,18 @@ impl LayoutEngine {
             (x, para_y)
         } else {
             // 셀 내 비-TAC 도형: horz_align/vert_align 속성 기반 배치
-            use crate::model::shape::{HorzAlign, VertAlign};
+            use crate::model::shape::{HorzAlign, VertAlign, VertRelTo};
             let h_offset = hwpunit_to_px(child_common.horizontal_offset as i32, self.dpi);
-            let v_offset = hwpunit_to_px(child_common.vertical_offset as i32, self.dpi);
+            let mut vertical_offset = child_common.vertical_offset as i32;
+            // 한컴은 머리말 안의 문단 기준 글상자에서 음수 `문단 내 위`를 0처럼 배치한다.
+            if clamp_header_negative_para_offset
+                && matches!(child_common.vert_rel_to, VertRelTo::Para)
+                && matches!(child_common.vert_align, VertAlign::Top | VertAlign::Inside)
+                && vertical_offset < 0
+            {
+                vertical_offset = 0;
+            }
+            let v_offset = hwpunit_to_px(vertical_offset, self.dpi);
             let x = match child_common.horz_align {
                 HorzAlign::Right | HorzAlign::Outside => {
                     inner_area.x + inner_area.width - child_w - h_offset
@@ -352,12 +362,15 @@ impl LayoutEngine {
                 HorzAlign::Center => inner_area.x + (inner_area.width - child_w) / 2.0 + h_offset,
                 _ => inner_area.x + h_offset,
             };
+            let (ref_y, ref_h) = if matches!(child_common.vert_rel_to, VertRelTo::Para) {
+                (para_y, (inner_area.y + inner_area.height - para_y).max(0.0))
+            } else {
+                (inner_area.y, inner_area.height)
+            };
             let y = match child_common.vert_align {
-                VertAlign::Bottom | VertAlign::Outside => {
-                    inner_area.y + inner_area.height - child_h - v_offset
-                }
-                VertAlign::Center => inner_area.y + (inner_area.height - child_h) / 2.0 + v_offset,
-                _ => inner_area.y + v_offset,
+                VertAlign::Bottom | VertAlign::Outside => ref_y + ref_h - child_h - v_offset,
+                VertAlign::Center => ref_y + (ref_h - child_h) / 2.0 + v_offset,
+                _ => ref_y + v_offset,
             };
             (x, y)
         };
