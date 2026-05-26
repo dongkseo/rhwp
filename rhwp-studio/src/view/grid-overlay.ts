@@ -65,7 +65,7 @@ export function createGridClipCornerOverlay(
 }
 
 function buildBackgroundImage(settings: GridViewSettings): string {
-  const color = 'rgba(0, 22, 135, 0.95)';
+  const color = 'rgba(0, 32, 150, 0.9)';
   switch (settings.pattern) {
     case 'horizontal':
       return `linear-gradient(to bottom, ${color} 0, ${color} 1px, transparent 1px)`;
@@ -78,7 +78,7 @@ function buildBackgroundImage(settings: GridViewSettings): string {
       ].join(', ');
     case 'dots':
     default:
-      return `radial-gradient(circle, ${color} 0 0.42px, transparent 0.6px)`;
+      return `radial-gradient(circle, ${color} 0 0.65px, transparent 0.85px)`;
   }
 }
 
