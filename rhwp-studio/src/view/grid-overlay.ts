@@ -2,7 +2,6 @@ import type { PageInfo } from '@/core/types';
 import type { GridViewSettings } from './grid-settings';
 
 const MM_TO_PX = 96 / 25.4;
-const CORNER_LENGTH_PX = 15;
 
 export function createGridOverlay(
   pageIdx: number,
@@ -34,35 +33,6 @@ export function applyGridOverlayBox(
   overlay.style.height = canvas.style.height;
   overlay.style.pointerEvents = 'none';
   overlay.style.overflow = 'hidden';
-}
-
-export function createGridCornerOverlay(
-  pageIdx: number,
-  pageInfo: PageInfo,
-  zoom: number,
-  settings: GridViewSettings,
-): HTMLDivElement | null {
-  if (settings.origin !== 'page') return null;
-
-  const pageArea = getPageGridAreaPx(pageInfo);
-  const overlay = document.createElement('div');
-  overlay.className = 'page-grid-corners';
-  overlay.dataset.rhwpGridPage = String(pageIdx);
-  overlay.style.zIndex = settings.layer === 'inFrontOfText' ? '6' : '3';
-  overlay.style.opacity = '1';
-
-  const left = pageArea.left * zoom;
-  const top = pageArea.top * zoom;
-  const right = (pageInfo.width - pageArea.right) * zoom;
-  const bottom = (pageInfo.height - pageArea.bottom) * zoom;
-  const length = CORNER_LENGTH_PX * zoom;
-  const color = 'rgba(0, 0, 0, 0.72)';
-
-  appendCorner(overlay, left, top, length, 'top-left', color);
-  appendCorner(overlay, right, top, length, 'top-right', color);
-  appendCorner(overlay, left, bottom, length, 'bottom-left', color);
-  appendCorner(overlay, right, bottom, length, 'bottom-right', color);
-  return overlay;
 }
 
 function buildBackgroundImage(settings: GridViewSettings): string {
@@ -131,34 +101,4 @@ function getPageGridAreaPx(pageInfo: PageInfo): { left: number; right: number; t
     top: pageInfo.pageBorderTop ?? pageInfo.marginTop,
     bottom: pageInfo.pageBorderBottom ?? pageInfo.marginBottom,
   };
-}
-
-function appendCorner(
-  parent: HTMLElement,
-  x: number,
-  y: number,
-  length: number,
-  corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right',
-  color: string,
-): void {
-  const horizontal = document.createElement('div');
-  const vertical = document.createElement('div');
-  const isLeft = corner.endsWith('left');
-  const isTop = corner.startsWith('top');
-
-  horizontal.style.position = 'absolute';
-  horizontal.style.left = `${isLeft ? x : x - length}px`;
-  horizontal.style.top = `${y}px`;
-  horizontal.style.width = `${length}px`;
-  horizontal.style.height = '1px';
-  horizontal.style.background = color;
-
-  vertical.style.position = 'absolute';
-  vertical.style.left = `${x}px`;
-  vertical.style.top = `${isTop ? y : y - length}px`;
-  vertical.style.width = '1px';
-  vertical.style.height = `${length}px`;
-  vertical.style.background = color;
-
-  parent.append(horizontal, vertical);
 }

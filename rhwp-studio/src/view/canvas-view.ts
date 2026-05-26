@@ -9,7 +9,7 @@ import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitLayerRenderer } from './canvaskit-renderer';
 import { clampRenderScale, type RenderBackend } from './render-backend';
 import type { LayerRenderProfile } from '@/core/types';
-import { applyGridOverlayBox, createGridCornerOverlay, createGridOverlay } from './grid-overlay';
+import { applyGridOverlayBox, createGridOverlay } from './grid-overlay';
 import { getGridViewSettings } from './grid-settings';
 
 export class CanvasView {
@@ -302,17 +302,6 @@ export class CanvasView {
     );
     applyGridOverlayBox(overlay, canvas);
     this.scrollContent.appendChild(overlay);
-
-    const cornerOverlay = createGridCornerOverlay(
-      pageIdx,
-      pageInfo,
-      this.viewportManager.getZoom(),
-      settings,
-    );
-    if (cornerOverlay) {
-      applyGridOverlayBox(cornerOverlay, canvas);
-      this.scrollContent.appendChild(cornerOverlay);
-    }
   }
 
   private removeGridOverlay(pageIdx: number): void {
