@@ -314,6 +314,7 @@ impl LayoutEngine {
     }
 
     /// 테이블 셀 내 도형(Shape) 컨트롤을 레이아웃한다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout_cell_shape(
         &self,
         tree: &mut PageRenderTree,
@@ -325,6 +326,8 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         bin_data_content: &[BinDataContent],
         clamp_header_negative_para_offset: bool,
+        // [Task #1138] 표 셀 컨텍스트: (section_idx, outer_para_idx, outer_table_ctrl_idx, cell_idx, cell_para_idx, inner_control_idx)
+        table_cell_ctx: Option<(usize, usize, usize, usize, usize, usize)>,
     ) {
         let child_common = shape.common();
 
@@ -376,6 +379,17 @@ impl LayoutEngine {
         };
 
         let empty_map = std::collections::HashMap::new();
+        // [Task #1138] table_cell_ctx 가 Some 일 때 layout_shape_object 에
+        // section_index/outer_para_idx/inner_control_idx 를 셀 컨텍스트에서 추출하여 전달.
+        let (sec_idx, outer_para_idx, inner_ctrl_idx, shape_table_cell_ref) = match table_cell_ctx {
+            Some((sec, outer_para, outer_table_ci, cell_i, cell_para_i, inner_ci)) => (
+                sec,
+                outer_para,
+                inner_ci,
+                Some((cell_i, cell_para_i, outer_table_ci)),
+            ),
+            None => (0, 0, 0, None),
+        };
         self.layout_shape_object(
             tree,
             cell_node,
@@ -384,13 +398,14 @@ impl LayoutEngine {
             child_y,
             child_w,
             child_h,
-            0,
-            0,
-            0,
+            sec_idx,
+            outer_para_idx,
+            inner_ctrl_idx,
             styles,
             bin_data_content,
             &empty_map,
             &[],
+            shape_table_cell_ref,
         );
     }
 

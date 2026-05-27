@@ -2476,6 +2476,44 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [Task #1138] 표 셀 내 Shape(글상자/사각형/도형) 속성 조회 (by_path).
+    #[wasm_bindgen(js_name = getCellShapePropertiesByPath)]
+    pub fn get_cell_shape_properties_by_path(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        inner_control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_cell_shape_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            cell_path_json,
+            inner_control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [Task #1138] 표 셀 내 Shape 속성 변경 (by_path).
+    #[wasm_bindgen(js_name = setCellShapePropertiesByPath)]
+    pub fn set_cell_shape_properties_by_path(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        inner_control_idx: u32,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.set_cell_shape_properties_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            cell_path_json,
+            inner_control_idx as usize,
+            props_json,
+        )
+        .map_err(|e| e.into())
+    }
+
     // ─── Equation(수식) API ──────────────────────────────
 
     /// 수식 컨트롤을 문단에서 삭제한다.

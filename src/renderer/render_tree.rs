@@ -599,6 +599,15 @@ pub struct LineNode {
     pub control_index: Option<usize>,
     /// 변환 (회전/대칭)
     pub transform: ShapeTransform,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 인덱스
+    #[serde(default)]
+    pub cell_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 내 문단 인덱스
+    #[serde(default)]
+    pub cell_para_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: outer paragraph 의 표 control 인덱스
+    #[serde(default)]
+    pub outer_table_control_index: Option<usize>,
 }
 
 impl LineNode {
@@ -613,6 +622,9 @@ impl LineNode {
             para_index: None,
             control_index: None,
             transform: ShapeTransform::default(),
+            cell_index: None,
+            cell_para_index: None,
+            outer_table_control_index: None,
         }
     }
 }
@@ -634,6 +646,15 @@ pub struct RectangleNode {
     pub control_index: Option<usize>,
     /// 변환 (회전/대칭)
     pub transform: ShapeTransform,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 인덱스
+    #[serde(default)]
+    pub cell_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 내 문단 인덱스
+    #[serde(default)]
+    pub cell_para_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: outer paragraph 의 표 control 인덱스
+    #[serde(default)]
+    pub outer_table_control_index: Option<usize>,
 }
 
 impl RectangleNode {
@@ -650,6 +671,9 @@ impl RectangleNode {
             para_index: None,
             control_index: None,
             transform: ShapeTransform::default(),
+            cell_index: None,
+            cell_para_index: None,
+            outer_table_control_index: None,
         }
     }
 }
@@ -669,6 +693,15 @@ pub struct EllipseNode {
     pub control_index: Option<usize>,
     /// 변환 (회전/대칭)
     pub transform: ShapeTransform,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 인덱스
+    #[serde(default)]
+    pub cell_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 내 문단 인덱스
+    #[serde(default)]
+    pub cell_para_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: outer paragraph 의 표 control 인덱스
+    #[serde(default)]
+    pub outer_table_control_index: Option<usize>,
 }
 
 impl EllipseNode {
@@ -680,6 +713,9 @@ impl EllipseNode {
             para_index: None,
             control_index: None,
             transform: ShapeTransform::default(),
+            cell_index: None,
+            cell_para_index: None,
+            outer_table_control_index: None,
         }
     }
 }
@@ -705,6 +741,15 @@ pub struct PathNode {
     pub connector_endpoints: Option<(f64, f64, f64, f64)>,
     /// 연결선 화살표 (LineStyle 포함, None이면 화살표 없음)
     pub line_style: Option<LineStyle>,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 인덱스
+    #[serde(default)]
+    pub cell_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: 셀 내 문단 인덱스
+    #[serde(default)]
+    pub cell_para_index: Option<usize>,
+    /// [Task #1138] 표 셀 내 도형인 경우: outer paragraph 의 표 control 인덱스
+    #[serde(default)]
+    pub outer_table_control_index: Option<usize>,
 }
 
 impl PathNode {
@@ -723,6 +768,9 @@ impl PathNode {
             transform: ShapeTransform::default(),
             connector_endpoints: None,
             line_style: None,
+            cell_index: None,
+            cell_para_index: None,
+            outer_table_control_index: None,
         }
     }
 }

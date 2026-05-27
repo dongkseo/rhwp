@@ -871,6 +871,37 @@ export class WasmBridge {
     );
   }
 
+  /** [Task #1138] 표 셀 내 Shape 속성 조회 (by_path). */
+  getCellShapePropertiesByPath(
+    sec: number,
+    parentPara: number,
+    cellPath: import('./types').CellPath,
+    innerControlIdx: number,
+  ): import('./types').ShapeProperties {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(
+      (this.doc as any).getCellShapePropertiesByPath(
+        sec, parentPara, JSON.stringify(cellPath), innerControlIdx,
+      )
+    );
+  }
+
+  /** [Task #1138] 표 셀 내 Shape 속성 변경 (by_path). */
+  setCellShapePropertiesByPath(
+    sec: number,
+    parentPara: number,
+    cellPath: import('./types').CellPath,
+    innerControlIdx: number,
+    props: Record<string, unknown>,
+  ): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(
+      (this.doc as any).setCellShapePropertiesByPath(
+        sec, parentPara, JSON.stringify(cellPath), innerControlIdx, JSON.stringify(props),
+      )
+    );
+  }
+
   setPictureProperties(sec: number, para: number, ci: number, props: Record<string, unknown>): { ok: boolean } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.setPictureProperties(sec, para, ci, JSON.stringify(props)));

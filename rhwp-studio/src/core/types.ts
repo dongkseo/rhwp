@@ -112,6 +112,18 @@ export interface CellPathEntry {
   cellParaIndex: number;
 }
 
+/**
+ * [Task #1138] 표 셀 by_path WASM API 의 path segment.
+ * Rust API 의 JSON key (`controlIdx`/`cellIdx`/`cellParaIdx`) 와 일치하는 짧은 형식.
+ * `CellPathEntry` 와 의미는 같으나 직렬화 시 key 형식이 다름.
+ */
+export interface CellPathSegment {
+  controlIdx: number;
+  cellIdx: number;
+  cellParaIdx: number;
+}
+export type CellPath = CellPathSegment[];
+
 /** 문서 트리 DFS 순회 컨텍스트 엔트리 */
 export interface NavContextEntry {
   parentPara: number;

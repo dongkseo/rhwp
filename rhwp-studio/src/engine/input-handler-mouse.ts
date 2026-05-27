@@ -511,6 +511,7 @@ export function onClick(this: any, e: MouseEvent): void {
             picHit.sec, picHit.ppi, picHit.ci, picHit.type as any,
             picHit.cellIdx, picHit.cellParaIdx,
             (picHit as any).headerFooter,
+            (picHit as any).outerTableControlIdx,
           );
           this.active = true;
           this.caret.hide();
@@ -830,6 +831,7 @@ export function onClick(this: any, e: MouseEvent): void {
         this.cursor.enterPictureObjectSelectionDirect(
           picHit.sec, picHit.ppi, picHit.ci, picHit.type,
           picHit.cellIdx, picHit.cellParaIdx, (picHit as any).headerFooter,
+          (picHit as any).outerTableControlIdx,
         );
         this.active = true;
         this.caret.hide();

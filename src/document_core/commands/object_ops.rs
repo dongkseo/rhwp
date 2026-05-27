@@ -2308,6 +2308,465 @@ impl DocumentCore {
         Ok("{\"ok\":true}".to_string())
     }
 
+    /// [Task #1138] Shape 속성 → JSON. get_shape_properties_native +
+    /// get_cell_shape_properties_by_path_native 공유.
+    fn format_shape_props_inner(
+        shape: &crate::model::shape::ShapeObject,
+    ) -> Result<String, HwpError> {
+        let c = shape.common();
+        let common_json = Self::common_obj_attr_to_json(c);
+
+        // TextBox 속성
+        let tb_json = if let Some(tb) = get_textbox_from_shape(shape) {
+            let va = match tb.vertical_align {
+                crate::model::table::VerticalAlign::Top => "Top",
+                crate::model::table::VerticalAlign::Center => "Center",
+                crate::model::table::VerticalAlign::Bottom => "Bottom",
+            };
+            format!(
+                ",\"tbMarginLeft\":{},\"tbMarginRight\":{},\"tbMarginTop\":{},\"tbMarginBottom\":{},\"tbVerticalAlign\":\"{}\"",
+                tb.margin_left, tb.margin_right, tb.margin_top, tb.margin_bottom, va
+            )
+        } else {
+            String::new()
+        };
+
+        // 테두리 / 회전 / 채우기 정보
+        let drawing = shape.drawing();
+        let extra_json = if let Some(d) = drawing {
+            let sa = &d.shape_attr;
+            let fill = &d.fill;
+            let fill_type = match fill.fill_type {
+                crate::model::style::FillType::None => "none",
+                crate::model::style::FillType::Solid => "solid",
+                crate::model::style::FillType::Gradient => "gradient",
+                crate::model::style::FillType::Image => "image",
+            };
+            let bl = &d.border_line;
+            let line_type = bl.attr & 0x3F;
+            let line_end_shape = (bl.attr >> 6) & 0x0F;
+            let arrow_start = (bl.attr >> 10) & 0x3F;
+            let arrow_end = (bl.attr >> 16) & 0x3F;
+            let arrow_start_size = (bl.attr >> 22) & 0x0F;
+            let arrow_end_size = (bl.attr >> 26) & 0x0F;
+
+            let mut extra = format!(
+                ",\"borderColor\":{},\"borderWidth\":{},\"borderAttr\":{},\"borderOutlineStyle\":{}\
+                ,\"lineType\":{},\"lineEndShape\":{}\
+                ,\"arrowStart\":{},\"arrowEnd\":{},\"arrowStartSize\":{},\"arrowEndSize\":{}\
+                ,\"rotationAngle\":{},\"horzFlip\":{},\"vertFlip\":{}\
+                ,\"fillType\":\"{}\"",
+                bl.color, bl.width, bl.attr, bl.outline_style,
+                line_type, line_end_shape,
+                arrow_start, arrow_end, arrow_start_size, arrow_end_size,
+                sa.rotation_angle, sa.horz_flip, sa.vert_flip,
+                fill_type
+            );
+            if let Some(ref s) = fill.solid {
+                extra.push_str(&format!(
+                    ",\"fillBgColor\":{},\"fillPatColor\":{},\"fillPatType\":{}",
+                    s.background_color, s.pattern_color, s.pattern_type
+                ));
+            }
+            if let Some(ref g) = fill.gradient {
+                extra.push_str(&format!(
+                    ",\"gradientType\":{},\"gradientAngle\":{},\"gradientCenterX\":{},\"gradientCenterY\":{},\"gradientBlur\":{}",
+                    g.gradient_type, g.angle, g.center_x, g.center_y, g.blur
+                ));
+            }
+            extra.push_str(&format!(",\"fillAlpha\":{}", fill.alpha));
+            extra.push_str(&format!(",\"shadowType\":{},\"shadowColor\":{},\"shadowOffsetX\":{},\"shadowOffsetY\":{},\"shadowAlpha\":{}",
+                d.shadow_type, d.shadow_color, d.shadow_offset_x, d.shadow_offset_y, d.shadow_alpha));
+            extra.push_str(&format!(",\"scInstId\":{}", d.inst_id));
+            extra
+        } else {
+            String::new()
+        };
+
+        let round_json = if let crate::model::shape::ShapeObject::Rectangle(ref rect) = shape {
+            format!(",\"roundRate\":{}", rect.round_rate)
+        } else {
+            String::new()
+        };
+
+        let connector_json = if let crate::model::shape::ShapeObject::Line(ref line) = shape {
+            if let Some(ref conn) = line.connector {
+                let ctrl2_pts: Vec<&crate::model::shape::ConnectorControlPoint> = conn
+                    .control_points
+                    .iter()
+                    .filter(|cp| cp.point_type == 2)
+                    .collect();
+                if !ctrl2_pts.is_empty() {
+                    let avg_x: i32 =
+                        ctrl2_pts.iter().map(|p| p.x).sum::<i32>() / ctrl2_pts.len() as i32;
+                    let avg_y: i32 =
+                        ctrl2_pts.iter().map(|p| p.y).sum::<i32>() / ctrl2_pts.len() as i32;
+                    format!(
+                        ",\"connectorType\":{},\"connectorMidX\":{},\"connectorMidY\":{}",
+                        conn.link_type as u32, avg_x, avg_y
+                    )
+                } else {
+                    format!(",\"connectorType\":{}", conn.link_type as u32)
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        Ok(format!(
+            "{{{}{}{}{}{}}}",
+            common_json, tb_json, extra_json, round_json, connector_json
+        ))
+    }
+
+    /// [Task #1138] Shape 속성 JSON 적용 (mutation only). 후처리 (recompose /
+    /// paginate / cache invalidate / event log) 는 호출자 책임.
+    /// set_shape_properties_native + set_cell_shape_properties_by_path_native 공유.
+    fn apply_shape_props_inner(shape: &mut crate::model::shape::ShapeObject, props_json: &str) {
+        use super::super::helpers::{json_bool, json_i32, json_str};
+
+        let c = shape.common_mut();
+        let new_w =
+            super::super::helpers::json_u32(props_json, "width").map(|w| w.max(MIN_SHAPE_SIZE));
+        let new_h =
+            super::super::helpers::json_u32(props_json, "height").map(|h| h.max(MIN_SHAPE_SIZE));
+        Self::apply_common_obj_attr_from_json(c, props_json);
+
+        let is_polygon_or_curve = matches!(
+            shape,
+            crate::model::shape::ShapeObject::Polygon(_)
+                | crate::model::shape::ShapeObject::Curve(_)
+        );
+        let saved_orig_w = if is_polygon_or_curve {
+            shape.drawing().map(|d| d.shape_attr.original_width)
+        } else {
+            None
+        };
+        let saved_orig_h = if is_polygon_or_curve {
+            shape.drawing().map(|d| d.shape_attr.original_height)
+        } else {
+            None
+        };
+
+        if let Some(d) = shape.drawing_mut() {
+            if let Some(w) = new_w {
+                d.shape_attr.current_width = w;
+                d.shape_attr.original_width = w;
+            }
+            if let Some(h) = new_h {
+                d.shape_attr.current_height = h;
+                d.shape_attr.original_height = h;
+            }
+            if let Some(v) = json_i32(props_json, "rotationAngle") {
+                d.shape_attr.rotation_angle = v as i16;
+            }
+            if let Some(v) = json_bool(props_json, "horzFlip") {
+                d.shape_attr.horz_flip = v;
+                if v {
+                    d.shape_attr.flip |= 1;
+                } else {
+                    d.shape_attr.flip &= !1;
+                }
+            }
+            if let Some(v) = json_bool(props_json, "vertFlip") {
+                d.shape_attr.vert_flip = v;
+                if v {
+                    d.shape_attr.flip |= 2;
+                } else {
+                    d.shape_attr.flip &= !2;
+                }
+            }
+            if let Some(v) = json_i32(props_json, "borderColor") {
+                d.border_line.color = v as u32;
+            }
+            if let Some(v) = json_i32(props_json, "borderWidth") {
+                d.border_line.width = v;
+            }
+            {
+                let mut attr = d.border_line.attr;
+                if let Some(v) = json_i32(props_json, "lineType") {
+                    attr = (attr & !0x3F) | ((v as u32) & 0x3F);
+                }
+                if let Some(v) = json_i32(props_json, "lineEndShape") {
+                    attr = (attr & !(0x0F << 6)) | (((v as u32) & 0x0F) << 6);
+                }
+                if let Some(v) = json_i32(props_json, "arrowStart") {
+                    attr = (attr & !(0x3F << 10)) | (((v as u32) & 0x3F) << 10);
+                }
+                if let Some(v) = json_i32(props_json, "arrowEnd") {
+                    attr = (attr & !(0x3F << 16)) | (((v as u32) & 0x3F) << 16);
+                }
+                if let Some(v) = json_i32(props_json, "arrowStartSize") {
+                    attr = (attr & !(0x0F << 22)) | (((v as u32) & 0x0F) << 22);
+                }
+                if let Some(v) = json_i32(props_json, "arrowEndSize") {
+                    attr = (attr & !(0x0F << 26)) | (((v as u32) & 0x0F) << 26);
+                }
+                d.border_line.attr = attr;
+            }
+            if let Some(v) = json_str(props_json, "fillType") {
+                d.fill.fill_type = match v.as_str() {
+                    "solid" => crate::model::style::FillType::Solid,
+                    "gradient" => crate::model::style::FillType::Gradient,
+                    "image" => crate::model::style::FillType::Image,
+                    _ => crate::model::style::FillType::None,
+                };
+            }
+            if let Some(v) = json_i32(props_json, "fillBgColor") {
+                let solid = d
+                    .fill
+                    .solid
+                    .get_or_insert_with(|| crate::model::style::SolidFill {
+                        pattern_type: -1,
+                        ..Default::default()
+                    });
+                solid.background_color = v as u32;
+            }
+            if let Some(v) = json_i32(props_json, "fillPatColor") {
+                let solid = d
+                    .fill
+                    .solid
+                    .get_or_insert_with(|| crate::model::style::SolidFill {
+                        pattern_type: -1,
+                        ..Default::default()
+                    });
+                solid.pattern_color = v as u32;
+            }
+            if let Some(v) = json_i32(props_json, "fillPatType") {
+                let solid = d
+                    .fill
+                    .solid
+                    .get_or_insert_with(|| crate::model::style::SolidFill {
+                        pattern_type: -1,
+                        ..Default::default()
+                    });
+                solid.pattern_type = v;
+            }
+            if let Some(v) = json_i32(props_json, "fillAlpha") {
+                d.fill.alpha = v as u8;
+            }
+            if let Some(v) = json_i32(props_json, "gradientType") {
+                let grad = d.fill.gradient.get_or_insert_with(Default::default);
+                grad.gradient_type = v as i16;
+            }
+            if let Some(v) = json_i32(props_json, "gradientAngle") {
+                let grad = d.fill.gradient.get_or_insert_with(Default::default);
+                grad.angle = v as i16;
+            }
+            if let Some(v) = json_i32(props_json, "gradientCenterX") {
+                let grad = d.fill.gradient.get_or_insert_with(Default::default);
+                grad.center_x = v as i16;
+            }
+            if let Some(v) = json_i32(props_json, "gradientCenterY") {
+                let grad = d.fill.gradient.get_or_insert_with(Default::default);
+                grad.center_y = v as i16;
+            }
+            if let Some(v) = json_i32(props_json, "gradientBlur") {
+                let grad = d.fill.gradient.get_or_insert_with(Default::default);
+                grad.blur = v as i16;
+            }
+            if let Some(v) = super::super::helpers::json_u32(props_json, "shadowType") {
+                d.shadow_type = v;
+            }
+            if let Some(v) = super::super::helpers::json_i32(props_json, "shadowColor") {
+                d.shadow_color = v as u32;
+            }
+            if let Some(v) = super::super::helpers::json_i32(props_json, "shadowOffsetX") {
+                d.shadow_offset_x = v;
+            }
+            if let Some(v) = super::super::helpers::json_i32(props_json, "shadowOffsetY") {
+                d.shadow_offset_y = v;
+            }
+            if let Some(ref mut tb) = d.text_box {
+                if let Some(v) = json_i32(props_json, "tbMarginLeft") {
+                    tb.margin_left = v as i16;
+                }
+                if let Some(v) = json_i32(props_json, "tbMarginRight") {
+                    tb.margin_right = v as i16;
+                }
+                if let Some(v) = json_i32(props_json, "tbMarginTop") {
+                    tb.margin_top = v as i16;
+                }
+                if let Some(v) = json_i32(props_json, "tbMarginBottom") {
+                    tb.margin_bottom = v as i16;
+                }
+                if let Some(v) = json_str(props_json, "tbVerticalAlign") {
+                    tb.vertical_align = match v.as_str() {
+                        "Top" => crate::model::table::VerticalAlign::Top,
+                        "Center" => crate::model::table::VerticalAlign::Center,
+                        "Bottom" => crate::model::table::VerticalAlign::Bottom,
+                        _ => tb.vertical_align,
+                    };
+                }
+            }
+        }
+
+        if let crate::model::shape::ShapeObject::Rectangle(ref mut rect) = shape {
+            if let Some(v) = super::super::helpers::json_i32(props_json, "roundRate") {
+                rect.round_rate = v as u8;
+            }
+        }
+
+        if let crate::model::shape::ShapeObject::Rectangle(ref mut rect) = shape {
+            let w = rect.common.width as i32;
+            let h = rect.common.height as i32;
+            rect.x_coords = [0, w, w, 0];
+            rect.y_coords = [0, 0, h, h];
+        }
+
+        if let Some(d) = shape.drawing_mut() {
+            if let Some(w) = saved_orig_w {
+                d.shape_attr.original_width = w;
+            }
+            if let Some(h) = saved_orig_h {
+                d.shape_attr.original_height = h;
+            }
+        }
+
+        if let crate::model::shape::ShapeObject::Group(ref mut group) = shape {
+            if let Some(nw) = new_w {
+                group.shape_attr.current_width = nw;
+            }
+            if let Some(nh) = new_h {
+                group.shape_attr.current_height = nh;
+            }
+            group.shape_attr.rotation_center.x = (group.common.width / 2) as i32;
+            group.shape_attr.rotation_center.y = (group.common.height / 2) as i32;
+            group.shape_attr.raw_rendering = Vec::new();
+        }
+    }
+
+    /// [Task #1138] 표 셀 내 Shape 속성 조회 (by_path).
+    pub fn get_cell_shape_properties_by_path_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        inner_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let path: Vec<(usize, usize, usize)> =
+            serde_json::from_str::<Vec<serde_json::Value>>(cell_path_json)
+                .map_err(|e| HwpError::RenderError(format!("cell_path JSON 파싱 실패: {}", e)))?
+                .iter()
+                .map(|v| {
+                    let c = v.get("controlIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let ci = v.get("cellIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let cpi = v.get("cellParaIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    (c, ci, cpi)
+                })
+                .collect();
+        if path.is_empty() {
+            return Err(HwpError::RenderError(
+                "cell_path 가 비어있습니다".to_string(),
+            ));
+        }
+        let cell = self.resolve_cell_by_path(section_idx, parent_para_idx, &path)?;
+        let last_cell_para_idx = path.last().unwrap().2;
+        let cell_para = cell.paragraphs.get(last_cell_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("셀 내 문단 {} 범위 초과", last_cell_para_idx))
+        })?;
+        let ctrl = cell_para.controls.get(inner_control_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("셀 내 컨트롤 {} 범위 초과", inner_control_idx))
+        })?;
+        let shape_ref = match ctrl {
+            Control::Shape(s) => s.as_ref(),
+            _ => {
+                return Err(HwpError::RenderError(
+                    "지정된 셀 내 컨트롤이 Shape이 아닙니다".to_string(),
+                ))
+            }
+        };
+        Self::format_shape_props_inner(shape_ref)
+    }
+
+    /// [Task #1138] 표 셀 내 Shape 속성 변경 (by_path).
+    pub fn set_cell_shape_properties_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        inner_control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        let path: Vec<(usize, usize, usize)> =
+            serde_json::from_str::<Vec<serde_json::Value>>(cell_path_json)
+                .map_err(|e| HwpError::RenderError(format!("cell_path JSON 파싱 실패: {}", e)))?
+                .iter()
+                .map(|v| {
+                    let c = v.get("controlIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let ci = v.get("cellIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let cpi = v.get("cellParaIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    (c, ci, cpi)
+                })
+                .collect();
+        if path.is_empty() {
+            return Err(HwpError::RenderError(
+                "cell_path 가 비어있습니다".to_string(),
+            ));
+        }
+        {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let mut current_para =
+                section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+                })?;
+            for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
+                let ctrl = current_para.controls.get_mut(ctrl_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("경로[{}]: controls[{}] 범위 초과", i, ctrl_idx))
+                })?;
+                let table = match ctrl {
+                    Control::Table(t) => t,
+                    _ => {
+                        return Err(HwpError::RenderError(format!(
+                            "경로[{}]: controls[{}] 가 표가 아닙니다",
+                            i, ctrl_idx
+                        )))
+                    }
+                };
+                let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("경로[{}]: cells[{}] 범위 초과", i, cell_idx))
+                })?;
+                current_para = cell.paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!(
+                        "경로[{}]: paragraphs[{}] 범위 초과",
+                        i, cell_para_idx
+                    ))
+                })?;
+            }
+            let ctrl = current_para
+                .controls
+                .get_mut(inner_control_idx)
+                .ok_or_else(|| {
+                    HwpError::RenderError(format!("셀 내 컨트롤 {} 범위 초과", inner_control_idx))
+                })?;
+            let shape = match ctrl {
+                Control::Shape(s) => s.as_mut(),
+                _ => {
+                    return Err(HwpError::RenderError(
+                        "지정된 셀 내 컨트롤이 Shape이 아닙니다".to_string(),
+                    ))
+                }
+            };
+            Self::apply_shape_props_inner(shape, props_json);
+        }
+        let section = &mut self.document.sections[section_idx];
+        section.raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+        let outer_table_ctrl = path.first().unwrap().0;
+        self.event_log.push(DocumentEvent::PictureResized {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_table_ctrl,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
     /// 글상자(Shape) 삭제 (네이티브).
     ///
     /// delete_picture_control_native()와 동일한 패턴.

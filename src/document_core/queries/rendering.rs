@@ -1492,7 +1492,6 @@ impl DocumentCore {
                         }
                         None => String::new(),
                     };
-
                     controls.push(format!(
                         "{{\"type\":\"image\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}{}{}{}}}",
                         node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
@@ -1521,10 +1520,21 @@ impl DocumentCore {
                         rect_node.para_index,
                         rect_node.control_index,
                     ) {
+                        // [Task #1138] 표 셀 안 사각형: cellIdx/cellParaIdx/outerTableControlIdx
+                        let cell_str = match (rect_node.cell_index, rect_node.cell_para_index) {
+                            (Some(cei), Some(cpi)) => {
+                                format!(",\"cellIdx\":{},\"cellParaIdx\":{}", cei, cpi)
+                            }
+                            _ => String::new(),
+                        };
+                        let outer_table_str = match rect_node.outer_table_control_index {
+                            Some(otci) => format!(",\"outerTableControlIdx\":{}", otci),
+                            None => String::new(),
+                        };
                         controls.push(format!(
-                            "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}}}",
+                            "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}}}",
                             node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                            si, pi, ci
+                            si, pi, ci, cell_str, outer_table_str
                         ));
                         return;
                     }
@@ -1535,11 +1545,22 @@ impl DocumentCore {
                         line_node.para_index,
                         line_node.control_index,
                     ) {
+                        // [Task #1138] 표 셀 안 직선
+                        let cell_str = match (line_node.cell_index, line_node.cell_para_index) {
+                            (Some(cei), Some(cpi)) => {
+                                format!(",\"cellIdx\":{},\"cellParaIdx\":{}", cei, cpi)
+                            }
+                            _ => String::new(),
+                        };
+                        let outer_table_str = match line_node.outer_table_control_index {
+                            Some(otci) => format!(",\"outerTableControlIdx\":{}", otci),
+                            None => String::new(),
+                        };
                         controls.push(format!(
-                            "{{\"type\":\"line\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"x1\":{:.1},\"y1\":{:.1},\"x2\":{:.1},\"y2\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}}}",
+                            "{{\"type\":\"line\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"x1\":{:.1},\"y1\":{:.1},\"x2\":{:.1},\"y2\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}}}",
                             node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
                             line_node.x1, line_node.y1, line_node.x2, line_node.y2,
-                            si, pi, ci
+                            si, pi, ci, cell_str, outer_table_str
                         ));
                         return;
                     }
@@ -1550,10 +1571,21 @@ impl DocumentCore {
                         ell_node.para_index,
                         ell_node.control_index,
                     ) {
+                        // [Task #1138] 표 셀 안 타원
+                        let cell_str = match (ell_node.cell_index, ell_node.cell_para_index) {
+                            (Some(cei), Some(cpi)) => {
+                                format!(",\"cellIdx\":{},\"cellParaIdx\":{}", cei, cpi)
+                            }
+                            _ => String::new(),
+                        };
+                        let outer_table_str = match ell_node.outer_table_control_index {
+                            Some(otci) => format!(",\"outerTableControlIdx\":{}", otci),
+                            None => String::new(),
+                        };
                         controls.push(format!(
-                            "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}}}",
+                            "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}}}",
                             node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                            si, pi, ci
+                            si, pi, ci, cell_str, outer_table_str
                         ));
                         return;
                     }
@@ -1564,19 +1596,30 @@ impl DocumentCore {
                         path_node.para_index,
                         path_node.control_index,
                     ) {
+                        // [Task #1138] 표 셀 안 path (다각형/곡선/연결선)
+                        let cell_str = match (path_node.cell_index, path_node.cell_para_index) {
+                            (Some(cei), Some(cpi)) => {
+                                format!(",\"cellIdx\":{},\"cellParaIdx\":{}", cei, cpi)
+                            }
+                            _ => String::new(),
+                        };
+                        let outer_table_str = match path_node.outer_table_control_index {
+                            Some(otci) => format!(",\"outerTableControlIdx\":{}", otci),
+                            None => String::new(),
+                        };
                         if let Some((x1, y1, x2, y2)) = path_node.connector_endpoints {
                             // 연결선: 선 선택 방식 (시작/끝 좌표 포함)
                             controls.push(format!(
-                                "{{\"type\":\"line\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"x1\":{:.1},\"y1\":{:.1},\"x2\":{:.1},\"y2\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}}}",
+                                "{{\"type\":\"line\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"x1\":{:.1},\"y1\":{:.1},\"x2\":{:.1},\"y2\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}}}",
                                 node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
                                 x1, y1, x2, y2,
-                                si, pi, ci
+                                si, pi, ci, cell_str, outer_table_str
                             ));
                         } else {
                             controls.push(format!(
-                                "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}}}",
+                                "{{\"type\":\"shape\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}}}",
                                 node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                                si, pi, ci
+                                si, pi, ci, cell_str, outer_table_str
                             ));
                         }
                         return;

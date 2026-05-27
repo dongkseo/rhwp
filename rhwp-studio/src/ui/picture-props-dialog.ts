@@ -10,7 +10,7 @@
  * 레이아웃: 좌측(탭+컨텐츠) + 우측(버튼) 패턴
  * CSS 접두어: pp-
  */
-import type { PictureProperties, ShapeProperties } from '@/core/types';
+import type { PictureProperties, ShapeProperties, CellPath } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
 
@@ -69,6 +69,10 @@ export class PicturePropsDialog {
   private objectType: 'image' | 'shape' | 'line' = 'image';
   /** [Task #825] 머리말/꼬리말 그림 marker (Some 일 때 신규 API 사용). */
   private headerFooter: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } | undefined;
+  /** [Task #1138] 표 셀 내 객체 marker (Some 일 때 by_path API 사용). */
+  private cellPath: CellPath | undefined;
+  /** [Task #1138] 셀 paragraph 내 picture/shape control 인덱스 (cellPath 동반). */
+  private innerControlIdx = 0;
   private props: PictureProperties | null = null;
   private shapeProps: ShapeProperties | null = null;
 
@@ -222,6 +226,8 @@ export class PicturePropsDialog {
     ci: number,
     type: 'image' | 'shape' | 'line' = 'image',
     headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
+    cellPath?: CellPath,
+    innerControlIdx?: number,
   ): void {
     this.build();
     this.sec = sec;
@@ -229,15 +235,24 @@ export class PicturePropsDialog {
     this.ci = ci;
     this.objectType = type;
     this.headerFooter = headerFooter;
+    // [Task #1138] cellPath 가 있으면 표 셀 내부 객체 — by_path API 사용.
+    this.cellPath = cellPath;
+    this.innerControlIdx = innerControlIdx ?? 0;
 
+    // getter 분기:
+    // - shape/line: cellPath > 외부 (셀 안 도형은 by_path API)
+    // - picture: headerFooter > 외부 (picture 는 paragraph_layout path 가 처리하므로 cellPath 미사용)
     if (type === 'shape' || type === 'line') {
-      this.shapeProps = this.wasm.getShapeProperties(sec, para, ci);
+      if (cellPath) {
+        this.shapeProps = this.wasm.getCellShapePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
+      } else {
+        this.shapeProps = this.wasm.getShapeProperties(sec, para, ci);
+      }
       this.props = this.shapeProps as unknown as PictureProperties;
     } else {
       this.shapeProps = null;
-      // [Task #825] 머리말/꼬리말 그림은 별도 API 사용 — outer (Header/Footer 컨트롤)
-      // 위치 + inner (그림) 위치 5-tuple lookup.
       if (headerFooter) {
+        // [Task #825] 머리말/꼬리말 그림 — 별도 5-tuple API
         this.props = this.wasm.getHeaderFooterPictureProperties(
           sec, headerFooter.outerParaIdx, headerFooter.outerControlIdx, para, ci,
         );
@@ -2136,8 +2151,17 @@ export class PicturePropsDialog {
     }
 
     if (Object.keys(updated).length > 0) {
+      // setter 분기:
+      // - shape/line: cellPath > 외부
+      // - picture: headerFooter > 외부 (cellPath 미사용 — paragraph_layout path 가 처리)
       if (this.objectType === 'shape' || this.objectType === 'line') {
-        this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+        if (this.cellPath) {
+          this.wasm.setCellShapePropertiesByPath(
+            this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
+          );
+        } else {
+          this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+        }
       } else if (this.headerFooter) {
         // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
         // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported

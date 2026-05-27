@@ -458,6 +458,7 @@ impl LayoutEngine {
             bin_data_content,
             overflow_map,
             &[],
+            None, // [Task #1138] 본문 도형 — 셀 정보 없음
         );
 
         // 캡션 렌더링
@@ -699,6 +700,7 @@ impl LayoutEngine {
                     bin_data_content,
                     &empty_map,
                     parent_cell_path,
+                    None, // [Task #1138] TODO: layout_group_child_affine 에 cell ctx propagate (별도 후속)
                 );
             }
         }
@@ -724,11 +726,18 @@ impl LayoutEngine {
         bin_data_content: &[BinDataContent],
         overflow_map: &std::collections::HashMap<(usize, usize), Vec<Paragraph>>,
         parent_cell_path: &[CellPathEntry],
+        // [Task #1138] 표 셀 내 도형인 경우: (cell_idx, cell_para_idx, outer_table_ctrl_idx)
+        table_cell_ref: Option<(usize, usize, usize)>,
     ) {
         use crate::model::shape::ShapeObject;
 
         // 공통: 회전/대칭 정보 추출
         let transform = extract_shape_transform(shape.shape_attr());
+
+        // [Task #1138] 표 셀 내 도형 식별을 위한 cell 정보 추출 (helper)
+        let cell_index = table_cell_ref.map(|(ci, _, _)| ci);
+        let cell_para_index = table_cell_ref.map(|(_, cpi, _)| cpi);
+        let outer_table_control_index = table_cell_ref.map(|(_, _, otci)| otci);
 
         // 회전/대칭이 있으면 current 크기로 중앙 배치
         // 그렇지 않으면 호출자가 전달한 w, h를 그대로 사용
@@ -764,6 +773,9 @@ impl LayoutEngine {
                         para_index: Some(para_index),
                         control_index: Some(control_index),
                         transform,
+                        cell_index,
+                        cell_para_index,
+                        outer_table_control_index,
                         ..RectangleNode::new(round_px, style, gradient)
                     }),
                     BoundingBox::new(render_x, render_y, render_w, render_h),
@@ -931,6 +943,9 @@ impl LayoutEngine {
                         path_node.para_index = Some(para_index);
                         path_node.control_index = Some(control_index);
                         path_node.transform = transform;
+                        path_node.cell_index = cell_index;
+                        path_node.cell_para_index = cell_para_index;
+                        path_node.outer_table_control_index = outer_table_control_index;
                         // 연결선: 시작/끝 좌표 (선 선택 방식용) + 화살표
                         path_node.connector_endpoints = Some((conn_x1, conn_y1, conn_x2, conn_y2));
                         if line_style.start_arrow != super::super::ArrowStyle::None
@@ -975,6 +990,9 @@ impl LayoutEngine {
                         line_node.para_index = Some(para_index);
                         line_node.control_index = Some(control_index);
                         line_node.transform = transform;
+                        line_node.cell_index = cell_index;
+                        line_node.cell_para_index = cell_para_index;
+                        line_node.outer_table_control_index = outer_table_control_index;
                         let node = RenderNode::new(
                             node_id,
                             RenderNodeType::Line(line_node),
@@ -995,6 +1013,9 @@ impl LayoutEngine {
                     line_node.para_index = Some(para_index);
                     line_node.control_index = Some(control_index);
                     line_node.transform = transform;
+                    line_node.cell_index = cell_index;
+                    line_node.cell_para_index = cell_para_index;
+                    line_node.outer_table_control_index = outer_table_control_index;
                     let node = RenderNode::new(
                         node_id,
                         RenderNodeType::Line(line_node),
@@ -1011,6 +1032,9 @@ impl LayoutEngine {
                 ell_node.para_index = Some(para_index);
                 ell_node.control_index = Some(control_index);
                 ell_node.transform = transform;
+                ell_node.cell_index = cell_index;
+                ell_node.cell_para_index = cell_para_index;
+                ell_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Ellipse(ell_node),
@@ -1138,6 +1162,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1183,6 +1210,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1239,6 +1269,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1347,6 +1380,7 @@ impl LayoutEngine {
                             bin_data_content,
                             &empty_map,
                             parent_cell_path,
+                            table_cell_ref, // [Task #1138] 그룹 자식 — 부모와 같은 셀 컨텍스트
                         );
                     }
                 }
@@ -2115,6 +2149,7 @@ impl LayoutEngine {
                             bin_data_content,
                             &empty_map,
                             &nested_parent_path,
+                            None, // [Task #1138] TODO: layout_textbox_content 에 cell ctx propagate (별도 후속)
                         );
                     }
                     Control::Picture(pic) => {

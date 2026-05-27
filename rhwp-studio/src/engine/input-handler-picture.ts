@@ -16,7 +16,7 @@ function pointToSegmentDist(px: number, py: number, x1: number, y1: number, x2: 
 
 export function findPictureAtClick(this: any,
   pageIdx: number, pageX: number, pageY: number,
-): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; x1?: number; y1?: number; x2?: number; y2?: number; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null {
+): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; outerTableControlIdx?: number; x1?: number; y1?: number; x2?: number; y2?: number; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null {
   try {
     const layout = this.wasm.getPageControlLayout(pageIdx);
     // Task #516 결함 3 (옵션 3-C): BehindText 그림은 텍스트 영역 위에서는 후순위.
@@ -83,7 +83,7 @@ export function findPictureAtClick(this: any,
         // bbox 히트 판정
         if (pageX >= ctrl.x && pageX <= ctrl.x + ctrl.w &&
             pageY >= ctrl.y && pageY <= ctrl.y + ctrl.h) {
-          return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, headerFooter: ctrl.headerFooter };
+          return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, outerTableControlIdx: ctrl.outerTableControlIdx, headerFooter: ctrl.headerFooter };
         }
       }
     }
@@ -106,7 +106,7 @@ export function findPictureAtClick(this: any,
         for (const ctrl of behindCtrls) {
           if (pageX >= ctrl.x && pageX <= ctrl.x + ctrl.w &&
               pageY >= ctrl.y && pageY <= ctrl.y + ctrl.h) {
-            return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, headerFooter: ctrl.headerFooter };
+            return { sec: ctrl.secIdx, ppi: ctrl.paraIdx, ci: ctrl.controlIdx, type: ctrl.type, cellIdx: ctrl.cellIdx, cellParaIdx: ctrl.cellParaIdx, outerTableControlIdx: ctrl.outerTableControlIdx, headerFooter: ctrl.headerFooter };
           }
         }
       }
