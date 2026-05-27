@@ -2408,6 +2408,7 @@ impl LayoutEngine {
 
         let col_width_hu = (col_area.width / self.dpi * 7200.0).round() as i32;
         let mut prev_tac_seg_applied = false;
+        let mut tac_seg_applied_para: Option<usize> = None;
 
         // 고정값 줄간격 TAC 표 병행 (Task #9): 표 하단 비교용
         let mut fix_table_start_y: f64 = 0.0;
@@ -2664,7 +2665,14 @@ impl LayoutEngine {
                 );
             }
             y_offset = new_y;
-            prev_tac_seg_applied = was_tac;
+            if was_tac {
+                tac_seg_applied_para = Some(item_para);
+            }
+            // A TAC segment is a paragraph-level line-segment condition, not a property
+            // of whichever PageItem happened to be emitted last for that paragraph.
+            // PR #1088 may render a para-relative float after a TAC table; keep the
+            // next-paragraph vpos guard active until we leave that host paragraph.
+            prev_tac_seg_applied = was_tac || tac_seg_applied_para == Some(item_para);
             // [Task #991] 다음 반복의 vpos 보정용 — 직전 항목이 분할 표였는지 기록.
             hcursor.prev_item_was_partial_table = matches!(item, PageItem::PartialTable { .. });
 

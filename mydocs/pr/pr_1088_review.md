@@ -118,6 +118,151 @@ let last_placed_table  = ctrl_order.iter().copied().rev().find(|&i| matches!(...
 - 본질이 시각 판정 대상 — \"라벨/표 순서\" 가 한컴과 일치 여부.
   PR 첨부 스크린샷이 공직기강 케이스 시각 정합을 보임.
 
+### 5.3 재검토 메모 (2026-05-27)
+
+작성자가 `hwp-multi-001.hwp` 회귀 판정에 대해 반박 댓글을 남겨
+해당 케이스를 다시 검증했다.
+
+#### 한컴 PDF 기준 대조
+
+권위 자료 `pdf/hwp-multi-001-2022.pdf` 1페이지에서 `pdftotext
+-bbox-layout` 로 좌표를 추출했다.
+
+```text
+보도시점: yMin=122.000990
+해외직접투자는: yMin=144.548828
+지정학적: yMin=173.077650
+```
+
+따라서 한컴 2022 PDF 기준 정답 순서는 `보도시점` 표가 제목 박스보다
+위에 배치되는 형태다.
+
+#### local/devel vs PR SVG 비교
+
+`samples/hwp-multi-001.hwp` 1페이지 debug overlay SVG를 비교했다.
+
+```text
+local/devel:
+  제목 박스 ci=0 y=184.7, 보도시점 표 ci=1 y=306.4
+  보도시점 첫 글자 y=321.49
+
+PR #1088:
+  보도시점 표 ci=1 y=157.2, 제목 박스 ci=0 y=184.7
+  보도시점 첫 글자 y=172.31
+```
+
+PR 적용 후 배치가 한컴 PDF 기준과 일치한다. 이전 보고서의
+`hwp-multi-001.hwp` 회귀 판정은 IR 배열 순서를 정답으로 본 오판으로
+정정한다.
+
+#### 최신 local/devel 적용성
+
+PR head `5efd0470` 을 최신 `local/devel` 에 체리픽한 검증 브랜치
+`pr1088-current` 에서 확인했다. 작업지시자 debug SVG 판정 중
+`hwp-multi-001.hwp` 1페이지 `s0:pi=14` 가 표 높이만큼 내려가는
+회귀를 추가로 확인했고, maintainer 보강 패치를 적용했다.
+
+```text
+cargo fmt --all -- --check: success
+cargo test --lib: 1405 passed, 0 failed, 6 ignored
+cargo clippy -- -D warnings: success
+cargo test --test svg_snapshot: 8 passed
+```
+
+#### 보강 패치
+
+원인:
+
+```text
+PR #1088이 같은 문단 안에서 TAC 표와 para-relative float 표의 렌더 순서를 바꿈
+→ 마지막으로 처리된 항목이 TAC 가 아니게 됨
+→ TAC 문단 직후 vpos 보정 skip 상태가 사라짐
+→ para-relative TopAndBottom 표 host 문단의 first_vpos 가 다음 y 목표로 사용됨
+→ pi=14 앞에 표 높이만큼 빈 공간 발생
+```
+
+처리:
+
+```text
+src/renderer/layout.rs
+  - TAC guard 를 PageItem 단위가 아닌 host paragraph 단위로 유지
+
+src/renderer/height_cursor.rs
+  - 현재 문단이 para-relative TopAndBottom 표 host 이면 first_vpos 를 inter-item 목표 y 로 쓰지 않음
+  - 표의 위치/높이는 Table PageItem 렌더 단계에서만 반영
+```
+
+검증 SVG:
+
+```text
+output/poc/pr1088-layout-debug/fixed-pr2/hwp-multi-001_001.svg
+
+s0:pi=3  ci=1 1x4 y=157.2
+s0:pi=3  ci=0 1x1 y=184.7
+s0:pi=13 y=658.1
+s0:pi=14 y=674.1
+s0:pi=14 ci=0 4x6 y=683.6
+```
+
+작업지시자 판정: 통과.
+
+### 5.4 재검토 판단
+
+작성자 반박은 타당하다. `hwp-multi-001.hwp` 는 회귀가 아니라 PR 이
+한컴 배치 순서에 더 가까워지는 케이스로 재분류한다. 추가로 발견된
+`pi=14` vpos 회귀는 maintainer 보강 패치로 해소했다.
+
+### 5.5 3페이지 페이지네이션 후속 점검
+
+1페이지 보강 후 작업지시자가 `hwp-multi-001.hwp` 3페이지에서
+남은 영역에 위치해야 할 표가 다음 페이지로 밀리는 현상을 추가 보고했다.
+
+진단 결과 `pi=46` 문단은 다음 구조였다.
+
+```text
+line0: TAC 12x12 표
+line1: "□ 지역별 동향" post-text
+```
+
+기존 typeset 은 단일 TAC 표의 fit 판단에 문단 전체 `height_for_fit`
+을 사용했다. 그래서 표 자체는 page3 잔여 영역에 들어가지만, 뒤따르는
+제목 줄까지 함께 들어가지 않는다는 이유로 표까지 page4로 이동했다.
+
+보강 내용:
+
+```text
+src/renderer/typeset.rs
+  - raw attr bit0 없이 common.treat_as_char=true 인 표도 LINE_SEG line0
+    높이와 표 높이가 일치하면 effective TAC 로 취급
+  - line0 TAC 표는 표 줄 높이만 fit 판단에 사용
+  - 뒤따르는 post-text 는 필요 시 다음 페이지로 분리
+  - line0 TAC 에만 적용하여 복학원서 pi=16 PUA filler 표/도장 회귀 방지
+```
+
+검증 결과:
+
+```text
+output/poc/pr1088-layout-debug/fixed-pr6-page3/hwp-multi-001_003.svg
+
+dump-pages page3:
+  body h=933.6px
+  used=919.1px
+  pi=46 table=12x12, y=684.7, h=326.7px
+
+cargo test --test svg_snapshot: 8 passed
+cargo test --lib: 1405 passed, 0 failed, 6 ignored
+cargo clippy -- -D warnings: success
+docker compose --env-file .env.docker run --rm wasm: success
+작업지시자 시각 판정: 통과
+```
+
+남은 절차는 다음과 같다.
+
+```text
+1. PR #1088의 BEHIND 상태 해소 또는 maintainer merge 전략 결정
+2. 통과 시 PR merge 및 #1087 close
+```
+
 ## 6. 처리 방식 — **GitHub 머지** (작업지시자 지시)
 
 > 작업지시자 지시: \"이번 PR 은 cherry-pick 하지 말고 머지로
@@ -132,13 +277,13 @@ let last_placed_table  = ctrl_order.iter().copied().rev().find(|&i| matches!(...
 
 ## 7. 검증 계획
 
-- [ ] 로컬 검증용 cherry-pick (검증 후 폐기, 머지는 GitHub 에서) —
+- [x] 로컬 검증용 cherry-pick (검증 후 폐기, 머지는 GitHub 에서) —
       또는 fetch + 작업 브랜치 분리
-- [ ] 전체 `cargo test` + `cargo clippy -- -D warnings` +
+- [x] 전체 `cargo test` + `cargo clippy -- -D warnings` +
       `cargo fmt --all -- --check`
-- [ ] WASM 빌드 (typeset core 변경)
-- [ ] svg_snapshot 골든 불변 확인
-- [ ] 시각 판정 (작업지시자 판단) — 공직기강·국립국어원 샘플
+- [x] WASM 빌드 (typeset core 변경)
+- [x] svg_snapshot 골든 불변 확인
+- [x] 시각 판정 (작업지시자 판단) — 공직기강·국립국어원 샘플
       라벨/표 순서, #103 원본 케이스 회귀
 - [ ] BEHIND 해소 (devel update branch 또는 작업지시자 `--admin`
       merge)

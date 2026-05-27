@@ -2744,12 +2744,27 @@ impl TypesetEngine {
         let tac_count = para
             .controls
             .iter()
-            .filter(|c| matches!(c, Control::Table(t) if t.attr & 0x01 != 0))
+            .filter(
+                |c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, &fmt)),
+            )
             .count();
 
         let has_tac = tac_count > 0;
+        let first_line_tac_height = if tac_count == 1 && fmt.line_heights.len() > 1 {
+            para.controls.iter().find_map(|ctrl| match ctrl {
+                Control::Table(t)
+                    if self.is_effective_tac_table(para, t, &fmt)
+                        && self.tac_table_line_index(para, t, &fmt) == Some(0) =>
+                {
+                    Some(fmt.line_advance(0))
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
         let height_for_fit = if has_tac {
-            fmt.height_for_fit
+            first_line_tac_height.unwrap_or(fmt.height_for_fit)
         } else {
             fmt.total_height
         };
@@ -2771,7 +2786,47 @@ impl TypesetEngine {
         let mut para_float_lanes = FloatLaneSet::new();
 
         // 각 컨트롤에 대해 format → fits → place/split
-        for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
+        // [참고2 순서 역전 fix] para-relative float 표(비-TAC, wrap=위아래, vert=문단)는
+        // 흐름과 무관하게 vertical_offset 위치에 배치되는 out-of-flow 개체다.
+        // para.controls 배열 순서는 시각적 위·아래 순서와 다를 수 있어(한컴은
+        // vertical_offset 으로 위치 결정), 배열 순서대로 처리하면 라벨·표가 역전
+        // 배치된다 (공직기강 참고2: 표 v_off=+3063·라벨 0 → 라벨이 표 뒤 페이지로 밀림).
+        // → vertical_offset 오름차순(시각 위→아래) 안정정렬로 처리 순서를 맞춘다.
+        //   in-flow·TAC 컨트롤은 키 0. 동률은 배열 순서 유지(stable). ctrl_idx 는
+        //   원래 배열 인덱스를 그대로 사용한다 (format_table·measured_tables·
+        //   PageItem 조회가 의존). 국립국어원 pi586(표 v_off=-1796<라벨 0)·pic-in-*
+        //   (전부 0)처럼 표가 라벨보다 먼저인 경우는 정렬상 배열 순서가 유지된다.
+        let float_table_voffset = |ctrl: &Control| -> i32 {
+            match ctrl {
+                Control::Table(t)
+                    if !t.common.treat_as_char
+                        && matches!(
+                            t.common.text_wrap,
+                            crate::model::shape::TextWrap::TopAndBottom
+                        )
+                        && matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Para) =>
+                {
+                    t.common.vertical_offset as i32
+                }
+                _ => 0,
+            }
+        };
+        let mut ctrl_order: Vec<usize> = (0..para.controls.len()).collect();
+        ctrl_order.sort_by_key(|&i| float_table_voffset(&para.controls[i]));
+        // is_first_table/is_last_table 는 배열순서가 아닌 "놓이는 순서(ctrl_order)"
+        // 기준으로 잡아, pre/post 텍스트와 spacing 이 실제 배치 첫/마지막 표에 붙도록 한다.
+        let first_placed_table = ctrl_order
+            .iter()
+            .copied()
+            .find(|&i| matches!(para.controls[i], Control::Table(_)));
+        let last_placed_table = ctrl_order
+            .iter()
+            .copied()
+            .rev()
+            .find(|&i| matches!(para.controls[i], Control::Table(_)));
+
+        for ctrl_idx in ctrl_order {
+            let ctrl = &para.controls[ctrl_idx];
             match ctrl {
                 Control::Table(table) => {
                     // [Issue #703] 글앞으로 / 글뒤로 표는 Shape처럼 취급 — 본문 흐름 공간 차지 없음.
@@ -2826,9 +2881,20 @@ impl TypesetEngine {
                     let mt = measured_tables
                         .iter()
                         .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
-                    if ft.is_tac {
+                    let is_first_placed = first_placed_table == Some(ctrl_idx);
+                    let is_last_placed = last_placed_table == Some(ctrl_idx);
+                    if self.is_effective_tac_table(para, table, &fmt) {
                         self.typeset_tac_table(
-                            st, para_idx, ctrl_idx, para, table, &ft, &fmt, tac_count,
+                            st,
+                            para_idx,
+                            ctrl_idx,
+                            para,
+                            table,
+                            &ft,
+                            &fmt,
+                            tac_count,
+                            is_first_placed,
+                            is_last_placed,
                         );
                     } else if self.try_typeset_empty_para_float_table(
                         st,
@@ -2845,7 +2911,17 @@ impl TypesetEngine {
                         // Empty host para-float table placed by horizontal lane reservation.
                     } else {
                         self.typeset_block_table(
-                            st, para_idx, ctrl_idx, para, table, &ft, &fmt, mt, styles,
+                            st,
+                            para_idx,
+                            ctrl_idx,
+                            para,
+                            table,
+                            &ft,
+                            &fmt,
+                            mt,
+                            styles,
+                            is_first_placed,
+                            is_last_placed,
                         );
                     }
 
@@ -2936,7 +3012,7 @@ impl TypesetEngine {
             let mut tac_idx = 0;
             for (ci, c) in para.controls.iter().enumerate() {
                 if let Control::Table(t) = c {
-                    if t.attr & 0x01 != 0 {
+                    if self.is_effective_tac_table(para, t, &fmt) {
                         if let Some(seg) = para.line_segs.get(tac_idx) {
                             let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
                             let mt_h = measured_tables
@@ -2959,7 +3035,7 @@ impl TypesetEngine {
                     .controls
                     .iter()
                     .filter_map(|c| match c {
-                        Control::Table(t) if t.attr & 0x01 != 0 => {
+                        Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => {
                             Some(hwpunit_to_px(t.outer_margin_top as i32, self.dpi))
                         }
                         _ => None,
@@ -3068,6 +3144,7 @@ impl TypesetEngine {
     }
 
     /// TAC(treat_as_char) 표의 조판.
+    #[allow(clippy::too_many_arguments)]
     fn typeset_tac_table(
         &self,
         st: &mut TypesetState,
@@ -3078,14 +3155,19 @@ impl TypesetEngine {
         ft: &FormattedTable,
         fmt: &FormattedParagraph,
         tac_count: usize,
+        is_first_placed: bool,
+        is_last_placed: bool,
     ) {
+        let tac_table_line_idx = self.tac_table_line_index(para, table, fmt);
         // 다중 TAC 표: LINE_SEG 기반 개별 높이 계산
         let table_height = if tac_count > 1 {
             let tac_idx = para
                 .controls
                 .iter()
                 .take(ctrl_idx)
-                .filter(|c| matches!(c, Control::Table(t) if t.attr & 0x01 != 0))
+                .filter(
+                    |c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)),
+                )
                 .count();
             let is_last_tac = tac_idx + 1 == tac_count;
             para.line_segs
@@ -3099,6 +3181,13 @@ impl TypesetEngine {
                     }
                 })
                 .unwrap_or(ft.total_height)
+        } else if tac_table_line_idx == Some(0) && fmt.line_heights.len() > 1 {
+            // PR #1088 follow-up: hwp-multi-001 pi=46 처럼 TAC 표가 문단의
+            // 첫 줄이고 뒤따르는 제목 줄이 같은 문단의 line1(vpos reset)로
+            // 인코딩된 경우가 있다. 표 자체는 현재 페이지에 들어가고 post-text
+            // 만 다음 페이지로 넘어가야 하는데, 문단 전체 height_for_fit으로
+            // fit 판단하면 표까지 다음 페이지로 밀린다.
+            fmt.line_advance(0)
         } else if fmt.total_height > 0.0 {
             // 단일 TAC: 호스트 문단의 height_for_fit 사용
             fmt.height_for_fit
@@ -3112,10 +3201,21 @@ impl TypesetEngine {
             st.advance_column_or_new_page();
         }
 
-        self.place_table_with_text(st, para_idx, ctrl_idx, para, table, fmt, table_height);
+        self.place_table_with_text(
+            st,
+            para_idx,
+            ctrl_idx,
+            para,
+            table,
+            fmt,
+            table_height,
+            is_first_placed,
+            is_last_placed,
+        );
     }
 
     /// 표를 pre-text/table/post-text와 함께 배치한다 (Paginator place_table_fits 동일).
+    #[allow(clippy::too_many_arguments)]
     fn place_table_with_text(
         &self,
         st: &mut TypesetState,
@@ -3125,6 +3225,8 @@ impl TypesetEngine {
         table: &crate::model::table::Table,
         fmt: &FormattedParagraph,
         table_total_height: f64,
+        is_first_placed: bool,
+        is_last_placed: bool,
     ) {
         let vertical_offset = Self::get_table_vertical_offset(table);
         let total_lines = fmt.line_heights.len();
@@ -3165,11 +3267,8 @@ impl TypesetEngine {
             );
 
         // pre-table 텍스트 (첫 번째 표에서만)
-        let is_first_table = !para
-            .controls
-            .iter()
-            .take(ctrl_idx)
-            .any(|c| matches!(c, Control::Table(_)));
+        // [참고2 fix] 배열순서가 아닌 배치순서 기준 (typeset_table_paragraph 산출).
+        let is_first_table = is_first_placed;
         let pre_height: f64 = if pre_table_end_line > 0 && is_first_table {
             let h = fmt.line_advances_sum(0..pre_table_end_line);
             st.current_items.push(PageItem::PartialParagraph {
@@ -3211,15 +3310,11 @@ impl TypesetEngine {
         }
 
         // post-table 텍스트
-        let is_last_table = !para
-            .controls
-            .iter()
-            .skip(ctrl_idx + 1)
-            .any(|c| matches!(c, Control::Table(_)));
+        let is_last_table = is_last_placed;
         let tac_table_count = para
             .controls
             .iter()
-            .filter(|c| matches!(c, Control::Table(t) if t.attr & 0x01 != 0))
+            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
             .count();
         let post_table_start = if tac_wrap_split {
             (pre_table_end_line + 1).min(total_lines).max(1)
@@ -3250,6 +3345,12 @@ impl TypesetEngine {
             && !pre_text_exists;
         if should_add_post_text {
             let post_height: f64 = fmt.line_advances_sum(post_table_start..total_lines);
+            if self.tac_table_line_index(para, table, fmt) == Some(0)
+                && st.current_height + post_height > st.available_height() + 0.5
+                && !st.current_items.is_empty()
+            {
+                st.advance_column_or_new_page();
+            }
             st.current_items.push(PageItem::PartialParagraph {
                 para_index: para_idx,
                 start_line: post_table_start,
@@ -3260,11 +3361,44 @@ impl TypesetEngine {
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
         // has_post_text는 tac_table_count와 무관하게 텍스트 줄 존재 여부만 확인
-        let is_tac = table.attr & 0x01 != 0;
+        let is_tac = self.is_effective_tac_table(para, table, fmt);
         let has_post_text = !para.text.is_empty() && total_lines > post_table_start;
         if is_tac && fmt.total_height > fmt.height_for_fit && !has_post_text {
             st.current_height += fmt.total_height - fmt.height_for_fit;
         }
+    }
+
+    fn tac_table_line_index(
+        &self,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        fmt: &FormattedParagraph,
+    ) -> Option<usize> {
+        if !table.common.treat_as_char || fmt.line_heights.len() <= 1 {
+            return None;
+        }
+
+        let om_top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
+        let om_bot = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
+        let table_line_h = hwpunit_to_px(table.common.height as i32, self.dpi) + om_top + om_bot;
+
+        para.line_segs.iter().enumerate().find_map(|(idx, seg)| {
+            let line_h = hwpunit_to_px(seg.line_height, self.dpi);
+            if (line_h - table_line_h).abs() < 1.0 {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn is_effective_tac_table(
+        &self,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        fmt: &FormattedParagraph,
+    ) -> bool {
+        table.attr & 0x01 != 0 || self.tac_table_line_index(para, table, fmt) == Some(0)
     }
 
     /// 비-TAC 블록 표의 조판: fits → place / split(Break Token 기반).
@@ -3281,6 +3415,8 @@ impl TypesetEngine {
         fmt: &FormattedParagraph,
         mt: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
+        is_first_placed: bool,
+        is_last_placed: bool,
     ) {
         // 표 내 각주를 고려한 가용 높이 계산 (Paginator engine.rs:583-586 동일)
         let table_fn_h = ft.table_footnote_height;
@@ -3354,7 +3490,17 @@ impl TypesetEngine {
                     st.current_height = target_y;
                     // table_total = 0: 표 자체는 cur_h advance 에 영향 없음 (Paper-absolute).
                     // 호스트 본문 lines 만 place_table_with_text 가 pre_height 로 추가.
-                    self.place_table_with_text(st, para_idx, ctrl_idx, para, table, fmt, 0.0);
+                    self.place_table_with_text(
+                        st,
+                        para_idx,
+                        ctrl_idx,
+                        para,
+                        table,
+                        fmt,
+                        0.0,
+                        is_first_placed,
+                        is_last_placed,
+                    );
                     return;
                 }
             }
@@ -3362,7 +3508,17 @@ impl TypesetEngine {
 
         // fits: 전체가 현재 페이지에 들어가는가?
         if st.current_height + table_total <= available {
-            self.place_table_with_text(st, para_idx, ctrl_idx, para, table, fmt, table_total);
+            self.place_table_with_text(
+                st,
+                para_idx,
+                ctrl_idx,
+                para,
+                table,
+                fmt,
+                table_total,
+                is_first_placed,
+                is_last_placed,
+            );
             return;
         }
 
@@ -3379,7 +3535,17 @@ impl TypesetEngine {
             if !st.current_items.is_empty() {
                 st.advance_column_or_new_page();
             }
-            self.place_table_with_text(st, para_idx, ctrl_idx, para, table, fmt, table_total);
+            self.place_table_with_text(
+                st,
+                para_idx,
+                ctrl_idx,
+                para,
+                table,
+                fmt,
+                table_total,
+                is_first_placed,
+                is_last_placed,
+            );
             return;
         }
 

@@ -163,17 +163,6 @@ impl HeightCursor {
                 (lazy_base, false)
             }
         };
-        // [Task #412] 현재 paragraph first vpos 우선(spacing_after 인코딩), reset 시 fallback.
-        let vpos_end = match curr_first_vpos {
-            Some(v) if v > seg.vertical_pos => v,
-            _ => prev_vpos_end,
-        };
-        // [Task #643] sb_N 사전 차감 대상 (vpos_corrected_end_y 내부에서 차감).
-        let curr_sb = paragraphs
-            .get(item_para)
-            .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
-            .map(|ps| ps.spacing_before)
-            .unwrap_or(0.0);
         // [Task #874 #8] stale table-host(TopAndBottom+vert=Para) 판정.
         let curr_has_topbottom_para_table = paragraphs
             .get(item_para)
@@ -186,6 +175,23 @@ impl HeightCursor {
                 })
             })
             .unwrap_or(false);
+        // [Task #412] 현재 paragraph first vpos 우선(spacing_after 인코딩), reset 시 fallback.
+        //
+        // 단, 현재 문단이 para-relative TopAndBottom 표의 host 이면 first_vpos 가 표
+        // 예약 높이를 포함할 수 있다. 그 값을 inter-item 목표 y 로 쓰면 표 높이만큼
+        // 빈 공간을 만든 뒤 표를 다시 배치하게 된다(PR #1088 hwp-multi-001 pi=14).
+        // 이 경우에는 직전 문단의 line-seg 끝만 신뢰하고, 표 위치/높이는 Table
+        // PageItem 렌더 단계에서 반영한다.
+        let vpos_end = match curr_first_vpos {
+            Some(v) if v > seg.vertical_pos && !curr_has_topbottom_para_table => v,
+            _ => prev_vpos_end,
+        };
+        // [Task #643] sb_N 사전 차감 대상 (vpos_corrected_end_y 내부에서 차감).
+        let curr_sb = paragraphs
+            .get(item_para)
+            .and_then(|p| styles.para_styles.get(p.para_shape_id as usize))
+            .map(|ps| ps.spacing_before)
+            .unwrap_or(0.0);
         // [Task #1027 Stage A] 공유 클램프 함수.
         let (end_y, applied) = vpos_corrected_end_y(
             is_page_path,
