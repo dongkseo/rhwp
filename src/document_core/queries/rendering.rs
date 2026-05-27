@@ -1979,6 +1979,7 @@ impl DocumentCore {
                     hwp3_origin_flow_spacing_before,
                     hwp3_origin_page_tolerance,
                     force_breaks.get(idx).unwrap_or(&empty_breaks),
+                    matches!(self.source_format, crate::parser::FileFormat::Hwpx),
                 )
             };
 
