@@ -725,6 +725,7 @@ impl LayoutEngine {
                     tbl,
                     section_index,
                     styles,
+                    0,
                     col_area,
                     tbl_y,
                     bin_data_content,
@@ -768,6 +769,7 @@ impl LayoutEngine {
                 tbl,
                 section_index,
                 styles,
+                0,
                 col_area,
                 tbl_y,
                 bin_data_content,
@@ -2847,6 +2849,7 @@ impl LayoutEngine {
                                         t,
                                         section_index,
                                         styles,
+                                        0,
                                         col_area,
                                         table_y,
                                         bdc,
@@ -4042,7 +4045,16 @@ impl LayoutEngine {
                 if text.is_empty() {
                     return None;
                 }
-                text
+                let has_distance = numbering
+                    .heads
+                    .get(level_idx)
+                    .map(|h| h.text_distance > 0)
+                    .unwrap_or(false);
+                if has_distance {
+                    format!("{} ", text)
+                } else {
+                    text
+                }
             }
             HeadType::Bullet => {
                 // Bullet: numbering_id(1-based)로 Bullet 참조

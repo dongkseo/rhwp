@@ -185,6 +185,7 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         section_index: usize,
         styles: &ResolvedStyleSet,
+        outline_numbering_id: u16,
         col_area: &LayoutRect,
         y_start: f64,
         bin_data_content: &[BinDataContent],
@@ -290,6 +291,7 @@ impl LayoutEngine {
                             nested,
                             section_index,
                             styles,
+                            outline_numbering_id,
                             col_area,
                             y_start,
                             bin_data_content,
@@ -606,6 +608,7 @@ impl LayoutEngine {
             table,
             section_index,
             styles,
+            outline_numbering_id,
             col_area,
             bin_data_content,
             depth,
@@ -1595,6 +1598,7 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         section_index: usize,
         styles: &ResolvedStyleSet,
+        outline_numbering_id: u16,
         col_area: &LayoutRect,
         bin_data_content: &[BinDataContent],
         depth: usize,
@@ -2040,10 +2044,21 @@ impl LayoutEngine {
                         } else {
                             composed.lines.len()
                         };
+                        let numbered_comp = if end_line > 0 {
+                            self.apply_paragraph_numbering(
+                                Some(composed),
+                                para,
+                                styles,
+                                outline_numbering_id,
+                            )
+                        } else {
+                            None
+                        };
+                        let composed_for_layout = numbered_comp.as_ref().unwrap_or(composed);
                         para_y = self.layout_composed_paragraph(
                             tree,
                             &mut cell_node,
-                            composed,
+                            composed_for_layout,
                             styles,
                             &inner_area,
                             para_y,
@@ -2698,6 +2713,7 @@ impl LayoutEngine {
                                             nested_table,
                                             section_index,
                                             styles,
+                                            outline_numbering_id,
                                             &ctrl_area,
                                             para_y_before_compose,
                                             bin_data_content,
@@ -2826,6 +2842,7 @@ impl LayoutEngine {
                                         nested_table,
                                         section_index,
                                         styles,
+                                        outline_numbering_id,
                                         &ctrl_area,
                                         nested_y,
                                         bin_data_content,
