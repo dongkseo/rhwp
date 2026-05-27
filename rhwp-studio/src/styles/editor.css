@@ -50,8 +50,14 @@
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 0;
+  box-shadow: none;
   background: var(--color-surface);
+}
+
+#scroll-content .page-grid-overlay {
+  position: absolute;
+  mix-blend-mode: multiply;
 }
 
 #scroll-content.grid-mode canvas {

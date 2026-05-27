@@ -1,5 +1,13 @@
 import type { CommandDef } from '../types';
 import { GridSettingsDialog } from '../../ui/grid-settings-dialog';
+import {
+  type GridOffsetMm,
+  getGridViewSettings,
+  setGridViewSettings,
+  toggleGridVisibility,
+} from '../../view/grid-settings';
+
+const PX_TO_MM = 25.4 / 96;
 
 /** 배율 고정값 커맨드 생성 헬퍼 */
 function zoomLevel(pct: number): CommandDef {
@@ -10,6 +18,28 @@ function zoomLevel(pct: number): CommandDef {
       services.getViewportManager()?.setZoom(pct / 100);
     },
   };
+}
+
+function getGridOriginDefaults(services: Parameters<CommandDef['execute']>[0]): Record<'page' | 'paper', GridOffsetMm> {
+  let pageIndex = 0;
+  const ih = services.getInputHandler();
+  const cursor = ih ? (ih as any).cursor : null;
+  if (typeof cursor?.rect?.pageIndex === 'number') {
+    pageIndex = cursor.rect.pageIndex;
+  }
+
+  const pageInfo = services.wasm.getPageInfo(pageIndex);
+  return {
+    page: { x: 0, y: 0 },
+    paper: {
+      x: roundMm(pageInfo.marginLeft * PX_TO_MM),
+      y: roundMm((pageInfo.marginTop + pageInfo.marginHeader) * PX_TO_MM),
+    },
+  };
+}
+
+function roundMm(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 export const viewCommands: CommandDef[] = [
@@ -139,14 +169,38 @@ export const viewCommands: CommandDef[] = [
     } satisfies CommandDef;
   })(),
   {
+    id: 'view:toggle-grid',
+    label: '격자 보기',
+    icon: 'icon-grid',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      const next = toggleGridVisibility();
+      document.querySelectorAll('[data-cmd="view:toggle-grid"]').forEach(el => {
+        el.classList.toggle('active', next.visible);
+      });
+      services.eventBus.emit('grid-view-changed', next);
+    },
+  },
+  {
     id: 'view:grid-settings',
     label: '격자 설정',
     icon: 'icon-grid',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       const ih = services.getInputHandler();
-      if (!ih) return;
-      new GridSettingsDialog(ih.getGridStepMm(), (mm) => ih.setGridStep(mm)).show();
+      new GridSettingsDialog(
+        getGridViewSettings(),
+        getGridOriginDefaults(services),
+        ih?.getGridStepMm() ?? 3,
+        (settings, moveStepMm) => {
+          const next = setGridViewSettings(settings);
+          ih?.setGridStep(moveStepMm);
+          document.querySelectorAll('[data-cmd="view:toggle-grid"]').forEach(el => {
+            el.classList.toggle('active', next.visible);
+          });
+          services.eventBus.emit('grid-view-changed', next);
+        },
+      ).show();
     },
   },
   (() => {

@@ -755,6 +755,8 @@ fn parse_para_shape(
     doc_info: &mut DocInfo,
 ) -> Result<(), HwpxError> {
     let mut ps = ParaShape::default();
+    // OWPML ParaShapeType의 snapToGrid 기본값은 true.
+    ps.attr1 |= 1 << 8;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
@@ -768,6 +770,13 @@ fn parse_para_shape(
                     ps.attr1 |= 1 << 22;
                 } else {
                     ps.attr1 &= !(1 << 22);
+                }
+            }
+            b"snapToGrid" => {
+                if parse_bool(&attr) {
+                    ps.attr1 |= 1 << 8;
+                } else {
+                    ps.attr1 &= !(1 << 8);
                 }
             }
             _ => {}
@@ -2048,6 +2057,32 @@ mod tests {
 
         assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 7), 1 << 7);
         assert_eq!(doc_info.para_shapes[1].attr1 & (1 << 7), 0);
+    }
+
+    #[test]
+    fn test_parse_hwpx_para_shape_snap_to_grid_bit() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+    <hh:refList>
+    <hh:paraProperties itemCnt="3">
+      <hh:paraPr id="1" tabPrIDRef="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+      <hh:paraPr id="2" tabPrIDRef="0" snapToGrid="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+      <hh:paraPr id="3" tabPrIDRef="0" snapToGrid="1">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+
+        assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 8), 1 << 8);
+        assert_eq!(doc_info.para_shapes[1].attr1 & (1 << 8), 0);
+        assert_eq!(doc_info.para_shapes[2].attr1 & (1 << 8), 1 << 8);
     }
 
     #[test]

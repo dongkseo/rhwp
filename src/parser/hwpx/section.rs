@@ -15,7 +15,8 @@ use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply, MasterPage};
 use crate::model::image::{CropInfo, ImageAttr, ImageEffect};
 use crate::model::page::{
-    BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderFill, PageDef,
+    BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
+    PageBorderUiBasis, PageDef,
 };
 use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
 use crate::model::shape::{
@@ -245,6 +246,16 @@ fn parse_page_pr(e: &quick_xml::events::BytesStart, page: &mut PageDef) {
                     _ => BindingMethod::SingleSided,
                 };
             }
+            _ => {}
+        }
+    }
+}
+
+fn parse_grid(e: &quick_xml::events::BytesStart, sec_def: &mut SectionDef) {
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"lineGrid" => sec_def.line_grid = parse_i32(&attr) as i16,
+            b"charGrid" => sec_def.char_grid = parse_i32(&attr) as i16,
             _ => {}
         }
     }
@@ -682,6 +693,7 @@ fn parse_sec_pr_children(
                 match local {
                     b"pagePr" => parse_page_pr(e, &mut sec_def.page_def),
                     b"margin" => parse_page_margin(e, &mut sec_def.page_def),
+                    b"grid" => parse_grid(e, sec_def),
                     b"colPr" => {
                         col_def = Some(parse_col_pr_with_children(e, reader)?);
                     }
@@ -708,6 +720,7 @@ fn parse_sec_pr_children(
                 match local {
                     b"pagePr" => parse_page_pr(e, &mut sec_def.page_def),
                     b"margin" => parse_page_margin(e, &mut sec_def.page_def),
+                    b"grid" => parse_grid(e, sec_def),
                     b"colPr" => {
                         col_def = Some(parse_col_pr(e));
                     }
@@ -986,8 +999,15 @@ fn parse_page_border_fill_empty(e: &quick_xml::events::BytesStart) -> PageBorder
         header_inside,
         footer_inside,
     );
-    // [Task #1006] HWPX: PR #956 한컴 viewer 정합 — paper-based.
-    page_border_fill.basis = crate::model::page::PageBorderBasis::PaperBased;
+    page_border_fill.ui_basis = if text_border.eq_ignore_ascii_case("PAPER") {
+        // Task #1129 Stage 28: textBorder=PAPER is shown as page basis in the
+        // dialog and renders from the page/body area edge.
+        page_border_fill.basis = PageBorderBasis::BodyBased;
+        PageBorderUiBasis::Page
+    } else {
+        page_border_fill.basis = PageBorderBasis::PaperBased;
+        PageBorderUiBasis::Paper
+    };
     page_border_fill
 }
 
@@ -5078,6 +5098,66 @@ mod tests {
             BindingMethod::DuplexSided
         );
         assert_eq!(section.section_def.page_def.attr & (0x03 << 1), 0x02);
+    }
+
+    #[test]
+    fn test_parse_page_border_fill_basis_from_text_border() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL">
+        <hp:pageBorderFill type="BOTH" borderFillIDRef="1" textBorder="CONTENT" fillArea="PAPER">
+          <hp:offset left="1417" right="1417" top="1417" bottom="1417"/>
+        </hp:pageBorderFill>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        assert_eq!(section.section_def.page_border_fill.attr & 0x01, 0);
+        assert_eq!(
+            section.section_def.page_border_fill.basis,
+            PageBorderBasis::PaperBased
+        );
+        assert_eq!(
+            section.section_def.page_border_fill.ui_basis,
+            PageBorderUiBasis::Paper
+        );
+
+        let xml = xml.replace(r#"textBorder="CONTENT""#, r#"textBorder="PAPER""#);
+        let section = parse_hwpx_section(&xml).unwrap();
+        assert_eq!(section.section_def.page_border_fill.attr & 0x01, 0x01);
+        assert_eq!(
+            section.section_def.page_border_fill.basis,
+            PageBorderBasis::BodyBased
+        );
+        assert_eq!(
+            section.section_def.page_border_fill.ui_basis,
+            PageBorderUiBasis::Page
+        );
+    }
+
+    #[test]
+    fn test_parse_section_grid_preserves_line_and_char_grid() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL">
+        <hp:grid lineGrid="1200" charGrid="900" wonggojiFormat="0"/>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(section.section_def.line_grid, 1200);
+        assert_eq!(section.section_def.char_grid, 900);
     }
 
     #[test]

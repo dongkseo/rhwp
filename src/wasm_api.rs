@@ -435,6 +435,24 @@ impl HwpDocument {
         self.set_section_def_all_native(json).map_err(|e| e.into())
     }
 
+    /// 구역의 쪽 테두리/배경 설정을 JSON으로 반환한다.
+    #[wasm_bindgen(js_name = getPageBorderFill)]
+    pub fn get_page_border_fill(&self, section_idx: u32) -> Result<String, JsValue> {
+        self.get_page_border_fill_native(section_idx as usize)
+            .map_err(|e| e.into())
+    }
+
+    /// 구역의 쪽 테두리/배경 설정을 변경하고 재페이지네이션한다.
+    #[wasm_bindgen(js_name = setPageBorderFill)]
+    pub fn set_page_border_fill(
+        &mut self,
+        section_idx: u32,
+        json: &str,
+    ) -> Result<String, JsValue> {
+        self.set_page_border_fill_native(section_idx as usize, json)
+            .map_err(|e| e.into())
+    }
+
     /// 현재 구역의 다단 설정을 JSON으로 반환한다.
     #[wasm_bindgen(js_name = getColumnDef)]
     pub fn get_column_def(&self, section_idx: u32) -> Result<String, JsValue> {

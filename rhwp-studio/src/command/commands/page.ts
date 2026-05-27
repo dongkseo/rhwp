@@ -1,5 +1,6 @@
 import type { CommandDef } from '../types';
 import { PageSetupDialog } from '@/ui/page-setup-dialog';
+import { PageBorderDialog } from '@/ui/page-border-dialog';
 import { SectionSettingsDialog } from '@/ui/section-settings-dialog';
 import { ColumnSettingsDialog } from '@/ui/column-settings-dialog';
 import { NewNumberDialog } from '@/ui/new-number-dialog';
@@ -177,6 +178,18 @@ export const pageCommands: CommandDef[] = [
       const cursor = ih ? (ih as any).cursor : null;
       const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
       const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx);
+      dialog.show();
+    },
+  },
+  {
+    id: 'page:page-border',
+    label: '쪽 테두리/배경',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      const ih = services.getInputHandler();
+      const cursor = ih ? (ih as any).cursor : null;
+      const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
+      const dialog = new PageBorderDialog(services.wasm, services.eventBus, sectionIdx);
       dialog.show();
     },
   },

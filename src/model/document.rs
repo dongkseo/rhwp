@@ -181,6 +181,10 @@ pub struct SectionDef {
     pub flags: u32,
     /// 단 간격
     pub column_spacing: HwpUnit16,
+    /// 세로 줄맞춤 간격 (0=off, 양수=HWPUNIT 단위)
+    pub line_grid: HwpUnit16,
+    /// 가로 줄맞춤 간격 (0=off, 양수=HWPUNIT 단위)
+    pub char_grid: HwpUnit16,
     /// 기본 탭 간격
     pub default_tab_spacing: HwpUnit,
     /// 쪽 번호 (0이면 앞 구역에 이어서)

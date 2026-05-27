@@ -534,8 +534,8 @@ fn parse_section_def(ctrl_data: &[u8], child_records: &[Record]) -> SectionDef {
 
     sd.flags = r.read_u32().unwrap_or(0);
     sd.column_spacing = r.read_i16().unwrap_or(0);
-    let _vertical_align = r.read_u16().unwrap_or(0);
-    let _horizontal_align = r.read_u16().unwrap_or(0);
+    sd.line_grid = r.read_i16().unwrap_or(0);
+    sd.char_grid = r.read_i16().unwrap_or(0);
     sd.default_tab_spacing = r.read_u32().unwrap_or(0);
     sd.outline_numbering_id = r.read_u16().unwrap_or(0);
     sd.page_num = r.read_u16().unwrap_or(0);
@@ -868,8 +868,17 @@ fn parse_page_border_fill(data: &[u8]) -> PageBorderFill {
     pbf.spacing_top = r.read_i16().unwrap_or(0);
     pbf.spacing_bottom = r.read_i16().unwrap_or(0);
     pbf.border_fill_id = r.read_u16().unwrap_or(0);
-    // [Task #1006] HWP5: PR #956 한컴 viewer 정합 — paper-based.
-    pbf.basis = crate::model::page::PageBorderBasis::PaperBased;
+    // HWP5 PAGE_BORDER_FILL attr bit0 is the stored textBorder value.
+    // Hancom Office dialog shows bit0=0 as paper basis and bit0=1 as page basis.
+    // Task #1129 Stage 28: on initial load, a Hancom page-basis setting must
+    // render from the page/body area edge, not the paper edge.
+    pbf.ui_basis = if (pbf.attr & 0x01) != 0 {
+        pbf.basis = crate::model::page::PageBorderBasis::BodyBased;
+        crate::model::page::PageBorderUiBasis::Page
+    } else {
+        pbf.basis = crate::model::page::PageBorderBasis::PaperBased;
+        crate::model::page::PageBorderUiBasis::Paper
+    };
 
     pbf
 }

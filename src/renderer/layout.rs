@@ -387,7 +387,9 @@ pub(crate) use text_measurement::{
 };
 // [Task #826] map_pua_bullet_char 는 통합 테스트 (tests/issue_826.rs) 에서 직접 검증
 // (PUA substitution 매핑 정합) — pub 노출.
-pub(crate) use border_rendering::{border_width_to_px, create_border_line_nodes};
+pub(crate) use border_rendering::{
+    body_page_border_outset, border_line_visual_span, border_width_to_px, create_border_line_nodes,
+};
 pub use paragraph_layout::map_pua_bullet_char;
 pub(crate) use utils::{
     drawing_to_line_style, drawing_to_shape_style, find_bin_data, format_page_number,
@@ -1221,9 +1223,9 @@ impl LayoutEngine {
                 //   - #920: paper_based = (attr & 0x01) == 0 — 시험지 정합, sample16 회귀
                 //   - #952: paper_based = true 전역 — 당시 모든 sample 정합 판정
                 //   - #987: bfid 정정 + attr 존중 — 변환본 logo overlap 회귀 (#1006)
-                // 정답 (#1006): 포맷별 분리 (PageBorderFill.basis) + 모두 PaperBased.
-                // 작업지시자 Hancom Office close-up 시각 판정: HWP3/HWP5/HWPX 모두
-                // logo 가 outline 내부 top-left 위치 → 세 포맷 모두 PaperBased contract.
+                // 정답: PageBorderFill.basis 를 직접 따른다.
+                // HWP3 원본은 쪽 기준(BodyBased), HWP5/HWPX는 저장된 UI 기준에 따라
+                // PaperBased/BodyBased를 분리한다.
                 // 또한 머리말 conditional clip 제거 (그림 이동 시 외곽선 shrink 회귀 해소),
                 // 꼬리말 clip 은 유지 (페이지 번호 외곽선 안쪽 회귀 해소 — PR #1011).
                 // [Task #1029] PR #1003 cherry-pick `--theirs` 충돌 해소로 본 로직이
@@ -1231,15 +1233,15 @@ impl LayoutEngine {
                 // body-edge 로 좁아진 시각 회귀 발생 — 본 task 에서 PR #1011 상태 복원.
                 use crate::model::page::PageBorderBasis;
                 let paper_based = matches!(pbf.basis, PageBorderBasis::PaperBased);
-                let footer_inside = (pbf.attr & 0x04) != 0;
                 if std::env::var("RHWP_DEBUG_PAGE_BORDER").is_ok() {
                     eprintln!(
-                        "PAGE_BORDER: attr=0x{:08x} bit0={} bit1={} bit2={} paper_based={} footer_inside={} bfid={} spacing(L={},R={},T={},B={})",
+                        "PAGE_BORDER: attr=0x{:08x} bit0={} bit1={} bit2={} paper_based={} bfid={} spacing(L={},R={},T={},B={})",
                         pbf.attr, pbf.attr & 0x01, (pbf.attr >> 1) & 0x01, (pbf.attr >> 2) & 0x01,
-                        paper_based, footer_inside, pbf.border_fill_id,
+                        paper_based, pbf.border_fill_id,
                         pbf.spacing_left, pbf.spacing_right, pbf.spacing_top, pbf.spacing_bottom,
                     );
                 }
+                let borders = &bs.borders;
                 let (base_x, base_y, base_w, base_h) = if paper_based {
                     (0.0, 0.0, layout.page_width, layout.page_height)
                 } else {
@@ -1255,9 +1257,19 @@ impl LayoutEngine {
                 let sp_r = hwpunit_to_px(pbf.spacing_right as i32, self.dpi);
                 let sp_t = hwpunit_to_px(pbf.spacing_top as i32, self.dpi);
                 let sp_b = hwpunit_to_px(pbf.spacing_bottom as i32, self.dpi);
+                let (out_l, out_r, out_t, out_b) = if paper_based {
+                    (0.0, 0.0, 0.0, 0.0)
+                } else {
+                    (
+                        body_page_border_outset(&borders[0]),
+                        body_page_border_outset(&borders[1]),
+                        body_page_border_outset(&borders[2]),
+                        body_page_border_outset(&borders[3]),
+                    )
+                };
                 // 종이 기준: 종이 가장자리에서 안쪽(+)으로 spacing
-                // 쪽 기준: 본문 영역에서 바깥쪽(-)으로 spacing
-                let (bx, mut by, bw, mut bh) = if paper_based {
+                // 쪽 기준: 본문 영역에서 바깥쪽(-)으로 spacing + 선 묶음 폭만큼 확장
+                let (bx, by, bw, bh) = if paper_based {
                     (
                         base_x + sp_l,
                         base_y + sp_t,
@@ -1266,26 +1278,13 @@ impl LayoutEngine {
                     )
                 } else {
                     (
-                        base_x - sp_l,
-                        base_y - sp_t,
-                        base_w + sp_l + sp_r,
-                        base_h + sp_t + sp_b,
+                        base_x - sp_l - out_l,
+                        base_y - sp_t - out_t,
+                        base_w + sp_l + sp_r + out_l + out_r,
+                        base_h + sp_t + sp_b + out_t + out_b,
                     )
                 };
-                // [Task #1006 part 2] header_inside 는 clip 미적용 (cover logo
-                // 가 외곽선 내부 top-left 위치 — 작업지시자 Hancom Office close-up
-                // 시각 판정), footer_inside 만 clip 적용 (페이지 번호가 외곽선 바깥
-                // 위치 — 한컴 viewer 정합 — PR #1011). attr bit 1 (header) 무시,
-                // bit 2 (footer) 존중. spec 정의와 다르지만 한컴 실제 동작 정합 우선.
-                if !footer_inside {
-                    let footer_top = layout.body_area.y + layout.body_area.height;
-                    if by + bh > footer_top {
-                        bh = footer_top - by;
-                    }
-                }
-                let _ = &mut by;
 
-                let borders = &bs.borders;
                 let top_nodes = create_border_line_nodes(tree, &borders[2], bx, by, bx + bw, by);
                 for n in top_nodes {
                     tree.root.children.push(n);

@@ -229,8 +229,8 @@ fn serialize_section_def(sd: &SectionDef, level: u16, records: &mut Vec<Record>)
     let mut w = ByteWriter::new();
     w.write_u32(sd.flags).unwrap();
     w.write_i16(sd.column_spacing).unwrap();
-    w.write_u16(0).unwrap(); // vertical_align
-    w.write_u16(0).unwrap(); // horizontal_align
+    w.write_i16(sd.line_grid).unwrap();
+    w.write_i16(sd.char_grid).unwrap();
     w.write_u32(sd.default_tab_spacing).unwrap();
     w.write_u16(sd.outline_numbering_id).unwrap();
     w.write_u16(sd.page_num).unwrap();
