@@ -6469,6 +6469,163 @@ mod issue_1151_v2_tac_toggle_tests {
         );
     }
 
+    // ─── [Task #1151 v6] 한컴 정합 (scenario-a-after.hwp) render tree baseline ──
+    //
+    // v6 root cause 진단 베이스라인 — 한컴 정합 model 의 render tree 가 표를
+    // 정확한 셀 size 로 그리고 picture 가 표 아래에 배치됨을 확인. v6 fix
+    // (Table::update_ctrl_dimensions 가 self.common 동기화) 가 적용된 후 rhwp
+    // v1 path + 셀 size 조절 + tac toggle 의 render tree 가 이 baseline 과 같은
+    // 패턴 (image y > table bottom) 을 따르는지가 v6 fix 정합 기준.
+    #[test]
+    fn v6_render_tree_scenario_a_after_baseline() {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        fn collect_image(node: &RenderNode, out: &mut Vec<(f64, f64, f64, f64)>) {
+            if matches!(node.node_type, RenderNodeType::Image(_)) {
+                out.push((node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height));
+            }
+            for c in &node.children {
+                collect_image(c, out);
+            }
+        }
+        fn collect_table(node: &RenderNode, out: &mut Vec<(f64, f64, f64, f64)>) {
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                out.push((node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height));
+            }
+            for c in &node.children {
+                collect_table(c, out);
+            }
+        }
+
+        let bytes = std::fs::read("samples/tac-verify/scenario-a-after.hwp")
+            .expect("read scenario-a-after.hwp");
+        let doc = crate::parser::parse_hwp(&bytes).expect("parse scenario-a-after.hwp");
+        let mut core = DocumentCore::new_empty();
+        core.set_document(doc);
+        let tree = core.build_page_tree_cached(0).expect("build page 0");
+        let mut images = vec![];
+        let mut tables = vec![];
+        collect_image(&tree.root, &mut images);
+        collect_table(&tree.root, &mut tables);
+
+        // baseline 단언: 표 와 picture 가 분리되어 표 아래에 picture 배치
+        assert_eq!(tables.len(), 1, "한컴 정합 표 1개");
+        assert_eq!(images.len(), 1, "한컴 정합 picture 1개");
+        let (_tx, ty, _tw, th) = tables[0];
+        let (_ix, iy, _iw, _ih) = images[0];
+        assert!(
+            iy > ty + th,
+            "한컴 baseline: picture 가 표 아래 (iy={}, table_bottom={})",
+            iy,
+            ty + th
+        );
+    }
+
+    // ─── [Task #1151 v6 regression] rhwp v1 path + 셀 height 조절 + tac toggle ─
+    //
+    // Root cause: Table::update_ctrl_dimensions 가 raw_ctrl_data 만 갱신하고
+    // self.common.width / self.common.height 는 동기화하지 않아 paragraph_layout 의
+    // v3 helper 가 stale 값 (cell 조절 전) 을 사용 → picture 가 표 아래로 충분히
+    // 안 밀려나고 표 박스 안에 들어감 (사용자 보고 2026-05-30).
+    //
+    // Fix: update_ctrl_dimensions 에서 self.common.width / height 동기화.
+    // 검증: cell.height = 11498 조절 후 tac toggle → table.common.height == 11498
+    // 및 picture y > table bottom.
+    #[test]
+    fn v6_resize_cell_then_tac_toggle_picture_below_table() {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        fn collect_image(node: &RenderNode, out: &mut Vec<(f64, f64, f64, f64)>) {
+            if matches!(node.node_type, RenderNodeType::Image(_)) {
+                out.push((node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height));
+            }
+            for c in &node.children {
+                collect_image(c, out);
+            }
+        }
+        fn collect_table(node: &RenderNode, out: &mut Vec<(f64, f64, f64, f64)>) {
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                out.push((node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height));
+            }
+            for c in &node.children {
+                collect_table(c, out);
+            }
+        }
+
+        let mut core = make_test_core();
+        let table_res = core.create_table_native(0, 0, 0, 1, 1).expect("table");
+        let table_para_idx = parse_idx(&table_res, "paraIdx");
+        let table_ctrl_idx = parse_idx(&table_res, "controlIdx");
+
+        // 셀 height 를 한컴 정합 size (12498 HU) 와 유사하게 조절.
+        // default cell.height = 1282 → delta = 12498 - 1282 = 11216
+        core.resize_table_cells_native(
+            0,
+            table_para_idx,
+            table_ctrl_idx,
+            r#"[{"cellIdx":0,"heightDelta":11216}]"#,
+        )
+        .expect("resize cell");
+
+        // v6 fix 1: resize 후 table.common.height 가 cell.height 와 동기화
+        let table =
+            match &core.document.sections[0].paragraphs[table_para_idx].controls[table_ctrl_idx] {
+                Control::Table(t) => t,
+                _ => panic!(),
+            };
+        assert_eq!(
+            table.common.height, 11498,
+            "v6 fix: table.common.height 가 cell 조절 후 동기화 (raw_ctrl_data 뿐 아니라 self.common 도)"
+        );
+        assert_eq!(table.cells[0].height, 11498);
+
+        // picture 삽입 (v1 path)
+        let cell_path: Vec<(usize, usize, usize)> = vec![(table_ctrl_idx, 0, 0)];
+        let image = minimal_png();
+        core.insert_picture_native(
+            0,
+            table_para_idx,
+            0,
+            &cell_path,
+            &image,
+            5977,
+            5331,
+            1,
+            1,
+            "png",
+            "test",
+        )
+        .expect("insert");
+        let pic_ctrl_idx = core.document.sections[0].paragraphs[table_para_idx]
+            .controls
+            .len()
+            - 1;
+
+        // tac toggle
+        core.set_picture_properties_native(
+            0,
+            table_para_idx,
+            pic_ctrl_idx,
+            r#"{"treatAsChar":true}"#,
+        )
+        .expect("toggle");
+
+        // v6 fix 2: render tree 의 picture 가 표 box 아래에 배치되는지 확인.
+        let tree = core.build_page_tree_cached(0).expect("build page 0");
+        let mut images = vec![];
+        let mut tables = vec![];
+        collect_image(&tree.root, &mut images);
+        collect_table(&tree.root, &mut tables);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(images.len(), 1);
+        let (_tx, ty, _tw, th) = tables[0];
+        let (_ix, iy, _iw, _ih) = images[0];
+        assert!(
+            iy > ty + th,
+            "v6 fix: picture 가 표 아래 (iy={}, table_bottom={}) — table.common.height 동기화 정합",
+            iy,
+            ty + th
+        );
+    }
+
     // ─── 이미 tac=true 인 picture 의 다른 속성 변경 — migration 미진입 ─────
     #[test]
     fn tac_toggle_when_already_tac_true_no_migration() {

@@ -260,6 +260,12 @@ impl Table {
         let total_height: HwpUnit = self.get_row_heights().iter().sum();
         self.raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&total_width.to_le_bytes());
         self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&total_height.to_le_bytes());
+        // [Task #1151 v6] self.common 동기화 — raw_ctrl_data 만 갱신하던 결함 fix.
+        // paragraph_layout 의 v3 helper (calc_sibling_topandbottom_table_reserved_hu) 는
+        // self.common.height 사용. raw_ctrl_data 와 self.common 가 분리되어 cell 조절 후
+        // paragraph_layout 이 stale 값을 사용하던 결함 정정.
+        self.common.width = total_width;
+        self.common.height = total_height;
     }
 
     /// 열별 폭을 추출한다 (col_span==1인 셀 기준).
