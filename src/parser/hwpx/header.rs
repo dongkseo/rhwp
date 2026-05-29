@@ -1402,14 +1402,33 @@ fn parse_border_fill(
                             bf.fill.image = Some(img_fill);
                         }
                         b"img" | b"image" => {
-                            // imgBrush 내부의 이미지 참조
+                            // imgBrush 내부의 이미지 참조.
+                            // [Issue #1156] 쪽 테두리/배경 그림의 "워터마크 효과" 는
+                            // <hc:img> 의 bright/contrast/effect 로 표현된다 (한컴 UI:
+                            // 쪽 테두리/배경 > 그림 > 워터마크 효과). 종전에는
+                            // binaryItemIDRef 만 읽어 bright/contrast/effect 가 손실되어
+                            // 배경 워터마크 반투명 합성이 빠졌다 (SVG/PNG 회귀).
                             if let Some(ref mut img_fill) = bf.fill.image {
                                 for attr in ce.attributes().flatten() {
-                                    if attr.key.as_ref() == b"binaryItemIDRef" {
-                                        let val = attr_str(&attr);
-                                        let num: String =
-                                            val.chars().filter(|c| c.is_ascii_digit()).collect();
-                                        img_fill.bin_data_id = num.parse().unwrap_or(0);
+                                    match attr.key.as_ref() {
+                                        b"binaryItemIDRef" => {
+                                            let val = attr_str(&attr);
+                                            let num: String = val
+                                                .chars()
+                                                .filter(|c| c.is_ascii_digit())
+                                                .collect();
+                                            img_fill.bin_data_id = num.parse().unwrap_or(0);
+                                        }
+                                        b"bright" => img_fill.brightness = parse_i8(&attr),
+                                        b"contrast" => img_fill.contrast = parse_i8(&attr),
+                                        b"effect" => {
+                                            img_fill.effect = match attr_str(&attr).as_str() {
+                                                "GRAY_SCALE" => 1,
+                                                "BLACK_WHITE" => 2,
+                                                _ => 0, // REAL_PIC
+                                            };
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
