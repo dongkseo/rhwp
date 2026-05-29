@@ -191,6 +191,31 @@ impl SvgRenderer {
         self.render_node(&tree.root);
     }
 
+    /// [Issue #1167] 노드의 z-order plane 키 (작을수록 먼저=아래).
+    /// PaintOp `paint_op_replay_plane()` 과 동일 의미:
+    /// 페이지 배경(0) → BehindText 그림(1) → 일반 Flow 콘텐츠(2) → InFrontOfText 그림(3).
+    /// 페이지 배경(흰 바탕·테두리·배경 워터마크)은 반드시 가장 먼저 그려야 한다.
+    /// 그러지 않으면 root 레벨에서 BehindText 워터마크가 PageBackground 보다 앞으로
+    /// 정렬되어, 흰 배경 rect 가 워터마크를 덮어버린다(#1167 1차 회귀).
+    /// 그 외 노드(텍스트·표·일반 그림 등)는 모두 Flow(2) 로 본문 흐름에 둔다.
+    fn node_z_plane(node: &RenderNode) -> u8 {
+        match &node.node_type {
+            RenderNodeType::PageBackground(_) => 0,
+            RenderNodeType::Image(img) => match img.text_wrap {
+                Some(crate::model::shape::TextWrap::BehindText) => 1,
+                Some(crate::model::shape::TextWrap::InFrontOfText) => 3,
+                _ => 2,
+            },
+            _ => 2,
+        }
+    }
+
+    /// [Issue #1167] 자식 중 BehindText/InFrontOfText 그림이 섞여 있어 plane
+    /// 재정렬이 필요한지. 대부분의 노드는 Flow 만 가지므로 정렬 비용을 피한다.
+    fn children_need_plane_reorder(node: &RenderNode) -> bool {
+        node.children.iter().any(|c| Self::node_z_plane(c) != 2)
+    }
+
     /// 개별 노드를 SVG로 렌더링
     fn render_node(&mut self, node: &RenderNode) {
         if !node.visible {
@@ -637,8 +662,23 @@ impl SvgRenderer {
             }
         }
 
-        for child in &node.children {
-            self.render_node(child);
+        // [Issue #1167] 자식을 z-order plane 순서로 순회한다.
+        // SVG 는 후순위가 위로 합성되므로, BehindText 그림(워터마크)은 본문(Flow)
+        // 보다 먼저, InFrontOfText 그림(직인 등)은 본문보다 나중에 그려야 한다.
+        // PaintOp replay plane(background → behindText → flow → inFrontOfText)과
+        // 동일 의미. 같은 plane 내부는 안정 정렬로 기존 트리 순서를 보존한다.
+        // (PNG=native Skia / 웹캔버스=CanvasKit 는 PaintOp replay plane 으로 이미
+        //  정정됨 — PR #1163 / #1017. 본 변경은 SVG 경로 정합.)
+        if Self::children_need_plane_reorder(node) {
+            let mut ordered: Vec<&RenderNode> = node.children.iter().collect();
+            ordered.sort_by_key(|c| Self::node_z_plane(c));
+            for child in ordered {
+                self.render_node(child);
+            }
+        } else {
+            for child in &node.children {
+                self.render_node(child);
+            }
         }
 
         // 디버그 오버레이: skip 깊이 복원
