@@ -418,8 +418,13 @@ pub struct PageBackgroundImage {
 }
 
 impl PageBackgroundImage {
-    pub fn is_watermark_tone_preset(&self) -> bool {
-        self.brightness == -50 && self.contrast == 70
+    /// 워터마크 효과 적용 여부 (Issue #1156).
+    ///
+    /// HWP/HWPX 에는 워터마크 적용 비트가 없다. 한컴 편집기는 "워터마크 효과"
+    /// 해제 시 밝기·대비를 모두 0 으로 되돌리므로, 밝기·대비가 둘 다 0 이 아닌
+    /// 경우 워터마크로 판정한다 (한쪽이라도 0 이면 워터마크 아님, effect 무관).
+    pub fn is_watermark(&self) -> bool {
+        self.brightness != 0 && self.contrast != 0
     }
 
     pub fn is_real_picture_watermark_tone_preset(&self) -> bool {
@@ -893,8 +898,11 @@ pub enum HeaderFooterKind {
 }
 
 impl ImageNode {
-    pub fn is_watermark_tone_preset(&self) -> bool {
-        self.brightness == -50 && self.contrast == 70
+    /// 워터마크 효과 적용 여부 (Issue #1156).
+    /// 밝기·대비가 둘 다 0 이 아닌 경우 워터마크 (한쪽이라도 0 이면 아님, effect 무관).
+    /// HWP/HWPX 에 워터마크 비트는 없으며 한컴은 해제 시 밝기·대비를 0/0 으로 되돌린다.
+    pub fn is_watermark(&self) -> bool {
+        self.brightness != 0 && self.contrast != 0
     }
 
     pub fn is_real_picture_watermark_tone_preset(&self) -> bool {

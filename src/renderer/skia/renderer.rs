@@ -524,21 +524,26 @@ impl SkiaLayerRenderer {
                                 canvas.draw_rect(rect, &paint);
                             }
                             if let Some(image) = &background.image {
-                                // [Issue #1156] 페이지 배경 이미지는 워터마크 — 반투명 합성.
-                                // svg.rs/web_canvas.rs render_page_background_image 와 동일
-                                // (렌더러 경로 정합). RealPic 톤 프리셋은 PAGE_OPACITY(0.26),
-                                // 그 외 배경 워터마크는 LEGACY_IMAGE_WATERMARK_OPACITY(0.17).
-                                use crate::renderer::render_tree::{
-                                    LEGACY_IMAGE_WATERMARK_OPACITY,
-                                    REAL_PICTURE_WATERMARK_PAGE_OPACITY,
-                                };
-                                let wm_opacity = if image.is_real_picture_watermark_tone_preset() {
-                                    REAL_PICTURE_WATERMARK_PAGE_OPACITY
-                                } else {
-                                    LEGACY_IMAGE_WATERMARK_OPACITY
-                                };
-                                let alpha = (255.0 * wm_opacity).round() as u32;
-                                canvas.save_layer_alpha(Some(rect), alpha);
+                                // [Issue #1156] 워터마크(밝기·대비가 둘 다 0 이 아님)
+                                // 인 배경 이미지만 반투명 합성한다. 밝기·대비가 0/0 인
+                                // 일반 배경 이미지는 불투명 그대로 (effect 그레이스케일
+                                // 등은 draw_image 가 컬러 필터로 처리).
+                                // svg.rs/web_canvas.rs render_page_background_image 정합.
+                                let is_watermark = image.is_watermark();
+                                if is_watermark {
+                                    use crate::renderer::render_tree::{
+                                        LEGACY_IMAGE_WATERMARK_OPACITY,
+                                        REAL_PICTURE_WATERMARK_PAGE_OPACITY,
+                                    };
+                                    let wm_opacity =
+                                        if image.is_real_picture_watermark_tone_preset() {
+                                            REAL_PICTURE_WATERMARK_PAGE_OPACITY
+                                        } else {
+                                            LEGACY_IMAGE_WATERMARK_OPACITY
+                                        };
+                                    let alpha = (255.0 * wm_opacity).round() as u32;
+                                    canvas.save_layer_alpha(Some(rect), alpha);
+                                }
                                 draw_image(
                                     &image.data,
                                     *bbox,
@@ -547,7 +552,9 @@ impl SkiaLayerRenderer {
                                     None,
                                     image.effect,
                                 );
-                                canvas.restore();
+                                if is_watermark {
+                                    canvas.restore();
+                                }
                             }
                             if let Some(color) = background.border_color {
                                 let mut paint = Paint::default();
