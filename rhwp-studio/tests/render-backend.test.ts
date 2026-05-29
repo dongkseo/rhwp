@@ -16,6 +16,11 @@ import {
   canvasKitImageSourceRect,
   HWPUNIT_PER_PIXEL,
 } from '../src/view/canvaskit/image-replay.ts';
+import {
+  CANVASKIT_REPLAY_PLANES,
+  layerPaintOpReplayPlane,
+} from '../src/view/canvaskit/replay-plane.ts';
+import type { LayerPaintOp } from '../src/core/types.ts';
 import { glyphOutlinePayloadStatus } from '../src/view/glyph-outline-payload-status.ts';
 
 test('render backend resolver keeps Canvas2D as the default and accepts skia aliases', () => {
@@ -79,6 +84,36 @@ test('CanvasKit renderer source does not introduce Canvas2D overlay replay', () 
   assert.equal(source.includes("getContext('2d')"), false);
   assert.equal(source.includes('renderPageToCanvas'), false);
   assert.equal(source.includes('rhwpOverlay'), false);
+});
+
+test('CanvasKit replay planes match native Skia direct z-order contract', () => {
+  assert.deepEqual(
+    [...CANVASKIT_REPLAY_PLANES],
+    ['background', 'behindText', 'flow', 'inFrontOfText'],
+  );
+});
+
+test('CanvasKit replay plane helper classifies PageLayerTree ops by wrap', () => {
+  const bbox = { x: 0, y: 0, width: 10, height: 10 };
+  const cases: Array<[LayerPaintOp, string]> = [
+    [{ type: 'pageBackground', bbox }, 'background'],
+    [{ type: 'image', bbox, wrap: 'behindText' }, 'behindText'],
+    [{ type: 'image', bbox, wrap: 'inFrontOfText' }, 'inFrontOfText'],
+    [{ type: 'image', bbox, wrap: 'topAndBottom' }, 'flow'],
+    [{ type: 'image', bbox }, 'flow'],
+    [{ type: 'textRun', bbox, text: 'flow' }, 'flow'],
+    [{ type: 'rectangle', bbox, style: { fillColor: '#ff0000' } }, 'flow'],
+  ];
+
+  for (const [op, expected] of cases) {
+    assert.equal(layerPaintOpReplayPlane(op), expected, op.type);
+  }
+});
+
+test('CanvasKit renderer source replays the root once per replay plane', () => {
+  const source = readFileSync(new URL('../src/view/canvaskit-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /for \(const replayPlane of CANVASKIT_REPLAY_PLANES\)/);
+  assert.match(source, /layerPaintOpReplayPlane\(op\) !== replayPlane/);
 });
 
 test('CanvasKit replay bridge fallback keeps compat on direct replay contract', () => {

@@ -5,8 +5,8 @@ use crate::model::image::ImageEffect;
 use crate::model::shape::TextWrap;
 use crate::model::style::{ImageFillMode, UnderlineType};
 use crate::paint::{
-    CacheHint, ClipKind, LayerNode, LayerNodeKind, PageLayerTree, PaintOp, ResolvedImageKind,
-    ResolvedImagePayload, TextDecorationKind, TextVariantKind,
+    paint_op_replay_plane, CacheHint, ClipKind, LayerNode, LayerNodeKind, PageLayerTree, PaintOp,
+    PaintReplayPlane, ResolvedImageKind, ResolvedImagePayload, TextDecorationKind, TextVariantKind,
 };
 use crate::renderer::layer_renderer::{
     analyze_text_variant_selection, TextVariantSelectionOptions, VariantSelectedReason,
@@ -89,6 +89,8 @@ pub struct CanvasKitReplaySummary {
 pub struct CanvasKitReplayItem {
     pub path: String,
     pub op_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_plane: Option<PaintReplayPlane>,
     pub feature: CanvasKitReplayFeature,
     pub status: CanvasKitReplayStatus,
     pub reason: CanvasKitReplayReason,
@@ -271,6 +273,7 @@ impl CanvasKitReplayPlanBuilder {
                 self.push(CanvasKitReplayItem {
                     path: format!("{path}/clip"),
                     op_type: "clipRect",
+                    replay_plane: None,
                     feature: CanvasKitReplayFeature::Clip,
                     status: CanvasKitReplayStatus::Direct,
                     reason: CanvasKitReplayReason::DirectReplaySupported,
@@ -305,6 +308,7 @@ impl CanvasKitReplayPlanBuilder {
         self.push(CanvasKitReplayItem {
             path: format!("{path}/cacheHint"),
             op_type: "cacheHint",
+            replay_plane: None,
             feature: CanvasKitReplayFeature::CacheHint,
             status,
             reason,
@@ -314,7 +318,7 @@ impl CanvasKitReplayPlanBuilder {
     }
 
     fn item_for_op(&self, op: &PaintOp, path: String) -> CanvasKitReplayItem {
-        match op {
+        let mut item = match op {
             PaintOp::PageBackground { background, .. } => {
                 self.page_background_item(path, background)
             }
@@ -373,7 +377,9 @@ impl CanvasKitReplayPlanBuilder {
                 &outline.variant.variant_id,
                 TextVariantKind::GlyphOutline,
             ),
-        }
+        };
+        item.replay_plane = Some(paint_op_replay_plane(op));
+        item
     }
 
     fn page_background_item(
@@ -453,6 +459,7 @@ impl CanvasKitReplayPlanBuilder {
             return CanvasKitReplayItem {
                 path,
                 op_type,
+                replay_plane: None,
                 feature: CanvasKitReplayFeature::TextVariant,
                 status: CanvasKitReplayStatus::DirectRequired,
                 reason: CanvasKitReplayReason::DirectReplayRequired,
@@ -463,6 +470,7 @@ impl CanvasKitReplayPlanBuilder {
         CanvasKitReplayItem {
             path,
             op_type,
+            replay_plane: None,
             feature: CanvasKitReplayFeature::TextVariant,
             status: CanvasKitReplayStatus::TextFallback,
             reason: CanvasKitReplayReason::ExplicitTextRunFallback,
@@ -481,6 +489,7 @@ impl CanvasKitReplayPlanBuilder {
             CanvasKitReplayItem {
                 path,
                 op_type,
+                replay_plane: None,
                 feature,
                 status: CanvasKitReplayStatus::CompatOverlay,
                 reason: CanvasKitReplayReason::CompatOverlayAllowed,
@@ -491,6 +500,7 @@ impl CanvasKitReplayPlanBuilder {
             CanvasKitReplayItem {
                 path,
                 op_type,
+                replay_plane: None,
                 feature,
                 status: CanvasKitReplayStatus::DirectRequired,
                 reason: CanvasKitReplayReason::HiddenOverlayForbidden,
@@ -524,6 +534,7 @@ fn direct_item(
     CanvasKitReplayItem {
         path,
         op_type,
+        replay_plane: None,
         feature,
         status: CanvasKitReplayStatus::Direct,
         reason: CanvasKitReplayReason::DirectReplaySupported,
@@ -901,6 +912,50 @@ mod tests {
     }
 
     #[test]
+    fn replay_plan_items_expose_paint_replay_planes() {
+        let mut behind = ImageNode::new(1, Some(vec![1, 2, 3]));
+        behind.text_wrap = Some(TextWrap::BehindText);
+        let mut front = ImageNode::new(2, Some(vec![4, 5, 6]));
+        front.text_wrap = Some(TextWrap::InFrontOfText);
+
+        let tree = tree_with_ops(vec![
+            PaintOp::PageBackground {
+                bbox: bbox(),
+                background: page_background(None, None),
+            },
+            PaintOp::Image {
+                bbox: bbox(),
+                image: behind,
+                resolved: None,
+            },
+            PaintOp::TextRun {
+                bbox: bbox(),
+                run: text_run("A"),
+            },
+            PaintOp::Image {
+                bbox: bbox(),
+                image: front,
+                resolved: None,
+            },
+        ]);
+
+        let plan = analyze_canvaskit_replay_plan(&tree, CanvasKitReplayMode::Default);
+
+        assert_eq!(
+            plan.items
+                .iter()
+                .map(|item| item.replay_plane)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(PaintReplayPlane::Background),
+                Some(PaintReplayPlane::BehindText),
+                Some(PaintReplayPlane::Flow),
+                Some(PaintReplayPlane::InFrontOfText),
+            ]
+        );
+    }
+
+    #[test]
     fn image_replay_plan_reports_external_path_with_embedded_data() {
         let mut image = ImageNode::new(1, Some(vec![1, 2, 3]));
         image.external_path = Some("linked-image.png".to_string());
@@ -1079,5 +1134,6 @@ mod tests {
         assert!(json.contains("\"mode\":\"default\""));
         assert!(json.contains("\"directItems\":1"));
         assert!(json.contains("\"hiddenCanvas2dOverlayAllowed\":false"));
+        assert!(json.contains("\"replayPlane\":\"flow\""));
     }
 }
