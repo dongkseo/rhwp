@@ -1107,6 +1107,7 @@ export interface LayerGlyphOutlineOp {
   bbox: LayerBounds;
   variant?: LayerTextVariantMeta;
   payloadKind?: LayerGlyphOutlinePayloadKind;
+  payloadResourceKey?: string;
   placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
   paths?: LayerGlyphOutlinePath[];
   stroke?: LayerGlyphOutlineStroke;
@@ -1236,6 +1237,12 @@ export interface LayerFontColorGlyphRef {
   colorFormat?: 'colrV0' | 'colrV1' | 'other' | string;
 }
 
+export interface LayerPaletteRef {
+  id?: string;
+  index?: number;
+  cpalDigest?: string;
+}
+
 export interface LayerColorPaintGraphNode {
   nodeId?: number;
   kind?: string;
@@ -1257,11 +1264,13 @@ export interface LayerColorPaintGraphPayload {
 export interface LayerColorLayersPayload {
   colorFormat?: 'colrV0' | 'colrV1' | 'other' | string;
   sourceFontRef?: LayerFontColorGlyphRef;
+  paletteRef?: LayerPaletteRef;
   layers?: Array<{
     layerIndex?: number | null;
     glyphId?: number;
     glyphRange?: LayerTextRange;
     sourceRangeUtf8?: LayerTextRange;
+    sourceFontRef?: LayerFontColorGlyphRef;
     commands?: LayerPathCommand[];
     fill?: LayerResolvedColor;
     fillRule?: 'nonzero' | 'evenodd' | string;

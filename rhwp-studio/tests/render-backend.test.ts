@@ -21,7 +21,7 @@ import {
   layerPaintOpReplayPlane,
 } from '../src/view/canvaskit/replay-plane.ts';
 import type { LayerPaintOp } from '../src/core/types.ts';
-import { glyphOutlinePayloadStatus } from '../src/view/glyph-outline-payload-status.ts';
+import { glyphOutlinePayloadResourceKey, glyphOutlinePayloadStatus } from '../src/view/glyph-outline-payload-status.ts';
 
 test('render backend resolver keeps Canvas2D as the default and accepts skia aliases', () => {
   assert.equal(resolveRenderBackend(''), 'canvas2d');
@@ -224,6 +224,112 @@ test('GlyphOutline advanced payload gates reject richer payloads by default', ()
     }).reason,
     'unsupportedSvgGlyph',
   );
+});
+
+test('GlyphOutline payload resource keys keep payload families and palettes disjoint', () => {
+  const colorBase = {
+    type: 'glyphOutline' as const,
+    bbox: { x: 0, y: 0, width: 10, height: 10 },
+    payloadKind: 'colorLayers' as const,
+    colorLayers: {
+      colorFormat: 'colrV1',
+      sourceRangeUtf8: { start: 0, end: 1 },
+      glyphRange: { start: 0, end: 1 },
+      sourceFontRef: { faceKey: 'fixture-face', glyphId: 42, colorFormat: 'colrV1' },
+      paletteRef: { id: 'document-palette', index: 0, cpalDigest: 'a'.repeat(64) },
+      paintGraph: {
+        rootNodeId: 0,
+        nodes: [{
+          nodeId: 0,
+          kind: 'solidPath',
+          solidPath: {
+            commands: [{ type: 'moveTo', x: 0, y: 0 }],
+            fill: { rgba: [0, 0, 0, 1] },
+            fillRule: 'nonzero',
+          },
+          sourceRangeUtf8: { start: 0, end: 1 },
+          glyphRange: { start: 0, end: 1 },
+          sourceFontRef: { faceKey: 'fixture-face', glyphId: 42, colorFormat: 'colrV1' },
+        }],
+      },
+    },
+  };
+  const colorKey = glyphOutlinePayloadResourceKey(colorBase);
+  const alternatePaletteKey = glyphOutlinePayloadResourceKey({
+    ...colorBase,
+    colorLayers: {
+      ...colorBase.colorLayers,
+      paletteRef: { id: 'document-palette', index: 1, cpalDigest: 'b'.repeat(64) },
+    },
+  });
+  const bitmapKey = glyphOutlinePayloadResourceKey({
+    type: 'glyphOutline',
+    bbox: { x: 0, y: 0, width: 10, height: 10 },
+    payloadKind: 'bitmapGlyph',
+    bitmapGlyph: {
+      imageRef: 7,
+      sourceRangeUtf8: { start: 0, end: 1 },
+      glyphRange: { start: 0, end: 1 },
+      placement: { x: 0, y: 0, width: 10, height: 10 },
+      scalingPolicy: 'sourceExact',
+      filtering: 'linear',
+    },
+  });
+  const svgKey = glyphOutlinePayloadResourceKey({
+    type: 'glyphOutline',
+    bbox: { x: 0, y: 0, width: 10, height: 10 },
+    payloadKind: 'svgGlyph',
+    svgGlyph: {
+      svgRef: 7,
+      sourceRangeUtf8: { start: 0, end: 1 },
+      glyphRange: { start: 0, end: 1 },
+      viewBox: { x: 0, y: 0, width: 10, height: 10 },
+      staticSanitized: true,
+      scriptAllowed: false,
+      animationAllowed: false,
+      externalResourcesAllowed: false,
+      interactivityAllowed: false,
+    },
+  });
+
+  assert.ok(colorKey?.includes('palette:id:document-palette:index:0:digest:'));
+  assert.notEqual(colorKey, alternatePaletteKey);
+  assert.ok(bitmapKey?.startsWith('glyphPayload:bitmapGlyph:imageRef:7'));
+  assert.ok(svgKey?.startsWith('glyphPayload:svgGlyph:svgRef:7'));
+  assert.notEqual(colorKey, bitmapKey);
+  assert.notEqual(colorKey, svgKey);
+  assert.notEqual(bitmapKey, svgKey);
+});
+
+test('GlyphOutline payload resource keys are suppressed for incomplete payloads', () => {
+  assert.equal(glyphOutlinePayloadResourceKey({
+    type: 'glyphOutline',
+    bbox: { x: 0, y: 0, width: 10, height: 10 },
+    payloadKind: 'bitmapGlyph',
+    bitmapGlyph: {
+      imageRef: 7,
+      sourceRangeUtf8: { start: 0, end: 1 },
+      glyphRange: { start: 0, end: 1 },
+      scalingPolicy: 'backendDefault',
+      filtering: 'linear',
+    },
+  }), null);
+  assert.equal(glyphOutlinePayloadResourceKey({
+    type: 'glyphOutline',
+    bbox: { x: 0, y: 0, width: 10, height: 10 },
+    payloadKind: 'svgGlyph',
+    svgGlyph: {
+      svgRef: 7,
+      sourceRangeUtf8: { start: 0, end: 1 },
+      glyphRange: { start: 0, end: 1 },
+      viewBox: { x: 0, y: 0, width: 10, height: 10 },
+      staticSanitized: false,
+      scriptAllowed: false,
+      animationAllowed: false,
+      externalResourcesAllowed: false,
+      interactivityAllowed: false,
+    },
+  }), null);
 });
 
 test('GlyphOutline COLRv1 gate reports unsupported graph node kind exactly', () => {
