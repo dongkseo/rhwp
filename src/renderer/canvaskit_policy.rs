@@ -633,6 +633,7 @@ fn image_transition_detail(
     resolved: Option<&ResolvedImagePayload>,
 ) -> Option<String> {
     let mut detail = Vec::new();
+    let has_replayable_payload = image_has_replayable_payload(image, resolved);
     if let Some(payload) = resolved {
         detail.push(format!(
             "resolved={}",
@@ -641,7 +642,12 @@ fn image_transition_detail(
     }
     if image.external_path.is_some() {
         detail.push("externalImage".to_string());
-    } else if image.data.is_none() && resolved.is_none() {
+        if has_replayable_payload {
+            detail.push("injectedImageData".to_string());
+        } else {
+            detail.push("missingImageData".to_string());
+        }
+    } else if !has_replayable_payload {
         detail.push("missingImageData".to_string());
     }
     if let Some(fill_mode) = image.fill_mode {
@@ -677,12 +683,19 @@ fn image_transition_detail(
 }
 
 fn image_can_replay_directly(image: &ImageNode, resolved: Option<&ResolvedImagePayload>) -> bool {
-    let has_replayable_payload = image.data.is_some() || resolved.is_some();
+    let has_replayable_payload = image_has_replayable_payload(image, resolved);
     let effects_are_supported = resolved.is_some_and(|payload| payload.suppress_effects)
         || (matches!(image.effect, ImageEffect::RealPic)
             && image.brightness == 0
             && image.contrast == 0);
-    has_replayable_payload && image.external_path.is_none() && effects_are_supported
+    has_replayable_payload && effects_are_supported
+}
+
+fn image_has_replayable_payload(
+    image: &ImageNode,
+    resolved: Option<&ResolvedImagePayload>,
+) -> bool {
+    resolved.is_some() || image.data.as_ref().is_some_and(|data| !data.is_empty())
 }
 
 fn resolved_image_kind_detail(value: ResolvedImageKind) -> &'static str {
@@ -968,8 +981,31 @@ mod tests {
 
         let plan = analyze_canvaskit_replay_plan(&tree, CanvasKitReplayMode::Default);
 
+        assert_eq!(plan.items[0].status, CanvasKitReplayStatus::Direct);
+        assert_eq!(
+            plan.items[0].detail.as_deref(),
+            Some("externalImage;injectedImageData")
+        );
+    }
+
+    #[test]
+    fn image_replay_plan_reports_external_path_without_payload_as_missing() {
+        let mut image = ImageNode::new(1, None);
+        image.external_path = Some("linked-image.png".to_string());
+
+        let tree = tree_with_ops(vec![PaintOp::Image {
+            bbox: bbox(),
+            image,
+            resolved: None,
+        }]);
+
+        let plan = analyze_canvaskit_replay_plan(&tree, CanvasKitReplayMode::Default);
+
         assert_eq!(plan.items[0].status, CanvasKitReplayStatus::DirectRequired);
-        assert_eq!(plan.items[0].detail.as_deref(), Some("externalImage"));
+        assert_eq!(
+            plan.items[0].detail.as_deref(),
+            Some("externalImage;missingImageData")
+        );
     }
 
     #[test]

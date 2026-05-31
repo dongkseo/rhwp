@@ -4194,6 +4194,7 @@ fn make_picture_image_node(
             contrast: pic.image_attr.contrast,
             text_wrap: Some(pic.common.text_wrap),
             transform: extract_shape_transform(&pic.shape_attr),
+            external_path: pic.image_attr.external_path.clone(),
             ..ImageNode::new(bin_data_id, image_data)
         }),
         bbox,

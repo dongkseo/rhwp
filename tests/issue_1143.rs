@@ -81,6 +81,27 @@ fn page_layer_image_payload_count(doc: &HwpDocument, page: u32) -> usize {
         .count()
 }
 
+fn canvaskit_image_items(doc: &HwpDocument, page: u32) -> Vec<Value> {
+    let json = doc
+        .get_canvaskit_replay_plan_native(page, "default")
+        .unwrap_or_else(|e| panic!("CanvasKit replay plan {page}: {e}"));
+    let parsed: Value =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("CanvasKit plan JSON: {e}"));
+    parsed["items"]
+        .as_array()
+        .expect("CanvasKit plan items")
+        .iter()
+        .filter(|item| item["opType"].as_str() == Some("image"))
+        .cloned()
+        .collect()
+}
+
+fn item_detail_contains(item: &Value, needle: &str) -> bool {
+    item["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.split(';').any(|part| part == needle))
+}
+
 #[test]
 fn issue_1143_basename_injection_marks_reference_loaded() {
     let mut doc = load_doc("samples/hwp3-sample10.hwp");
@@ -116,6 +137,50 @@ fn issue_1143_basename_injection_marks_reference_loaded() {
         basenames.iter().any(|name| name == "rdb02.gif")
             && basenames.iter().any(|name| name == "s1.jpg"),
         "still-missing image basenames should remain visible"
+    );
+}
+
+#[test]
+fn issue_1143_canvaskit_plan_distinguishes_missing_and_injected_external_images() {
+    let mut doc = load_doc("samples/hwp3-sample10.hwp");
+
+    let before_items = canvaskit_image_items(&doc, 0);
+    assert!(
+        before_items.iter().any(|item| {
+            item["status"].as_str() == Some("directRequired")
+                && item_detail_contains(item, "externalImage")
+                && item_detail_contains(item, "missingImageData")
+        }),
+        "external image without injected bytes should be reported as missing: {before_items:?}"
+    );
+
+    let oracle_ref = external_image_refs(&doc)
+        .into_iter()
+        .find(|reference| reference.bin_data_id == 1)
+        .expect("binDataId 1 ref");
+    let oracle = read_sample("samples/oracle.gif");
+    assert_eq!(
+        doc.inject_external_image_by_key(&oracle_ref.key, &oracle, "/tmp/oracle.gif"),
+        1
+    );
+
+    let after_items = canvaskit_image_items(&doc, 0);
+    assert!(
+        after_items.iter().any(|item| {
+            item["status"].as_str() == Some("direct")
+                && item_detail_contains(item, "externalImage")
+                && item_detail_contains(item, "injectedImageData")
+                && !item_detail_contains(item, "missingImageData")
+        }),
+        "injected external image should be directly replayable and not reported as missing: {after_items:?}"
+    );
+    assert!(
+        after_items.iter().any(|item| {
+            item["status"].as_str() == Some("directRequired")
+                && item_detail_contains(item, "externalImage")
+                && item_detail_contains(item, "missingImageData")
+        }),
+        "other external images on the page should remain missing until injected: {after_items:?}"
     );
 }
 
