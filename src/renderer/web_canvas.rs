@@ -1083,6 +1083,14 @@ impl WebCanvasRenderer {
                     self.render_layer_node(child);
                     self.ctx.restore();
                 }
+                ClipKind::TextBox => {
+                    self.ctx.save();
+                    self.ctx.begin_path();
+                    self.ctx.rect(clip.x, clip.y, clip.width, clip.height);
+                    self.ctx.clip();
+                    self.render_layer_node(child);
+                    self.ctx.restore();
+                }
                 ClipKind::Generic => {
                     self.ctx.save();
                     self.ctx.begin_path();

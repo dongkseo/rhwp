@@ -692,6 +692,7 @@ impl LayoutEngine {
                     sec_for_layout,
                     para_for_layout,
                     ctx,
+                    false,
                     pidx + 1 == para_count,
                     0.0,
                     None,

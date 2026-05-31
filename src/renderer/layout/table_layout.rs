@@ -2081,6 +2081,7 @@ impl LayoutEngine {
                             section_index,
                             cp_idx,
                             cell_context.clone(),
+                            false,
                             is_last_para,
                             0.0,
                             None,

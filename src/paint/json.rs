@@ -1221,6 +1221,7 @@ fn clip_kind_str(value: ClipKind) -> &'static str {
     match value {
         ClipKind::Body => "body",
         ClipKind::TableCell => "tableCell",
+        ClipKind::TextBox => "textBox",
         ClipKind::Generic => "generic",
     }
 }
@@ -3460,6 +3461,22 @@ mod tests {
         assert!(json.contains("\"groupKind\":{\"kind\":\"column\",\"index\":2}"));
         assert!(json.contains("\"cacheHint\":\"staticSubtree\""));
         assert!(json.contains("\"clipKind\":\"body\""));
+    }
+
+    #[test]
+    fn serializes_textbox_clip_kind() {
+        let leaf = LayerNode::leaf(BoundingBox::new(0.0, 0.0, 10.0, 10.0), None, Vec::new());
+        let root = LayerNode::clip_rect(
+            BoundingBox::new(0.0, 0.0, 10.0, 10.0),
+            None,
+            BoundingBox::new(1.0, 1.0, 8.0, 8.0),
+            leaf,
+            ClipKind::TextBox,
+        );
+
+        let json = PageLayerTree::new(10.0, 10.0, root).to_json();
+
+        assert!(json.contains("\"clipKind\":\"textBox\""));
     }
 
     #[test]

@@ -1658,6 +1658,16 @@ impl LayoutEngine {
             width: (w - margin_left - margin_right).max(0.0),
             height: (h - margin_top - margin_bottom).max(0.0),
         };
+        let mut textbox_node = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::TextBox,
+            BoundingBox::new(
+                inner_area.x,
+                inner_area.y,
+                inner_area.width,
+                inner_area.height,
+            ),
+        );
 
         // [Task #874 #3 / #930] shortcut.hwp 1 페이지 우측하단 자동번호 "1" 시각 정합:
         // 도형이 원본 (sa.original_*) 대비 확대된 마스터 페이지 글상자는 한컴이 내부
@@ -1722,7 +1732,7 @@ impl LayoutEngine {
                 // 세로쓰기 오버플로우 수신: 오버플로우 문단을 세로 레이아웃으로 렌더링
                 self.layout_vertical_textbox_text_with_paras(
                     tree,
-                    shape_node,
+                    &mut textbox_node,
                     overflow_paras,
                     text_box,
                     styles,
@@ -1766,7 +1776,7 @@ impl LayoutEngine {
                     let is_last_para = tb_para_idx + 1 == composed_paras.len();
                     para_y = self.layout_composed_paragraph(
                         tree,
-                        shape_node,
+                        &mut textbox_node,
                         composed,
                         styles,
                         &para_col_area,
@@ -1776,6 +1786,7 @@ impl LayoutEngine {
                         section_index,
                         tb_para_idx,
                         Some(cell_ctx),
+                        true,
                         is_last_para,
                         0.0,
                         None,
@@ -1784,6 +1795,9 @@ impl LayoutEngine {
                         None, // 도형 컨텍스트 — wrap zone 무관
                     );
                 }
+            }
+            if !textbox_node.children.is_empty() {
+                shape_node.children.push(textbox_node);
             }
             return;
         }
@@ -1825,7 +1839,7 @@ impl LayoutEngine {
         if text_direction != 0 {
             self.layout_vertical_textbox_text_with_paras(
                 tree,
-                shape_node,
+                &mut textbox_node,
                 &text_box.paragraphs[..para_count],
                 text_box,
                 styles,
@@ -1836,6 +1850,9 @@ impl LayoutEngine {
                 control_index,
                 parent_cell_path,
             );
+            if !textbox_node.children.is_empty() {
+                shape_node.children.push(textbox_node);
+            }
             return;
         }
 
@@ -1959,7 +1976,7 @@ impl LayoutEngine {
             let is_last_para = tb_para_idx + 1 == composed_paras.len();
             para_y = self.layout_composed_paragraph(
                 tree,
-                shape_node,
+                &mut textbox_node,
                 composed,
                 styles,
                 &para_col_area,
@@ -1969,6 +1986,7 @@ impl LayoutEngine {
                 section_index,
                 tb_para_idx,
                 Some(cell_ctx),
+                true,
                 is_last_para,
                 tb_inline_width,
                 None,
@@ -2146,7 +2164,7 @@ impl LayoutEngine {
                         let empty_map = std::collections::HashMap::new();
                         self.layout_shape_object(
                             tree,
-                            shape_node,
+                            &mut textbox_node,
                             shape.as_ref(),
                             child_x,
                             child_y,
@@ -2185,7 +2203,7 @@ impl LayoutEngine {
                             // 전달하여 findPictureAtClick 의 secIdx undefined skip 차단.
                             self.layout_picture(
                                 tree,
-                                shape_node,
+                                &mut textbox_node,
                                 pic,
                                 &pic_container,
                                 bin_data_content,
@@ -2207,7 +2225,7 @@ impl LayoutEngine {
                             // [Task #1151 v4] 글상자 내부 picture (absolute) — section/para/control 전달.
                             self.layout_picture(
                                 tree,
-                                shape_node,
+                                &mut textbox_node,
                                 pic,
                                 &pic_container,
                                 bin_data_content,
@@ -2295,7 +2313,7 @@ impl LayoutEngine {
                                 }),
                                 BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                             );
-                            shape_node.children.push(eq_node);
+                            textbox_node.children.push(eq_node);
                         }
                     }
                     Control::Table(table) => {
@@ -2316,7 +2334,7 @@ impl LayoutEngine {
                             .unwrap_or(Alignment::Left);
                         inline_y = self.layout_embedded_table(
                             tree,
-                            shape_node,
+                            &mut textbox_node,
                             table,
                             styles,
                             &inner_area,
@@ -2338,6 +2356,9 @@ impl LayoutEngine {
             if max_inline_height > 0.0 {
                 inline_y += max_inline_height;
             }
+        }
+        if !textbox_node.children.is_empty() {
+            shape_node.children.push(textbox_node);
         }
     }
 

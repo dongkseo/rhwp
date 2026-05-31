@@ -879,6 +879,7 @@ impl LayoutEngine {
                         section_index,
                         cp_idx,
                         Some(cell_context.clone()),
+                        false,
                         is_last_para,
                         0.0,
                         None,

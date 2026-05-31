@@ -1101,6 +1101,7 @@ impl LayoutEngine {
                 para_index,
                 None,
                 false,
+                false,
                 0.0,
                 multi_col_width_hu,
                 Some(para),
@@ -1117,6 +1118,9 @@ impl LayoutEngine {
 
     /// ComposedParagraph를 사용한 레이아웃
     /// `is_last_cell_para`: 셀 내 마지막 문단이면 true (마지막 줄의 trailing line_spacing 제외)
+    /// `suppress_column_top_vpos_fallback`: caller가 첫 줄 vpos를 이미 y에 반영한
+    /// 경우 true. 글상자 내부 문단처럼 LINE_SEG.vertical_pos 기반으로 선배치한 뒤
+    /// 다시 column-top fallback을 적용하면 y가 이중 보정된다.
     /// `multi_col_width_hu`: 다단 문서에서 현재 단 너비(HWPUNIT). Some이면 segment_width 불일치 줄 건너뜀.
     /// `para`: 원본 문단 (treat_as_char 이미지 인라인 렌더링에 사용)
     /// `bin_data_content`: 이미지 데이터 (treat_as_char 이미지 인라인 렌더링에 사용)
@@ -1133,6 +1137,7 @@ impl LayoutEngine {
         section_index: usize,
         para_index: usize,
         cell_ctx: Option<CellContext>,
+        suppress_column_top_vpos_fallback: bool,
         is_last_cell_para: bool,
         first_line_x_offset: f64,
         multi_col_width_hu: Option<i32>,
@@ -1224,7 +1229,7 @@ impl LayoutEngine {
         if start_line == 0 && spacing_before > 0.0 {
             if !is_column_top {
                 y += spacing_before;
-            } else if para_index == 0 {
+            } else if para_index == 0 && !suppress_column_top_vpos_fallback {
                 let vpos0_px = para
                     .and_then(|p| p.line_segs.first())
                     .map(|ls| hwpunit_to_px(ls.vertical_pos, self.dpi))
@@ -1237,7 +1242,12 @@ impl LayoutEngine {
         // 인라인 wrap 조합) — line_seg.vpos 를 직접 y 에 가산하여 텍스트가 wrap
         // shape 아래로 위치하도록 함. wrap 메커니즘이 별도로 처리하지 못하는
         // case 의 fallback. start_line==0 + column-top + para_index==0 으로 한정.
-        if start_line == 0 && spacing_before == 0.0 && is_column_top && para_index == 0 {
+        if start_line == 0
+            && spacing_before == 0.0
+            && is_column_top
+            && para_index == 0
+            && !suppress_column_top_vpos_fallback
+        {
             let vpos0_px = para
                 .and_then(|p| p.line_segs.first())
                 .map(|ls| hwpunit_to_px(ls.vertical_pos, self.dpi))

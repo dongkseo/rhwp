@@ -521,6 +521,15 @@ impl SvgRenderer {
                 self.output
                     .push_str(&format!("<g clip-path=\"url(#{})\">", clip_id));
             }
+            RenderNodeType::TextBox => {
+                let clip_id = format!("textbox-clip-{}", node.id);
+                self.defs.push(format!(
+                    "<clipPath id=\"{}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n",
+                    clip_id, node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
+                ));
+                self.output
+                    .push_str(&format!("<g clip-path=\"url(#{})\">", clip_id));
+            }
             _ => {}
         }
 
@@ -726,6 +735,11 @@ impl SvgRenderer {
 
         // 셀 클리핑 그룹 종료
         if matches!(&node.node_type, RenderNodeType::TableCell(tc) if tc.clip) {
+            self.output.push_str("</g>\n");
+        }
+
+        // TextBox 클리핑 그룹 종료
+        if matches!(node.node_type, RenderNodeType::TextBox) {
             self.output.push_str("</g>\n");
         }
 

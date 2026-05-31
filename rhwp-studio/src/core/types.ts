@@ -869,7 +869,7 @@ export interface LayerClipNode {
   kind: 'clipRect';
   bounds: LayerBounds;
   clip: LayerBounds;
-  clipKind: 'body' | 'tableCell' | 'generic';
+  clipKind: 'body' | 'tableCell' | 'textBox' | 'generic';
   child: LayerNode;
 }
 
