@@ -132,6 +132,32 @@ fn find_image_bbox(
         .find_map(|child| find_image_bbox(child, para_index, control_index))
 }
 
+fn collect_equation_bboxes_containing(node: &RenderNode, needle: &str, out: &mut Vec<BoundingBox>) {
+    if let RenderNodeType::Equation(eq) = &node.node_type {
+        if eq.svg_content.contains(needle) {
+            out.push(node.bbox.clone());
+        }
+    }
+    for child in &node.children {
+        collect_equation_bboxes_containing(child, needle, out);
+    }
+}
+
+fn find_equation_bbox(
+    node: &RenderNode,
+    para_index: usize,
+    control_index: usize,
+) -> Option<BoundingBox> {
+    if let RenderNodeType::Equation(eq) = &node.node_type {
+        if eq.para_index == Some(para_index) && eq.control_index == Some(control_index) {
+            return Some(node.bbox.clone());
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_equation_bbox(child, para_index, control_index))
+}
+
 fn count_table_nodes(node: &RenderNode, para_index: usize, control_index: usize) -> usize {
     let own = match &node.node_type {
         RenderNodeType::Table(table)
@@ -190,6 +216,23 @@ fn max_para_content_bottom(node: &RenderNode, para_index: usize) -> Option<f64> 
                 .filter_map(|child| max_para_content_bottom(child, para_index)),
         )
         .max_by(|a, b| a.partial_cmp(b).unwrap())
+}
+
+#[test]
+fn issue_1189_2022_nov_page1_question1_marker_gap_matches_pdf() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(0).expect("page 1 render tree");
+
+    let question1_eq = find_equation_bbox(&tree.root, 0, 4).expect("문1 수식");
+    assert!(
+        question1_eq.x <= 72.0,
+        "문1 본문 미주 마커 앞 HWP5 placeholder가 0폭이어야 수식이 한컴/PDF처럼 문항 번호 바로 뒤에 붙음: {question1_eq:?}"
+    );
+    assert!(
+        question1_eq.x >= 68.0,
+        "문1 수식이 문항 번호와 겹치면 안 됨: {question1_eq:?}"
+    );
 }
 
 #[test]
@@ -869,6 +912,193 @@ fn issue_1139_2023_pages12_13_endnote_boundary_matches_pdf() {
     assert!(
         graph < q15_title,
         "PDF 기준 13쪽은 문15 제목 전에 문14 그래프가 먼저 보여야 함\n{page13}"
+    );
+}
+
+#[test]
+fn issue_1189_2023_page19_question29_tail_matches_pdf() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2023.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let page19 = doc.dump_page_items(Some(18));
+    assert!(
+        page19.contains("PartialParagraph  pi=935  lines=0..2")
+            && page19.contains("PartialParagraph  pi=935  lines=2..3")
+            && page19.contains("FullParagraph[미주]  pi=946")
+            && page19.contains("FullParagraph[미주]  pi=952")
+            && page19.contains("PartialParagraph  pi=953  lines=0..1"),
+        "PDF 기준 19쪽 우측 단에는 문29 제목, 첫 그림, 그림 아래 첫 문단이 함께 남고, 앞쪽 pi=935 분배는 기존 위치를 유지해야 함\n{page19}"
+    );
+
+    let tree = doc.build_page_render_tree(18).expect("page 19 render tree");
+    let q29_title_y = min_para_text_y(&tree.root, 946).expect("문29 제목");
+    let first_case_picture = find_image_bbox(&tree.root, 951, 0).expect("문29 첫 경우 그림");
+    let picture_tail_y = min_para_text_y(&tree.root, 952).expect("문29 그림 아래 본문");
+
+    assert!(
+        q29_title_y < 725.0,
+        "문29 제목이 PDF 기준보다 아래로 밀리면 뒤쪽 그림/본문이 페이지 하단에서 잘림: y={q29_title_y}"
+    );
+    assert!(
+        first_case_picture.y < 880.0 && first_case_picture.y + first_case_picture.height < 1075.0,
+        "문29 첫 그림이 PDF 기준 위치보다 아래로 밀리면 안 됨: {first_case_picture:?}"
+    );
+    assert!(
+        picture_tail_y < 1080.0,
+        "문29 그림 아래 첫 문단은 19쪽 하단 안쪽에 보여야 함: y={picture_tail_y}"
+    );
+}
+
+#[test]
+fn issue_1189_2022_nov_page17_internal_rewind_keeps_formula_tail_on_next_page() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let page14 = doc.dump_page_items(Some(13));
+    let page16 = doc.dump_page_items(Some(15));
+    let page17 = doc.dump_page_items(Some(16));
+    assert!(
+        page14.contains("FullParagraph[미주]  pi=632")
+            && page14.contains("FullParagraph[미주]  pi=650")
+            && page14.contains("FullParagraph[미주]  pi=669")
+            && page14.contains("PartialParagraph  pi=671  lines=0..2"),
+        "PDF 기준 14쪽은 문22~문27 시작 흐름이 같은 페이지에 유지되어야 함\n{page14}"
+    );
+    assert!(
+        page16.contains("PartialParagraph  pi=786  lines=0..1")
+            && !page16.contains("PartialParagraph  pi=786  lines=0..2"),
+        "한컴/PDF 기준 16쪽 하단에는 문26 수식 문단의 첫 줄만 남아야 함\n{page16}"
+    );
+    assert!(
+        page17.contains("PartialParagraph  pi=786  lines=1..5")
+            && page17.contains("FullParagraph[미주]  pi=787")
+            && page17.contains("FullParagraph[미주]  pi=801"),
+        "한컴/PDF 기준 17쪽은 문26 수식 나머지 줄 뒤에 문27/문28이 이어져야 함\n{page17}"
+    );
+
+    let tree = doc.build_page_render_tree(16).expect("page 17 render tree");
+    let mut cqrt_lines = Vec::new();
+    collect_equation_bboxes_containing(&tree.root, "CQRT", &mut cqrt_lines);
+    let cqrt_line = cqrt_lines
+        .into_iter()
+        .find(|bbox| bbox.x > 400.0 && bbox.y > 430.0 && bbox.y < 460.0)
+        .expect("문28 CQRT line");
+    let mut g_theta_candidates = Vec::new();
+    collect_equation_bboxes_containing(&tree.root, ">g</text>", &mut g_theta_candidates);
+    let g_theta = g_theta_candidates
+        .into_iter()
+        .find(|bbox| {
+            (bbox.y - cqrt_line.y).abs() < 2.0
+                && bbox.x < cqrt_line.x
+                && cqrt_line.x - bbox.x < 40.0
+        })
+        .expect("문28 g(theta)");
+    assert!(
+        (g_theta.y - cqrt_line.y).abs() < 2.0 && cqrt_line.x > g_theta.x,
+        "문28의 g(theta)와 =□CQRT-△CST는 같은 줄에서 좌→우로 이어져야 함: g={g_theta:?}, cqrt={cqrt_line:?}"
+    );
+}
+
+#[test]
+fn issue_1189_2022_oct_page17_endnote_drag_selection_covers_equation_tail_lines() {
+    let bytes = std::fs::read("samples/3-10월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(16).expect("page 17 render tree");
+
+    let rects = doc
+        .get_selection_rects(0, 915, 0, 921, 3)
+        .unwrap_or_else(|e| panic!("17쪽 문27 미주 드래그 선택 사각형 조회 실패: {e:?}"));
+    let rects: Value = serde_json::from_str(&rects).expect("selection rects json");
+    let rects = rects.as_array().expect("selection rect array");
+
+    for para_idx in 915..=921 {
+        let para_y = min_para_text_y(&tree.root, para_idx).expect("문27 미주 문단 text y");
+        assert!(
+            rects.iter().any(|rect| {
+                rect["pageIndex"].as_u64() == Some(16)
+                    && (rect["y"].as_f64().unwrap_or_default() - para_y).abs() < 0.8
+                    && rect["width"].as_f64().unwrap_or_default() > 1.0
+            }),
+            "한컴오피스처럼 문27 미주 드래그 선택이 수식 꼬리 문단까지 연속으로 덮어야 함: para_idx={para_idx}, para_y={para_y}, rects={rects:?}"
+        );
+    }
+}
+
+#[test]
+fn issue_1189_2022_oct_page11_endnote_question_gaps_match_pdf() {
+    let bytes = std::fs::read("samples/3-10월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(10).expect("page 11 render tree");
+
+    let question18_y = min_para_text_y(&tree.root, 569).expect("문18 title");
+    let question19_y = min_para_text_y(&tree.root, 574).expect("문19 title");
+    let question20_y = min_para_text_y(&tree.root, 582).expect("문20 title");
+    let gap18_to_19 = question19_y - question18_y;
+    let gap19_to_20 = question20_y - question19_y;
+
+    assert!(
+        (205.0..235.0).contains(&gap18_to_19),
+        "11쪽 문18→문19 미주 간격이 PDF보다 넓어지면 안 됨: q18={question18_y}, q19={question19_y}, gap={gap18_to_19}"
+    );
+    assert!(
+        (180.0..210.0).contains(&gap19_to_20),
+        "11쪽 문19→문20 미주 간격도 한컴/PDF 흐름을 유지해야 함: q19={question19_y}, q20={question20_y}, gap={gap19_to_20}"
+    );
+}
+
+#[test]
+fn issue_1189_2022_nov_pages10_12_rewind_tail_and_equation_scale_match_pdf() {
+    let bytes = std::fs::read("samples/3-11월_실전_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let page10 = doc.dump_page_items(Some(9));
+    let page11 = doc.dump_page_items(Some(10));
+    let page12 = doc.dump_page_items(Some(11));
+    assert!(
+        page10.contains("FullParagraph[미주]  pi=475")
+            && page10.contains("FullParagraph[미주]  pi=476"),
+        "PDF 기준 10쪽 하단/우측 시작 미주 흐름을 유지해야 함\n{page10}"
+    );
+    let page10_tree = doc.build_page_render_tree(9).expect("page 10 render tree");
+    let question6_tail_bottom =
+        max_para_content_bottom(&page10_tree.root, 475).expect("문6 꼬리 수식");
+    assert!(
+        question6_tail_bottom <= 1092.8,
+        "10쪽 문6 꼬리 수식은 본문 하단을 넘겨 문단끼리 겹치면 안 됨: bottom={question6_tail_bottom}"
+    );
+    assert!(
+        page11.contains("PartialParagraph  pi=553  lines=0..8")
+            && !page11.contains("FullParagraph[미주]  pi=553"),
+        "문14 tail은 11쪽에서 내부 vpos 리셋 직전까지만 렌더되어야 함\n{page11}"
+    );
+    assert!(
+        page12.contains("PartialParagraph  pi=553  lines=8..11")
+            && page12.contains("Shape          pi=554 ci=0  그림 tac=true")
+            && page12.contains("FullParagraph[미주]  pi=555"),
+        "12쪽은 문14 tail 텍스트 뒤 그래프와 문15가 이어져야 함\n{page12}"
+    );
+
+    let svg = doc.render_page_svg_native(11).expect("page 12 svg");
+    assert!(
+        !svg.contains(">SEARROW</text>") && !svg.contains(">NEARROW</text>"),
+        "문19 변화표의 HWP 대문자 화살표 토큰이 문자열 그대로 렌더되면 안 됨"
+    );
+    assert!(
+        svg.contains(">↘</text>") && svg.contains(">↗</text>"),
+        "문19 변화표의 감소/증가 방향은 한컴처럼 대각 화살표 기호로 렌더되어야 함"
+    );
+    let bad_eq_text = svg.find(">배수</text>").expect("문15 배수 수식");
+    let group_start = svg[..bad_eq_text]
+        .rfind("<g transform=")
+        .expect("배수 수식 group");
+    let group_end = bad_eq_text
+        + svg[bad_eq_text..]
+            .find("</g>")
+            .expect("배수 수식 group end");
+    let group = &svg[group_start..group_end];
+    assert!(
+        group.contains(",1.0000)"),
+        "수식 bbox 높이로 Y축을 확대하면 12쪽 하단 주석 수식이 찌그러짐\n{group}"
     );
 }
 

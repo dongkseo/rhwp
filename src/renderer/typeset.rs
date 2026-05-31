@@ -2202,25 +2202,33 @@ impl TypesetEngine {
                                             && hwpunit_to_px(first - prev, self.dpi)
                                                 > available * 0.75
                                 );
-                            let internal_vpos_rewind = en_para
+                            let internal_rewind_position = en_para
                                 .line_segs
                                 .windows(2)
-                                .any(|w| w[1].vertical_pos < w[0].vertical_pos);
+                                .position(|w| w[1].vertical_pos < w[0].vertical_pos)
+                                .map(|idx| idx + 1)
+                                .filter(|split| {
+                                    *split > 0
+                                        && *split < en_para.line_segs.len()
+                                        && *split < fmt.line_heights.len()
+                                });
+                            let internal_vpos_rewind = internal_rewind_position.is_some();
+                            let saved_page_reset_rewind = internal_rewind_position
+                                .and_then(|split| {
+                                    en_para.line_segs.get(split).map(|seg| (split, seg))
+                                })
+                                .map(|(split, seg)| {
+                                    split >= 4
+                                        && seg.vertical_pos <= 0
+                                        && st.current_height > available * 0.65
+                                })
+                                .unwrap_or(false);
                             let internal_rewind_split = if compact_endnote_separator_profile
                                 && st.col_count > 1
-                                && st.current_height > available * 0.75
+                                && (st.current_height > available * 0.75 || saved_page_reset_rewind)
                                 && para_has_visible_text_or_equation(en_para)
                             {
-                                en_para
-                                    .line_segs
-                                    .windows(2)
-                                    .position(|w| w[1].vertical_pos < w[0].vertical_pos)
-                                    .map(|idx| idx + 1)
-                                    .filter(|split| {
-                                        *split > 0
-                                            && *split < en_para.line_segs.len()
-                                            && *split < fmt.line_heights.len()
-                                    })
+                                internal_rewind_position
                             } else {
                                 None
                             };
@@ -2442,7 +2450,17 @@ impl TypesetEngine {
                             // advance 후 재평가 — 새 단 첫 미주는 prev=None → 자체 높이.
                             let (_, en_advance) = compute_en_metrics(prev_en_bottom_vpos);
                             let mut split_endnote_emitted = false;
-                            if let Some(split_line) = split_endnote_to_fit.or(internal_rewind_split)
+                            let tall_line_internal_rewind_split =
+                                internal_rewind_split.filter(|split| {
+                                    split
+                                        .checked_sub(1)
+                                        .and_then(|idx| en_para.line_segs.get(idx))
+                                        .map(|seg| seg.line_height >= 2000)
+                                        .unwrap_or(false)
+                                });
+                            if let Some(split_line) = tall_line_internal_rewind_split
+                                .or(split_endnote_to_fit)
+                                .or(internal_rewind_split)
                             {
                                 let first_h = fmt.line_advances_sum(0..split_line);
                                 st.current_items.push(PageItem::PartialParagraph {

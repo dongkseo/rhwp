@@ -3034,12 +3034,7 @@ impl LayoutEngine {
                                 };
                                 // 수식 baseline을 텍스트 baseline에 맞춤
                                 // HWP 높이와 레이아웃 높이가 다르면 baseline도 비례 조정
-                                let eq_y = if hwp_eq_h > 0.0 && layout_box.height > 0.0 {
-                                    let scale = hwp_eq_h / layout_box.height;
-                                    (y + baseline - layout_box.baseline * scale).max(y)
-                                } else {
-                                    (y + baseline - layout_box.baseline).max(y)
-                                };
+                                let eq_y = (y + baseline - layout_box.baseline).max(y);
                                 let (eq_cell_idx, eq_cell_para_idx) =
                                     if let Some(ref ctx) = cell_ctx {
                                         (
@@ -3618,12 +3613,7 @@ impl LayoutEngine {
                             } else {
                                 layout_box.height
                             };
-                            let eq_y = if hwp_eq_h > 0.0 && layout_box.height > 0.0 {
-                                let scale = hwp_eq_h / layout_box.height;
-                                (y + baseline - layout_box.baseline * scale).max(y)
-                            } else {
-                                (y + baseline - layout_box.baseline).max(y)
-                            };
+                            let eq_y = (y + baseline - layout_box.baseline).max(y);
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                                 (
                                     Some(ctx.path[0].cell_index),

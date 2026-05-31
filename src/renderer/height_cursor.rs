@@ -186,6 +186,25 @@ impl HeightCursor {
                         item_para, prev_pi, y_offset, prev_vpos_end, lazy_base_corrected, lazy_base,
                     );
                 }
+                let compact_endnote_question_title = self.suppress_large_forward_jump
+                    && paragraphs
+                        .get(item_para)
+                        .map(|p| p.text.trim_start().starts_with('문'))
+                        .unwrap_or(false)
+                    && seg.line_spacing > 1000;
+                if compact_endnote_question_title
+                    && y_offset > self.col_area_y + self.col_area_height * 0.85
+                {
+                    let prev_line_spacing_px = (seg.line_spacing.max(0) as f64) / 7200.0 * self.dpi;
+                    let prev_content_bottom_y = y_offset - prev_line_spacing_px;
+                    let capped_y = prev_content_bottom_y + 10.0;
+                    if capped_y < y_offset
+                        && y_offset - capped_y <= 24.0
+                        && capped_y >= self.col_area_y
+                    {
+                        return capped_y;
+                    }
+                }
                 return y_offset;
             } else {
                 self.vpos_lazy_base = Some(lazy_base);
@@ -248,23 +267,45 @@ impl HeightCursor {
             self.dpi,
         );
         let prev_line_spacing_px = (seg.line_spacing.max(0) as f64) / 7200.0 * self.dpi;
-        let bottom_new_note_gap_cap = if self.suppress_large_forward_jump
-            && y_offset > self.col_area_y + self.col_area_height * 0.75
-            && end_y <= self.col_area_y + self.col_area_height
-        {
-            Some((y_offset + prev_line_spacing_px).min(end_y))
-        } else {
-            None
-        };
-        let compact_endnote_new_note_jump = self.suppress_large_forward_jump
+        let prev_content_bottom_y = y_offset - prev_line_spacing_px;
+        let follows_tall_inline_item = self.suppress_large_forward_jump && seg.line_height > 1500;
+        let compact_endnote_question_title = self.suppress_large_forward_jump
             && paragraphs
                 .get(item_para)
                 .map(|p| p.text.trim_start().starts_with('문'))
                 .unwrap_or(false)
-            && seg.line_height > 1500
-            && seg.line_spacing > 1000
+            && seg.line_spacing > 1000;
+        let bottom_new_note_gap_cap = if self.suppress_large_forward_jump
+            && end_y <= self.col_area_y + self.col_area_height
+            && (y_offset > self.col_area_y + self.col_area_height * 0.75
+                || compact_endnote_question_title)
+        {
+            let preserved_gap_y =
+                if compact_endnote_question_title && follows_tall_inline_item && !is_page_path {
+                    // Display-style equation lines in compact endnotes already include a large
+                    // trailing line_spacing in some lazy-base flows. Hancom places the next
+                    // red question title shortly after the visible equation bottom instead
+                    // of after that full trailing gap (3-11월_실전_통합_2022 p11 문13/문14).
+                    // Page-base flows already carry the correct 7mm note gap and must keep it.
+                    prev_content_bottom_y + 10.0
+                } else if y_offset > self.col_area_y + self.col_area_height * 0.75
+                    || prev_para.text.trim().is_empty()
+                {
+                    // Empty paragraphs before the next compact endnote title already carry the
+                    // visual spacer. Adding the mid-column buffer again pushes later notes down.
+                    y_offset + prev_line_spacing_px
+                } else {
+                    y_offset + prev_line_spacing_px + 40.0
+                };
+            Some(preserved_gap_y.min(end_y))
+        } else {
+            None
+        };
+        let compact_endnote_new_note_jump = self.suppress_large_forward_jump
+            && compact_endnote_question_title
+            && (seg.line_height > 1500 || bottom_new_note_gap_cap.is_some())
             && end_y > y_offset + 32.0
-            && end_y < y_offset + 80.0;
+            && end_y < y_offset + 120.0;
         let compact_endnote_tac_picture_gap = self.suppress_large_forward_jump
             && !is_page_path
             && end_y > y_offset
@@ -282,8 +323,6 @@ impl HeightCursor {
                 .get(prev_pi)
                 .map(|p| p.text.trim_start().starts_with('문'))
                 .unwrap_or(false);
-        let follows_tall_inline_item = self.suppress_large_forward_jump && seg.line_height > 1500;
-        let prev_content_bottom_y = y_offset - prev_line_spacing_px;
         let compact_endnote_deep_backtrack = self.suppress_large_forward_jump
             && !is_page_path
             && !vpos_rewind
@@ -602,6 +641,71 @@ mod tests {
 
         let got = c.vpos_adjust(980.0, 1, &ps, &styles(0.0));
         assert!(got < 980.0, "got={got}");
+    }
+
+    /// 기본 미주 사이 간격을 가진 새 문제 제목이 단 중간에서 과도하게 전진하면
+    /// 뒤쪽 TAC 그림/문단이 단 하단을 넘는다. 제목 자체는 유지하되 저장된 간격에
+    /// 완충분만 더해 forward jump를 제한한다.
+    #[test]
+    fn compact_endnote_question_title_caps_large_forward_gap() {
+        let mut c = compact_endnote_cursor(None);
+        c.prev_layout_para = Some(0);
+        let mut ps = vec![
+            para(0, 100000, 900, 1984, 5000),
+            para(0, 108025, 900, 452, 5000),
+        ];
+        ps[0].text = "따라서".to_string();
+        ps[1].text = "문29)".to_string();
+
+        let got = c.vpos_adjust(650.0, 1, &ps, &styles(0.0));
+        let expected = 650.0 + 1984.0 / 75.0 + 40.0;
+
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "got={got}, expected={expected}"
+        );
+    }
+
+    /// 빈 문단이 새 미주 제목 앞의 시각 간격을 이미 만들었다면 추가 40px 완충은 넣지 않는다.
+    #[test]
+    fn compact_endnote_question_title_after_empty_spacer_keeps_stored_gap_only() {
+        let mut c = compact_endnote_cursor(None);
+        c.prev_layout_para = Some(0);
+        let mut ps = vec![
+            para(0, 100000, 900, 1984, 5000),
+            para(0, 108025, 900, 452, 5000),
+        ];
+        ps[1].text = "문19)".to_string();
+
+        let got = c.vpos_adjust(650.0, 1, &ps, &styles(0.0));
+        let expected = 650.0 + 1984.0 / 75.0;
+
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "got={got}, expected={expected}"
+        );
+    }
+
+    /// 큰 디스플레이 수식 줄 뒤 새 문제 제목은 trailing 줄간격 전체 뒤가 아니라
+    /// 보이는 수식 바닥 직후로 붙는다.
+    #[test]
+    fn compact_endnote_question_title_after_tall_line_uses_content_bottom_gap() {
+        let mut c = compact_endnote_cursor(None);
+        c.prev_layout_para = Some(0);
+        let mut ps = vec![
+            para(0, 100000, 2690, 1984, 5000),
+            para(0, 109174, 900, 452, 5000),
+        ];
+        ps[0].text = "따라서".to_string();
+        ps[1].text = "문13)".to_string();
+
+        let got = c.vpos_adjust(500.0, 1, &ps, &styles(0.0));
+        let expected = 500.0 - 1984.0 / 75.0 + 10.0;
+
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "got={got}, expected={expected}"
+        );
     }
 
     /// 새 미주 제목 바로 다음 문단도 제목 위로 되감기면 미주 사이 간격과 제목이 깨진다.

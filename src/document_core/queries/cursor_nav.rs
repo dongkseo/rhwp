@@ -1441,6 +1441,41 @@ impl DocumentCore {
             best.map(|(_, hit)| hit)
         }
 
+        fn find_body_line_end_cursor(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            line_idx: usize,
+            page: u32,
+        ) -> Option<CursorHit> {
+            fn visit(
+                node: &RenderNode,
+                sec: usize,
+                para: usize,
+                line_idx: usize,
+                page: u32,
+            ) -> Option<CursorHit> {
+                if let RenderNodeType::TextLine(ref line) = node.node_type {
+                    if line.section_index == Some(sec)
+                        && line.para_index == Some(para)
+                        && line.line_index.map(|idx| idx as usize) == Some(line_idx)
+                    {
+                        return Some(CursorHit {
+                            page,
+                            x: node.bbox.x + node.bbox.width,
+                            y: node.bbox.y,
+                            h: node.bbox.height,
+                        });
+                    }
+                }
+                node.children
+                    .iter()
+                    .find_map(|child| visit(child, sec, para, line_idx, page))
+            }
+
+            visit(node, sec, para, line_idx, page)
+        }
+
         // ── 페이지별 렌더 트리 캐시 (최대 2페이지) ──
         let mut tree_cache: Vec<(u32, crate::renderer::render_tree::PageRenderTree)> = Vec::new();
 
@@ -1572,10 +1607,25 @@ impl DocumentCore {
 
                 let left_hit = find_cursor!(para_idx, range_start, CursorBias::Leading);
                 // range_end가 줄바꿈 등 비렌더링 문자 위치이면 한 칸 앞으로 재시도
-                let right_hit =
-                    find_cursor!(para_idx, range_end, CursorBias::Trailing).or_else(|| {
+                let right_hit = find_cursor!(para_idx, range_end, CursorBias::Trailing)
+                    .or_else(|| {
                         if range_end > range_start {
                             find_cursor!(para_idx, range_end - 1, CursorBias::Trailing)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        if cell_ctx.is_none() {
+                            tree_cache.iter().find_map(|(pn, tree)| {
+                                find_body_line_end_cursor(
+                                    &tree.root,
+                                    section_idx,
+                                    para_idx,
+                                    line_idx,
+                                    *pn,
+                                )
+                            })
                         } else {
                             None
                         }
