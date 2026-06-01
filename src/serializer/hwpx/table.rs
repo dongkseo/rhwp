@@ -244,14 +244,14 @@ fn write_sub_list<W: Write>(
     )?;
 
     // 셀 내부 문단 재귀 — 각 문단은 간단한 <hp:p><hp:run><hp:t>텍스트</hp:t></hp:run></hp:p> 구조
-    for (pi, para) in cell.paragraphs.iter().enumerate() {
+    for para in cell.paragraphs.iter() {
         ctx.para_shape_ids.reference(para.para_shape_id);
         ctx.style_ids.reference(para.style_id as u16);
         if let Some(cs_ref) = para.char_shapes.first() {
             ctx.char_shape_ids.reference(cs_ref.char_shape_id);
         }
 
-        let pi_str = pi.to_string();
+        let pi_str = ctx.next_para_id().to_string();
         let ppr = para.para_shape_id.to_string();
         let sp = para.style_id.to_string();
         start_tag_attrs(
@@ -551,5 +551,25 @@ mod tests {
         write_table(&mut w, &t, &mut ctx).unwrap();
         // 99 는 등록되지 않은 borderFill → unresolved
         assert!(ctx.border_fill_ids.unresolved().contains(&99u16));
+    }
+
+    #[test]
+    fn cell_paragraph_ids_are_globally_unique() {
+        // 2×2 표 = 셀 4개, 각 셀에 문단 1개 → id="0", id="1", id="2", id="3"
+        let t = empty_table(2, 2);
+        let xml = serialize(&t);
+        assert_eq!(
+            xml.matches(r#"<hp:p id="0""#).count(),
+            1,
+            "셀 문단 id=0 이 중복됨: {}",
+            &xml[..xml.len().min(400)]
+        );
+        for expected_id in 0..4u32 {
+            assert!(
+                xml.contains(&format!(r#"<hp:p id="{}""#, expected_id)),
+                "id={} 가 없음",
+                expected_id
+            );
+        }
     }
 }
