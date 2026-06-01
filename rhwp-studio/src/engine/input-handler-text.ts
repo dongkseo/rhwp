@@ -374,7 +374,7 @@ export function onInput(this: any, e?: InputEvent): void {
       }
     }
 
-    this.afterEdit();
+    this.afterTextInputEdit(anchor, this.cursor.getPosition());
     return;
   }
 
@@ -426,8 +426,9 @@ export function onInput(this: any, e?: InputEvent): void {
     // 렌더링 디바운스: 빠른 연속 입력 중에는 렌더링 생략,
     // 마지막 입력 후 100ms 뒤에 한 번만 렌더링
     clearTimeout(this._iosInputTimer);
+    const iosAnchor = this._iosAnchor;
     this._iosInputTimer = setTimeout(() => {
-      this.afterEdit();
+      this.afterTextInputEdit(iosAnchor, this.cursor.getPosition());
       // 렌더링 후 div 포커스 복원 (afterEdit가 포커스를 뺏을 수 있음)
       this.textarea.focus();
     }, 100);
