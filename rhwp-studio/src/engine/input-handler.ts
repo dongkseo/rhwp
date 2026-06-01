@@ -23,6 +23,7 @@ import * as _table from './input-handler-table';
 import * as _keyboard from './input-handler-keyboard';
 import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
+import { isPageLocalTextEditCommand } from './input-edit-invalidation';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -1598,13 +1599,18 @@ export class InputHandler {
   executeOperation(desc: OperationDescriptor): void {
     switch (desc.kind) {
       case 'command': {
+        const beforePos = this.cursor.getPosition();
         const newPos = this.history.execute(desc.command, this.wasm);
         // 글자 서식 변경은 문서 구조 불변 → 선택 영역 유지
         if (desc.command.type !== 'applyCharFormat') {
           this.cursor.moveTo(newPos);
           this.cursor.resetPreferredX();
         }
-        this.afterEdit();
+        if (this.shouldUsePageLocalRefresh(desc.command.type, beforePos, newPos)) {
+          this.afterPageLocalEdit();
+        } else {
+          this.afterEdit();
+        }
         break;
       }
       case 'snapshot': {
@@ -1674,6 +1680,24 @@ export class InputHandler {
     this.eventBus.emit('document-mutated', 'input-handler-edit');
     this.eventBus.emit('document-changed');
     this.updateCaret();
+  }
+
+  /** 셀 내부 단일 텍스트 편집 후 처리: 현재 페이지 canvas만 갱신한다. */
+  private afterPageLocalEdit(): void {
+    this.lastCellKey = null;
+    this.eventBus.emit('document-mutated', 'input-handler-edit');
+    const pageIndex = this.cursor.getRect()?.pageIndex;
+    if (typeof pageIndex === 'number' && Number.isInteger(pageIndex) && pageIndex >= 0) {
+      this.eventBus.emit('document-page-invalidated', { pageIndex, reason: 'text-edit' });
+    } else {
+      this.eventBus.emit('document-changed');
+    }
+    this.updateCaret();
+  }
+
+  private shouldUsePageLocalRefresh(commandType: string, beforePos: DocumentPosition, afterPos: DocumentPosition): boolean {
+    if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return false;
+    return isPageLocalTextEditCommand(commandType, beforePos, afterPos);
   }
 
   /**
