@@ -4401,6 +4401,25 @@ impl LayoutEngine {
                         bin_data_content,
                         Some(tbl_x_right),
                     );
+                    // [#1218] 어울림(Square) 호스트 본문이 표보다 길면 커서를 본문 하단까지
+                    // 전진시킨다. 그렇지 않으면 다음 단락이 표 하단(=현재 y_offset)에서 시작해
+                    // 표보다 아래로 내려온 본문 줄과 겹친다(3-09월_교육_통합_2023 4쪽 문26).
+                    // 본문 ≤ 표 인 기존 다수 케이스는 host_text_bottom ≤ y_offset 이라 불변.
+                    if let Some(comp) = composed.get(para_index) {
+                        let mut text_h = 0.0;
+                        let mut last_ls = 0.0;
+                        for line in &comp.lines {
+                            let lh = hwpunit_to_px(line.line_height, self.dpi);
+                            let ls = hwpunit_to_px(line.line_spacing, self.dpi);
+                            text_h += lh + ls;
+                            last_ls = ls;
+                        }
+                        // 마지막 줄의 trailing line_spacing 은 본문 하단에서 제외(height_for_fit 정합).
+                        let host_text_bottom = table_y_before + (text_h - last_ls).max(0.0);
+                        if host_text_bottom > y_offset {
+                            y_offset = host_text_bottom;
+                        }
+                    }
                 }
             }
             // ── 표 아래 간격 ──
