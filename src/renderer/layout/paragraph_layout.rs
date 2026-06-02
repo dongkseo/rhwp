@@ -169,6 +169,7 @@ fn line_has_tac_control(comp: &ComposedParagraph, line_idx: usize) -> bool {
 ///
 /// `tac_offsets_px` 는 호출부에서 pos 오름차순 정렬되어 있다고 가정한다.
 fn equation_only_tac_line_assignment(
+    para: Option<&Paragraph>,
     comp: &ComposedParagraph,
     tac_offsets_px: &[(usize, f64, usize)],
 ) -> Option<Vec<usize>> {
@@ -208,16 +209,91 @@ fn equation_only_tac_line_assignment(
             li += 1;
         }
         let line_count = li - line_start;
+        let line_candidates: Vec<usize> = (line_start..li).collect();
+        let filtered_candidates: Vec<usize> = line_candidates
+            .iter()
+            .copied()
+            .filter(|idx| {
+                !line_is_leading_empty_equation_tac_guide(para, comp, tac_offsets_px, *idx)
+            })
+            .collect();
+        let line_targets = if filtered_candidates.is_empty() {
+            &line_candidates
+        } else {
+            &filtered_candidates
+        };
         for t in 0..tac_count {
             assign[tac_start + t] = if line_count == 0 {
                 line_start.min(n_lines - 1)
+            } else if line_targets.is_empty() {
+                line_start.min(n_lines - 1)
             } else {
                 // TAC 수가 줄 수보다 많으면 나머지는 마지막 줄에 모음(예: "S =∫₀³" 1줄 2TAC).
-                line_start + t.min(line_count - 1)
+                // 단, 미주 수식 문단의 선행 guide 줄처럼 TAC가 없는 빈 줄은 후보에서 제외한다.
+                line_targets[t.min(line_targets.len() - 1)]
             };
         }
     }
     Some(assign)
+}
+
+fn line_has_strict_tac_control(
+    comp: &ComposedParagraph,
+    tac_offsets_px: &[(usize, f64, usize)],
+    line_idx: usize,
+) -> bool {
+    let Some(line) = comp.lines.get(line_idx) else {
+        return false;
+    };
+    let start = line.char_start;
+    let end = composed_line_char_end(comp, line_idx);
+    end > start
+        && tac_offsets_px
+            .iter()
+            .any(|(pos, _, _)| *pos >= start && *pos < end)
+}
+
+fn line_has_strict_equation_tac_control(
+    para: Option<&Paragraph>,
+    comp: &ComposedParagraph,
+    tac_offsets_px: &[(usize, f64, usize)],
+    line_idx: usize,
+) -> bool {
+    let Some(para) = para else {
+        return false;
+    };
+    let Some(line) = comp.lines.get(line_idx) else {
+        return false;
+    };
+    let start = line.char_start;
+    let end = composed_line_char_end(comp, line_idx);
+    end > start
+        && tac_offsets_px.iter().any(|(pos, _, ci)| {
+            *pos >= start
+                && *pos < end
+                && para
+                    .controls
+                    .get(*ci)
+                    .is_some_and(|ctrl| matches!(ctrl, Control::Equation(_)))
+        })
+}
+
+fn line_is_leading_empty_equation_tac_guide(
+    para: Option<&Paragraph>,
+    comp: &ComposedParagraph,
+    tac_offsets_px: &[(usize, f64, usize)],
+    line_idx: usize,
+) -> bool {
+    let Some(line) = comp.lines.get(line_idx) else {
+        return false;
+    };
+    let Some(next) = comp.lines.get(line_idx + 1) else {
+        return false;
+    };
+    line.runs.is_empty()
+        && line.char_start == next.char_start
+        && !line_has_strict_tac_control(comp, tac_offsets_px, line_idx)
+        && line_has_strict_equation_tac_control(para, comp, tac_offsets_px, line_idx + 1)
 }
 
 fn tac_offsets_for_line(
@@ -301,6 +377,23 @@ fn note_marker_text_from_control(ctrl: Option<&Control>, fallback_number: u16) -
         ),
         _ => format!("{})", fallback_number),
     }
+}
+
+fn is_leading_endnote_marker_rendered_as_prefix(
+    para: Option<&Paragraph>,
+    control_index: usize,
+    line_idx: usize,
+    start_line: usize,
+    marker_pos: usize,
+    line_char_start: usize,
+) -> bool {
+    line_idx == start_line
+        && start_line == 0
+        && marker_pos == line_char_start
+        && matches!(
+            para.and_then(|p| p.controls.get(control_index)),
+            Some(Control::Endnote(_))
+        )
 }
 
 fn line_tac_picture_or_shape_height(
@@ -1510,7 +1603,17 @@ impl LayoutEngine {
             let base = self.endnote_para_base.get();
             if cell_ctx.is_none() && para_index >= base && end > start_line + 1 {
                 para.and_then(|p| {
-                    let range = p.line_segs.get(start_line..end)?;
+                    let base_line_idx = if line_is_leading_empty_equation_tac_guide(
+                        Some(p),
+                        composed,
+                        &tac_offsets_px,
+                        start_line,
+                    ) {
+                        start_line + 1
+                    } else {
+                        start_line
+                    };
+                    let range = p.line_segs.get(base_line_idx..end)?;
                     if range
                         .windows(2)
                         .all(|w| w[1].vertical_pos >= w[0].vertical_pos)
@@ -2828,6 +2931,19 @@ impl LayoutEngine {
                             .iter()
                             .enumerate()
                             .filter_map(|(fni, &(fpos, fnum, ctrl_idx))| {
+                                if is_leading_endnote_marker_rendered_as_prefix(
+                                    para,
+                                    ctrl_idx,
+                                    line_idx,
+                                    start_line,
+                                    fpos,
+                                    comp_line.char_start,
+                                ) {
+                                    // 미주는 첫 줄 앞에 본문 크기 번호를 별도 TextRun으로 이미 그린다.
+                                    // 같은 위치의 위첨자 마커를 다시 만들면 `문26)`처럼 제목이 중복된다.
+                                    fn_marker_inserted[fni] = true;
+                                    return None;
+                                }
                                 let in_range = fpos >= run_char_pos
                                     && (fpos < run_char_end || (is_last && fpos == run_char_end));
                                 if !fn_marker_inserted[fni] && in_range {
@@ -3210,9 +3326,17 @@ impl LayoutEngine {
                                 } else {
                                     layout_box.height
                                 };
-                                // 수식 baseline을 텍스트 baseline에 맞춤
-                                // HWP 높이와 레이아웃 높이가 다르면 baseline도 비례 조정
-                                let eq_y = (y + baseline - layout_box.baseline).max(y);
+                                // 텍스트와 섞인 인라인 수식은 baseline을 맞춘다. 단,
+                                // 본문/미주에서 공백 run 안에 TAC 수식만 있는 줄은 한컴처럼
+                                // 저장된 LINE_SEG y 흐름에 직접 붙인다.
+                                let eq_y = if cell_ctx.is_none()
+                                    && comp_line.runs.iter().all(|r| {
+                                        !r.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+                                    }) {
+                                    y
+                                } else {
+                                    (y + baseline - layout_box.baseline).max(y)
+                                };
                                 let (eq_cell_idx, eq_cell_para_idx) =
                                     if let Some(ref ctx) = cell_ctx {
                                         (
@@ -3750,7 +3874,7 @@ impl LayoutEngine {
                 // char 범위로는 tac→줄 매핑이 깨진다(빈 줄 흡수/행 겹침). 같은 char_start 줄들에
                 // 같은 position 의 연속 TAC 를 순서대로 분배한다(#1221 1:1 의 m:n 일반화).
                 let eq_tac_assignment =
-                    equation_only_tac_line_assignment(composed, &tac_offsets_px);
+                    equation_only_tac_line_assignment(para, composed, &tac_offsets_px);
                 let tac_on_line = |k: usize, pos: usize| -> bool {
                     if let Some(ref assign) = eq_tac_assignment {
                         assign.get(k).copied() == Some(line_idx)
@@ -3758,10 +3882,9 @@ impl LayoutEngine {
                         pos >= line_start_char && pos < line_end_char
                     }
                 };
-                // [Task #490] paragraph alignment 적용. 셀에 텍스트 없이 수식만 있을 때
-                // (text_len=0 + ctrls=1+) 정렬이 무시되어 좌측 고정되던 결함 수정.
-                // exam_science p1 3번 표 (이온 결합 화합물) 셀 7/11 의 28/36 수식이
-                // 좌측 정렬 → 셀 ParaShape align 따라 중앙/우측 정렬 적용.
+                // [Task #490] 셀에 텍스트 없이 수식만 있을 때는 셀 ParaShape alignment 를
+                // 따라야 한다. 단, [Task #1245] 본문/미주 수식-only 줄은 저장된 LINE_SEG
+                // 흐름을 따라야 하며 문단 alignment 를 다시 적용하면 열 안에서 중앙으로 밀린다.
                 // [Task #489] effective_col_x 적용 (Picture+Square wrap LINE_SEG cs/sw 좁은 영역).
                 let line_tac_width: f64 = tac_offsets_px
                     .iter()
@@ -3769,14 +3892,23 @@ impl LayoutEngine {
                     .filter(|(k, (pos, _, _))| tac_on_line(*k, *pos))
                     .map(|(_, (_, w, _))| *w)
                     .sum();
-                let align_offset = match alignment {
-                    Alignment::Center | Alignment::Distribute => {
-                        (available_width - line_tac_width).max(0.0) / 2.0
+                let align_offset = if cell_ctx.is_some() {
+                    match alignment {
+                        Alignment::Center | Alignment::Distribute => {
+                            (available_width - line_tac_width).max(0.0) / 2.0
+                        }
+                        Alignment::Right => (available_width - line_tac_width).max(0.0),
+                        _ => 0.0,
                     }
-                    Alignment::Right => (available_width - line_tac_width).max(0.0),
-                    _ => 0.0,
+                } else {
+                    0.0
                 };
-                let mut inline_x = effective_col_x + effective_margin_left + align_offset;
+                let tac_base_x = if cell_ctx.is_some() {
+                    effective_col_x + effective_margin_left
+                } else {
+                    effective_col_x
+                };
+                let mut inline_x = tac_base_x + align_offset;
                 for (tac_k, &(tac_pos, tac_w, tac_ci)) in tac_offsets_px.iter().enumerate() {
                     if !tac_on_line(tac_k, tac_pos) {
                         continue;
@@ -3804,7 +3936,11 @@ impl LayoutEngine {
                             } else {
                                 layout_box.height
                             };
-                            let eq_y = (y + baseline - layout_box.baseline).max(y);
+                            let eq_y = if cell_ctx.is_some() {
+                                (y + baseline - layout_box.baseline).max(y)
+                            } else {
+                                y
+                            };
                             let (eq_cell_idx, eq_cell_para_idx) = if let Some(ref ctx) = cell_ctx {
                                 (
                                     Some(ctx.path[0].cell_index),
@@ -4279,12 +4415,25 @@ impl LayoutEngine {
             let skip_advance_empty_wrap = has_picture_shape_square_wrap
                 && runs_all_whitespace
                 && !line_has_tac_control(composed, line_idx);
+            // 촘촘한 미주 수식 문단에는 다음 줄과 char_start가 같은 선행
+            // 퇴화 LINE_SEG가 들어오는 경우가 있다. 해당 줄 자체에는 TAC가
+            // 없으며, 한컴은 첫 수식 앞에 이 안내 줄 높이를 예약하지 않는다.
+            let skip_advance_empty_tac_lead = cell_ctx.is_none()
+                && !tac_offsets_px.is_empty()
+                && line_is_leading_empty_equation_tac_guide(
+                    para,
+                    composed,
+                    &tac_offsets_px,
+                    line_idx,
+                );
             let skip_advance_empty_tac_picture = runs_all_whitespace
                 && current_line_reserved_tac_picture_height.is_none()
                 && prev_line_reserved_tac_picture_height
                     .map(|pic_h| (raw_lh - pic_h).abs() <= 4.0)
                     .unwrap_or(false);
-            let skip_advance_empty_line = skip_advance_empty_wrap || skip_advance_empty_tac_picture;
+            let skip_advance_empty_line = skip_advance_empty_wrap
+                || skip_advance_empty_tac_picture
+                || skip_advance_empty_tac_lead;
             if std::env::var("RHWP_DEBUG_PARA_TAC").is_ok()
                 && (para_index == 651 || para_index == 652)
             {

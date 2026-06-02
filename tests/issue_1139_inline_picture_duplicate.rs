@@ -46,6 +46,19 @@ fn render_tree_contains_text(node: &RenderNode, needle: &str) -> bool {
         .any(|child| render_tree_contains_text(child, needle))
 }
 
+fn count_render_text_occurrences(node: &RenderNode, needle: &str) -> usize {
+    let here = match &node.node_type {
+        RenderNodeType::TextRun(run) => run.text.matches(needle).count(),
+        RenderNodeType::FootnoteMarker(marker) => marker.text.matches(needle).count(),
+        _ => 0,
+    };
+    here + node
+        .children
+        .iter()
+        .map(|child| count_render_text_occurrences(child, needle))
+        .sum::<usize>()
+}
+
 fn svg_attr_f64(tag: &str, name: &str) -> Option<f64> {
     let pattern = format!("{name}=\"");
     let start = tag.find(&pattern)? + pattern.len();
@@ -994,6 +1007,33 @@ fn issue_1209_2022_page8_question29_square_picture_starts_at_wrap_line() {
 }
 
 #[test]
+fn issue_1245_2022_page7_square_pictures_use_relative_line_vpos() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(6).expect("page 7 render tree");
+
+    let question25_picture = find_image_bbox(&tree.root, 386, 11).expect("문25 타원 그림");
+    let question25_wrap_line =
+        find_text_line_bbox(&tree.root, 386, 3).expect("문25 그림 옆 첫 좁은 줄");
+    assert!(
+        (question25_picture.y - question25_wrap_line.y).abs() <= 2.0,
+        "문25 어울림 그림은 누적 LINE_SEG vpos를 중복 적용하지 않고 좁아지는 줄에 붙어야 함: picture={question25_picture:?}, wrap_line={question25_wrap_line:?}"
+    );
+    assert!(
+        question25_picture.y + question25_picture.height < 920.0,
+        "문25 그림이 페이지 하단 밖으로 밀리면 안 됨: picture={question25_picture:?}"
+    );
+
+    let question28_picture = find_image_bbox(&tree.root, 420, 9).expect("문28 포물선 그림");
+    let question28_wrap_line =
+        find_text_line_bbox(&tree.root, 420, 3).expect("문28 그림 옆 첫 좁은 줄");
+    assert!(
+        (question28_picture.y - question28_wrap_line.y).abs() <= 2.0,
+        "문28 어울림 그림도 문단 첫 줄 대비 상대 LINE_SEG vpos로 배치되어야 함: picture={question28_picture:?}, wrap_line={question28_wrap_line:?}"
+    );
+}
+
+#[test]
 fn issue_1139_2023_page4_question26_square_table_uses_anchor_line() {
     let bytes = std::fs::read("samples/3-09월_교육_통합_2023.hwp").expect("sample");
     let doc = HwpDocument::from_bytes(&bytes).expect("parse");
@@ -1005,6 +1045,19 @@ fn issue_1139_2023_page4_question26_square_table_uses_anchor_line() {
     assert!(
         table.y > first_text_y + 70.0 && table.y < first_text_y + 120.0,
         "문26 Square wrap 표는 문단 첫 줄이 아니라 LineSeg가 좁아지는 후반 줄에 붙어야 함: table={table:?}, first_text_y={first_text_y}"
+    );
+}
+
+#[test]
+fn issue_1245_2023_page4_question26_endnote_marker_not_duplicated() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2023.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+    let tree = doc.build_page_render_tree(3).expect("page 4 render tree");
+
+    let count = count_render_text_occurrences(&tree.root, "문26");
+    assert_eq!(
+        count, 1,
+        "미주 선두 번호는 일반 TextRun으로 한 번만 렌더되어야 하며 위첨자 마커로 중복되면 안 됨"
     );
 }
 
@@ -1321,7 +1374,15 @@ fn issue_1209_2022_sep_page10_question12_uses_safe_vpos_backtrack() {
 
     let question12_y = min_para_text_y(&tree.root, 567).expect("문12 title");
     let question12_body_y = min_para_text_y(&tree.root, 568).expect("문12 body");
+    let question12_tail_y = min_para_text_y(&tree.root, 573).expect("문12 따라서");
     let question13_y = min_para_text_y(&tree.root, 575).expect("문13 title");
+    let mut ah_formulas = Vec::new();
+    collect_equation_bboxes_containing(&tree.root, ">AH</text>", &mut ah_formulas);
+    let question12_formula = ah_formulas
+        .into_iter()
+        .filter(|bbox| bbox.y > question12_tail_y && bbox.y < question13_y)
+        .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        .expect("문12 첫 수식");
 
     assert!(
         (390.0..=406.0).contains(&question12_y),
@@ -1334,6 +1395,16 @@ fn issue_1209_2022_sep_page10_question12_uses_safe_vpos_backtrack() {
     assert!(
         question13_y <= 724.0,
         "문12 수식 블록이 아래로 밀려 문13을 늦게 시작시키면 안 됨: q13_y={question13_y}"
+    );
+    assert!(
+        (398.0..=408.0).contains(&question12_formula.x),
+        "문12 수식-only 문단은 배분 정렬 오프셋으로 중앙에 밀리면 안 됨: x={}",
+        question12_formula.x
+    );
+    assert!(
+        question12_formula.y - question12_tail_y <= 20.0,
+        "문12 '따라서'와 수식-only 문단 사이 간격은 한컴/PDF처럼 촘촘해야 함: tail_y={question12_tail_y}, formula_y={}",
+        question12_formula.y
     );
 }
 
