@@ -10,7 +10,7 @@
  * 레이아웃: 좌측(탭+컨텐츠) + 우측(버튼) 패턴
  * CSS 접두어: pp-
  */
-import type { PictureProperties, ShapeProperties, CellPath } from '@/core/types';
+import type { PictureProperties, ShapeProperties, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
 import { enableDialogDrag } from './dialog-drag';
@@ -71,7 +71,7 @@ export class PicturePropsDialog {
   /** [Task #825] 머리말/꼬리말 그림 marker (Some 일 때 신규 API 사용). */
   private headerFooter: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } | undefined;
   /** [Task #1138] 표 셀 내 객체 marker (Some 일 때 by_path API 사용). */
-  private cellPath: CellPath | undefined;
+  private cellPath: CellPathLike | undefined;
   /** [Task #1138] 셀 paragraph 내 picture/shape control 인덱스 (cellPath 동반). */
   private innerControlIdx = 0;
   private props: PictureProperties | null = null;
@@ -227,7 +227,7 @@ export class PicturePropsDialog {
     ci: number,
     type: 'image' | 'shape' | 'line' | 'group' = 'image',
     headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
-    cellPath?: CellPath,
+    cellPath?: CellPathLike,
     innerControlIdx?: number,
   ): void {
     this.build();

@@ -2,6 +2,57 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { MovePictureCommand, MoveShapeCommand, ResizeObjectCommand } from './command';
+import type { CellPathLike } from '@/core/types';
+
+type PictureObjectRef = {
+  sec: number;
+  ppi: number;
+  ci: number;
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  cellIdx?: number;
+  cellParaIdx?: number;
+  outerTableControlIdx?: number;
+  cellPath?: CellPathLike;
+  noteRef?: any;
+  x1?: number;
+  y1?: number;
+  x2?: number;
+  y2?: number;
+  headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number };
+};
+
+function hasCellPath(ref: { cellPath?: CellPathLike } | null | undefined): ref is { cellPath: CellPathLike } {
+  return Array.isArray(ref?.cellPath) && ref.cellPath.length > 0;
+}
+
+function cellPathEntryKey(entry: any): string {
+  const control = entry?.controlIndex ?? entry?.controlIdx ?? 0;
+  const cell = entry?.cellIndex ?? entry?.cellIdx ?? 0;
+  const para = entry?.cellParaIndex ?? entry?.cellParaIdx ?? 0;
+  return `${control}:${cell}:${para}`;
+}
+
+function sameCellPath(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((entry, idx) => cellPathEntryKey(entry) === cellPathEntryKey((b as any[])[idx]));
+}
+
+function matchesControlRef(ctrl: any, ref: PictureObjectRef, layoutType: string): boolean {
+  if (ctrl.type !== layoutType ||
+      ctrl.secIdx !== ref.sec ||
+      ctrl.paraIdx !== ref.ppi ||
+      ctrl.controlIdx !== ref.ci) {
+    return false;
+  }
+  if (hasCellPath(ref)) {
+    return sameCellPath(ctrl.cellPath, ref.cellPath);
+  }
+  if (Array.isArray(ctrl.cellPath) && ctrl.cellPath.length > 0 &&
+      ref.cellIdx === undefined && ref.cellParaIdx === undefined) {
+    return false;
+  }
+  return true;
+}
 
 /** 클릭 좌표에서 그림, 글상자, 수식 개체를 찾는다. */
 /** 점과 선분 사이 최소 거리 (px) */
@@ -16,7 +67,7 @@ function pointToSegmentDist(px: number, py: number, x1: number, y1: number, x2: 
 
 export function findPictureAtClick(this: any,
   pageIdx: number, pageX: number, pageY: number,
-): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; outerTableControlIdx?: number; cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>; noteRef?: any; x1?: number; y1?: number; x2?: number; y2?: number; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null {
+): PictureObjectRef | null {
   try {
     const layout = this.wasm.getPageControlLayout(pageIdx);
     // [Task #1171] picture 우선: 클릭이 컨테이너 Shape(글상자) 와 그 안의 nested picture
@@ -140,7 +191,7 @@ export function findPictureAtClick(this: any,
 
 /** 선택된 개체의 bbox를 페이지 레이아웃에서 찾는다. */
 export function findPictureBbox(this: any,
-  ref: { sec: number; ppi: number; ci: number; type?: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; noteRef?: any },
+  ref: { sec: number; ppi: number; ci: number; type?: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; cellPath?: CellPathLike; noteRef?: any },
 ): { pageIndex: number; x: number; y: number; w: number; h: number; x1?: number; y1?: number; x2?: number; y2?: number } | null {
   const matchType = ref.type ?? 'image';
   // line은 shape의 하위 타입 → layout에서 'line'으로 반환됨
@@ -150,8 +201,7 @@ export function findPictureBbox(this: any,
     for (let p = 0; p < pageCount; p++) {
       const layout = this.wasm.getPageControlLayout(p);
       for (const ctrl of layout.controls) {
-        if (ctrl.type === layoutType &&
-            ctrl.secIdx === ref.sec && ctrl.paraIdx === ref.ppi && ctrl.controlIdx === ref.ci) {
+        if (matchesControlRef(ctrl, { ...ref, type: matchType } as PictureObjectRef, layoutType)) {
           // 표 셀 내 수식: cellIdx/cellParaIdx도 매칭
           if (matchType === 'equation' && ref.cellIdx !== undefined) {
             if (ctrl.cellIdx !== ref.cellIdx || ctrl.cellParaIdx !== ref.cellParaIdx) continue;
@@ -223,8 +273,7 @@ export function renderPictureObjectSelection(this: any): void {
     for (let p = 0; p < pageCount; p++) {
       const layout = this.wasm.getPageControlLayout(p);
       for (const ctrl of layout.controls) {
-        if (ctrl.type === layoutType &&
-            ctrl.secIdx === ref.sec && ctrl.paraIdx === ref.ppi && ctrl.controlIdx === ref.ci) {
+        if (matchesControlRef(ctrl, ref as PictureObjectRef, layoutType)) {
           // 표 셀 내 수식: cellIdx/cellParaIdx도 매칭
           if (matchType === 'equation' && ref.cellIdx !== undefined) {
             if (ctrl.cellIdx !== ref.cellIdx || ctrl.cellParaIdx !== ref.cellParaIdx) continue;
@@ -279,7 +328,7 @@ export function renderPictureObjectSelection(this: any): void {
             } catch { /* ignore */ }
           } else if (ref.type === 'image') {
             try {
-              const props = this.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci);
+              const props = getObjectProperties.call(this, ref);
               rotAngle = (props.rotationAngle as number) ?? 0;
             } catch { /* ignore */ }
           }
@@ -324,29 +373,67 @@ export function isShapeBorderClick(this: any,
 // ─── 개체 속성 조회 헬퍼 (그림/글상자 분기) ──────────────
 
 /** 개체 속성을 타입에 따라 조회한다. */
-export function getObjectProperties(this: any, ref: { sec: number; ppi: number; ci: number; type: string }): any {
+export function getObjectProperties(this: any, ref: PictureObjectRef): any {
   if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
+    if (hasCellPath(ref)) {
+      return this.wasm.getCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+    }
     return this.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci);
+  }
+  if (ref.type === 'image' && ref.headerFooter) {
+    return this.wasm.getHeaderFooterPictureProperties(
+      ref.sec,
+      ref.headerFooter.outerParaIdx,
+      ref.headerFooter.outerControlIdx,
+      ref.ppi,
+      ref.ci,
+    );
+  }
+  if (ref.type === 'image' && hasCellPath(ref)) {
+    return this.wasm.getCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
   }
   return this.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci);
 }
 
 /** 개체 속성을 타입에 따라 변경한다. */
-export function setObjectProperties(this: any, ref: { sec: number; ppi: number; ci: number; type: string }, props: Record<string, unknown>): void {
+export function setObjectProperties(this: any, ref: PictureObjectRef, props: Record<string, unknown>): void {
   if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
+    if (hasCellPath(ref)) {
+      this.wasm.setCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+      return;
+    }
     this.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, props);
   } else {
+    if (ref.type === 'image' && ref.headerFooter) {
+      this.wasm.setHeaderFooterPictureProperties(
+        ref.sec,
+        ref.headerFooter.outerParaIdx,
+        ref.headerFooter.outerControlIdx,
+        ref.ppi,
+        ref.ci,
+        props,
+      );
+      return;
+    }
+    if (ref.type === 'image' && hasCellPath(ref)) {
+      this.wasm.setCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+      return;
+    }
     this.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
   }
 }
 
 /** 개체를 타입에 따라 삭제한다. */
-export function deleteObjectControl(this: any, ref: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line' }): void {
+export function deleteObjectControl(this: any, ref: PictureObjectRef): void {
   if (ref.type === 'shape' || ref.type === 'group' || ref.type === 'line') {
     this.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
   } else if (ref.type === 'equation') {
     this.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
   } else {
+    if (hasCellPath(ref)) {
+      this.wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+      return;
+    }
     this.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
   }
 }
@@ -529,7 +616,7 @@ export function finishPictureResizeDrag(this: any, e: MouseEvent): void {
         const changed = Object.keys(updated).some(key => updated[key] !== before[key]);
         if (!changed) continue;
         setObjectProperties.call(this, r, updated);
-        historyTargets.push({ sec: r.sec, ppi: r.ppi, ci: r.ci, type: r.type, before, after: updated });
+        historyTargets.push({ sec: r.sec, ppi: r.ppi, ci: r.ci, type: r.type, cellPath: r.cellPath, before, after: updated });
       }
       if (historyTargets.length > 0) {
         this.executeOperation({ kind: 'record', command: new ResizeObjectCommand(historyTargets) });
@@ -577,7 +664,7 @@ export function finishPictureResizeDrag(this: any, e: MouseEvent): void {
       setObjectProperties.call(this, state.ref, updated);
       this.executeOperation({
         kind: 'record',
-        command: new ResizeObjectCommand([{ sec: state.ref.sec, ppi: state.ref.ppi, ci: state.ref.ci, type: state.ref.type, before, after: updated }]),
+        command: new ResizeObjectCommand([{ sec: state.ref.sec, ppi: state.ref.ppi, ci: state.ref.ci, type: state.ref.type, cellPath: state.ref.cellPath, before, after: updated }]),
       });
       this.eventBus.emit('document-changed');
     }

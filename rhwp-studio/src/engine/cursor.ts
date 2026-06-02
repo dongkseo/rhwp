@@ -1,6 +1,19 @@
 import type { DocumentPosition, CursorRect, LineInfo, CellPathEntry, NavContextEntry, CellBbox } from '@/core/types';
 import { WasmBridge } from '@/core/wasm-bridge';
 
+type PictureSelectionRef = {
+  sec: number;
+  ppi: number;
+  ci: number;
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  cellIdx?: number;
+  cellParaIdx?: number;
+  outerTableControlIdx?: number;
+  cellPath?: CellPathEntry[];
+  noteRef?: any;
+  headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number };
+};
+
 /** 커서 상태를 관리한다 */
 export class CursorState {
   private position: DocumentPosition = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 };
@@ -1300,9 +1313,9 @@ export class CursorState {
 
   // ── 그림/글상자 객체 선택 모드 ─────────────────────────────────
   private _pictureObjectSelected = false;
-  private selectedPictureRef: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; outerTableControlIdx?: number; cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>; noteRef?: any; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null = null;
+  private selectedPictureRef: PictureSelectionRef | null = null;
   /** 다중 선택된 개체 목록 */
-  private selectedPictureRefs: { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line' }[] = [];
+  private selectedPictureRefs: PictureSelectionRef[] = [];
 
   /** 지정한 개체(그림/글상자/묶음)를 객체 선택한다.
    * [Task #825] `headerFooter` — 머리말/꼬리말 안 그림일 때 outer 위치 marker 보존. */
@@ -1312,20 +1325,36 @@ export class CursorState {
     cellIdx?: number, cellParaIdx?: number,
     headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
     outerTableControlIdx?: number,
-    cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>,
+    cellPath?: CellPathEntry[],
     noteRef?: any,
   ): void {
     this.exitTableObjectSelection();
     this._pictureObjectSelected = true;
     this.selectedPictureRef = { sec, ppi, ci, type, cellIdx, cellParaIdx, outerTableControlIdx, cellPath, noteRef, headerFooter };
-    this.selectedPictureRefs = [{ sec, ppi, ci, type }];
+    this.selectedPictureRefs = [{ ...this.selectedPictureRef }];
   }
 
   /** Shift+클릭: 개체를 다중 선택에 추가/제거 (토글) */
-  togglePictureObjectSelection(sec: number, ppi: number, ci: number, type: 'image' | 'shape' | 'equation' | 'group' | 'line'): void {
+  togglePictureObjectSelection(ref: PictureSelectionRef): void;
+  togglePictureObjectSelection(sec: number, ppi: number, ci: number, type: 'image' | 'shape' | 'equation' | 'group' | 'line'): void;
+  togglePictureObjectSelection(
+    refOrSec: PictureSelectionRef | number,
+    ppi?: number,
+    ci?: number,
+    type?: 'image' | 'shape' | 'equation' | 'group' | 'line',
+  ): void {
     this.exitTableObjectSelection();
     this._pictureObjectSelected = true;
-    const idx = this.selectedPictureRefs.findIndex(r => r.sec === sec && r.ppi === ppi && r.ci === ci);
+    const ref: PictureSelectionRef =
+      typeof refOrSec === 'number'
+        ? { sec: refOrSec, ppi: ppi!, ci: ci!, type: type! }
+        : refOrSec;
+    const idx = this.selectedPictureRefs.findIndex(r =>
+      r.sec === ref.sec &&
+      r.ppi === ref.ppi &&
+      r.ci === ref.ci &&
+      JSON.stringify(r.cellPath ?? []) === JSON.stringify(ref.cellPath ?? []),
+    );
     if (idx >= 0) {
       this.selectedPictureRefs.splice(idx, 1);
       if (this.selectedPictureRefs.length === 0) {
@@ -1333,11 +1362,11 @@ export class CursorState {
         return;
       }
     } else {
-      this.selectedPictureRefs.push({ sec, ppi, ci, type });
+      this.selectedPictureRefs.push({ ...ref });
     }
     // 기본 ref는 마지막 선택된 개체
     const last = this.selectedPictureRefs[this.selectedPictureRefs.length - 1];
-    this.selectedPictureRef = { sec: last.sec, ppi: last.ppi, ci: last.ci, type: last.type };
+    this.selectedPictureRef = { ...last };
   }
 
   /** 개체 객체 선택을 해제한다. */
@@ -1353,12 +1382,12 @@ export class CursorState {
   }
 
   /** 선택된 개체의 참조 정보를 반환한다. */
-  getSelectedPictureRef(): { sec: number; ppi: number; ci: number; type: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; outerTableControlIdx?: number; cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }>; noteRef?: any; headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } } | null {
+  getSelectedPictureRef(): PictureSelectionRef | null {
     return this.selectedPictureRef;
   }
 
   /** 다중 선택된 개체 목록 반환 */
-  getSelectedPictureRefs(): { sec: number; ppi: number; ci: number; type: string }[] {
+  getSelectedPictureRefs(): PictureSelectionRef[] {
     return this.selectedPictureRefs;
   }
 

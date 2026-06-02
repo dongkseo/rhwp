@@ -2560,7 +2560,9 @@ export class InputHandler {
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
-          if (ref.type === 'image') {
+          if (ref.type === 'image' && ref.cellPath && ref.cellPath.length > 0) {
+            wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+          } else if (ref.type === 'image') {
             wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
           } else if (ref.type === 'equation') {
             wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);

@@ -1,5 +1,5 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
-import type { DocumentPosition, CharProperties } from '@/core/types';
+import type { DocumentPosition, CharProperties, CellPathLike } from '@/core/types';
 
 /** 편집 명령 공통 인터페이스 */
 export interface EditCommand {
@@ -807,6 +807,7 @@ export type ObjectResizeTarget = {
   ppi: number;
   ci: number;
   type: string;
+  cellPath?: CellPathLike;
   before: Record<string, unknown>;
   after: Record<string, unknown>;
 };
@@ -828,8 +829,16 @@ export class ResizeObjectCommand implements EditCommand {
 
   private setProps(wasm: WasmBridge, target: ObjectResizeTarget, props: Record<string, unknown>): void {
     if (target.type === 'shape' || target.type === 'line' || target.type === 'group') {
+      if (target.cellPath && target.cellPath.length > 0) {
+        wasm.setCellShapePropertiesByPath(target.sec, target.ppi, target.cellPath, target.ci, props);
+        return;
+      }
       wasm.setShapeProperties(target.sec, target.ppi, target.ci, props);
     } else {
+      if (target.type === 'image' && target.cellPath && target.cellPath.length > 0) {
+        wasm.setCellPicturePropertiesByPath(target.sec, target.ppi, target.cellPath, target.ci, props);
+        return;
+      }
       wasm.setPictureProperties(target.sec, target.ppi, target.ci, props);
     }
   }

@@ -792,7 +792,7 @@ export function onClick(this: any, e: MouseEvent): void {
         if (e.shiftKey && this.cursor.isInPictureObjectSelection()) {
           bringShapeToFront.call(this, picHit);
           const selType = picHit.type === 'shape' ? 'shape' as const : picHit.type as any;
-          this.cursor.togglePictureObjectSelection(picHit.sec, picHit.ppi, picHit.ci, selType);
+          this.cursor.togglePictureObjectSelection({ ...picHit, type: selType });
           this.caret.hide();
           this.selectionRenderer.clear();
           this.renderPictureObjectSelection();

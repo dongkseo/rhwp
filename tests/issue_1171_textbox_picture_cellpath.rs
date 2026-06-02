@@ -93,6 +93,9 @@ fn picture_in_textbox_get_set_by_path() {
     // 섹션0 문단25 글상자(사각형 control 0, 글상자 문단 0) 안 picture.
     // cell_path_json 키는 parse_cell_path_json 규약(controlIdx/cellIdx/cellParaIdx).
     let cell_path = r#"[{"controlIdx":0,"cellIdx":0,"cellParaIdx":0}]"#;
+    // 프런트 layout/cursor ref 에서 오는 키는 controlIndex/cellIndex/cellParaIndex.
+    // native parser 는 둘 다 받아야 resize/delete 경로가 본문 API로 후퇴하지 않는다.
+    let layout_cell_path = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
 
     // 첫 picture (inner ctrl 0) 조회
     let before = doc
@@ -130,5 +133,42 @@ fn picture_in_textbox_get_set_by_path() {
     assert!(
         p1v["width"].as_u64().unwrap_or(0) > 0,
         "두번째 picture 크기 0: {p1}"
+    );
+
+    // layout key 형식으로도 동일하게 조회되어야 한다.
+    let by_layout_key = doc
+        .get_cell_picture_properties_by_path_native(0, 25, layout_cell_path, 0)
+        .expect("layout key 형식 cellPath 조회 실패");
+    let lv: serde_json::Value = serde_json::from_str(&by_layout_key).unwrap();
+    assert_eq!(
+        lv["width"].as_u64(),
+        Some(new_w),
+        "layout key 형식 조회가 변경값을 보존하지 못함: {by_layout_key}"
+    );
+}
+
+#[test]
+fn picture_in_textbox_delete_by_path() {
+    let mut doc = load_sample();
+    let layout_cell_path = r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#;
+
+    // 문단25 글상자에는 picture 2개(inner ctrl 0,1)가 있고, 두 번째를 by_path로 삭제한다.
+    let ok = doc
+        .delete_cell_picture_control_by_path_native(0, 25, layout_cell_path, 1)
+        .expect("글상자 두번째 picture 삭제 실패");
+    assert!(ok.contains("\"ok\":true"), "delete 응답 비정상: {ok}");
+
+    let remaining = doc
+        .get_cell_picture_properties_by_path_native(0, 25, layout_cell_path, 0)
+        .expect("삭제 후 첫 picture 조회 실패");
+    let rv: serde_json::Value = serde_json::from_str(&remaining).unwrap();
+    assert!(
+        rv["width"].as_u64().unwrap_or(0) > 0,
+        "삭제 후 첫 picture 크기 0: {remaining}"
+    );
+    let deleted = doc.get_cell_picture_properties_by_path_native(0, 25, layout_cell_path, 1);
+    assert!(
+        deleted.is_err(),
+        "삭제된 두번째 picture 가 여전히 조회됨: {deleted:?}"
     );
 }

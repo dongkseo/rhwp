@@ -166,6 +166,7 @@ export interface CellPathSegment {
   cellParaIdx: number;
 }
 export type CellPath = CellPathSegment[];
+export type CellPathLike = Array<CellPathEntry | CellPathSegment>;
 
 /** 문서 트리 DFS 순회 컨텍스트 엔트리 */
 export interface NavContextEntry {

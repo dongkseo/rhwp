@@ -11,7 +11,7 @@ import {
   type NavigationAction,
   type NavigationKeyInput,
 } from './navigation-keymap';
-import type { DocumentPosition } from '@/core/types';
+import type { DocumentPosition, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 
 const RHWP_CLIPBOARD_MARKER_RE = /<!--\s*rhwp-studio-clipboard:([A-Za-z0-9._:-]+)\s*-->/;
@@ -60,6 +60,28 @@ function hasCurrentRhwpClipboardMarker(self: any, html: string): boolean {
 
 function isNestedCellPosition(pos: DocumentPosition): boolean {
   return pos.parentParaIndex !== undefined && (pos.cellPath?.length ?? 0) > 1;
+}
+
+type PictureDeleteRef = {
+  sec: number;
+  ppi: number;
+  ci: number;
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  cellPath?: CellPathLike;
+};
+
+function deleteSelectedObject(wasm: WasmBridge, ref: PictureDeleteRef): void {
+  if (ref.type === 'image') {
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+    } else {
+      wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+    }
+  } else if (ref.type === 'equation') {
+    wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
+  } else {
+    wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
+  }
 }
 
 function toNavigationKeyInput(e: KeyboardEvent): NavigationKeyInput {
@@ -640,13 +662,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'deleteObject', operation: (wasm: WasmBridge) => {
-          if (ref.type === 'image') {
-            wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-          } else if (ref.type === 'equation') {
-            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-          } else {
-            wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-          }
+          deleteSelectedObject(wasm, ref);
           return this.cursor.getPosition();
         }});
       }
@@ -703,13 +719,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
-          if (ref.type === 'image') {
-            wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-          } else if (ref.type === 'equation') {
-            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-          } else {
-            wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-          }
+          deleteSelectedObject(wasm, ref);
           return this.cursor.getPosition();
         }});
       }
@@ -1392,13 +1402,7 @@ export function onCut(this: any, e: ClipboardEvent): void {
       this.pictureObjectRenderer?.clear();
       this.eventBus.emit('picture-object-selection-changed', false);
       this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
-        if (ref.type === 'image') {
-          wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-        } else if (ref.type === 'equation') {
-          wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-        } else {
-          wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-        }
+        deleteSelectedObject(wasm, ref);
         return this.cursor.getPosition();
       }});
     }

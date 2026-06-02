@@ -2580,6 +2580,24 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [Task #1171 / PR #1254] 표 셀/글상자 내부 Picture 삭제 (by_path).
+    #[wasm_bindgen(js_name = deleteCellPictureControlByPath)]
+    pub fn delete_cell_picture_control_by_path(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        cell_path_json: &str,
+        inner_control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.delete_cell_picture_control_by_path_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            cell_path_json,
+            inner_control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// [Task #1138] 표 셀 내 Shape(글상자/사각형/도형) 속성 조회 (by_path).
     #[wasm_bindgen(js_name = getCellShapePropertiesByPath)]
     pub fn get_cell_shape_properties_by_path(

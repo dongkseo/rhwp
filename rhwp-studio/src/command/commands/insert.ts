@@ -7,6 +7,7 @@ import { BookmarkDialog } from '@/ui/bookmark-dialog';
 import { EndnoteShapeDialog } from '@/ui/endnote-shape-dialog';
 import { showShapePicker } from '@/ui/shape-picker';
 import type { ShapeType } from '@/ui/shape-picker';
+import type { CellPathLike } from '@/core/types';
 
 /** 스텁 커맨드 생성 헬퍼 */
 function stub(id: string, label: string, icon?: string, shortcut?: string): CommandDef {
@@ -269,18 +270,20 @@ export const insertCommands: CommandDef[] = [
       // 케이스) 의 경우 cellPath 구성 필요 — getCellPicturePropertiesByPath /
       // setCellPicturePropertiesByPath wasm API 호출. cell context (cellIdx/cellParaIdx/
       // outerTableControlIdx) 가 모두 있으면 셀 안 picture.
-      const cellPath = (
-        ref.cellIdx !== undefined &&
-        ref.cellParaIdx !== undefined &&
-        (ref as any).outerTableControlIdx !== undefined &&
-        (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image')
-      )
-        ? [{
-            controlIdx: (ref as any).outerTableControlIdx as number,
-            cellIdx: ref.cellIdx,
-            cellParaIdx: ref.cellParaIdx,
-          }]
-        : undefined;
+      const cellPath: CellPathLike | undefined = ref.cellPath ?? (
+        (
+          ref.cellIdx !== undefined &&
+          ref.cellParaIdx !== undefined &&
+          (ref as any).outerTableControlIdx !== undefined &&
+          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image')
+        )
+          ? [{
+              controlIdx: (ref as any).outerTableControlIdx as number,
+              cellIdx: ref.cellIdx,
+              cellParaIdx: ref.cellParaIdx,
+            }]
+          : undefined
+      );
       picturePropsDialog.open(
         ref.sec, ref.ppi, ref.ci, ref.type, ref.headerFooter,
         cellPath, cellPath ? ref.ci : undefined,
@@ -314,15 +317,13 @@ export const insertCommands: CommandDef[] = [
       // 현재 캡션 상태 조회
       let props: any;
       try {
-        props = ref.type === 'image'
-          ? services.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci)
-          : services.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci);
+        props = getProps(services, ref);
       } catch (e) { return; }
       if (!props) return;
       // 캡션 없으면 추가 (기본: 아래, 크기 30mm, 간격 3mm)
       let charOffset = 0;
       if (!props.hasCaption) {
-        const setProps = {
+        const captionProps = {
           hasCaption: true,
           captionDirection: 'Bottom',
           captionVertAlign: 'Top',
@@ -331,11 +332,7 @@ export const insertCommands: CommandDef[] = [
           captionIncludeMargin: false,
         };
         let result: any;
-        if (ref.type === 'image') {
-          result = services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, setProps);
-        } else {
-          result = services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, setProps);
-        }
+        result = setProps(services, ref, captionProps);
         // "그림 N " 끝 위치를 Rust가 반환
         charOffset = result?.captionCharOffset ?? 4;
         services.eventBus.emit('document-changed');
@@ -416,6 +413,8 @@ export const insertCommands: CommandDef[] = [
         services.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
       } else if (ref.type === 'equation') {
         services.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
+      } else if (ref.cellPath && ref.cellPath.length > 0) {
+        services.wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
       } else {
         services.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
       }
@@ -502,12 +501,16 @@ type PictureRef = {
   ppi: number;
   ci: number;
   type: string;
+  cellPath?: CellPathLike;
   headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number };
 };
 
 /** 선택 개체의 속성을 조회/변경 헬퍼 (shape/picture 분기) */
 function getProps(services: import('../types').CommandServices, ref: PictureRef): Record<string, unknown> {
   if (ref.type === 'shape') {
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.getCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci) as unknown as Record<string, unknown>;
+    }
     return services.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci) as unknown as Record<string, unknown>;
   }
   // [Task #831] 머리말/꼬리말 picture 의 경우 별도 API 호출 (PR #832 의 wasm-bridge).
@@ -521,15 +524,21 @@ function getProps(services: import('../types').CommandServices, ref: PictureRef)
       ref.ci,
     ) as unknown as Record<string, unknown>;
   }
+  if (ref.cellPath && ref.cellPath.length > 0) {
+    return services.wasm.getCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci) as unknown as Record<string, unknown>;
+  }
   return services.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci) as unknown as Record<string, unknown>;
 }
 
-function setProps(services: import('../types').CommandServices, ref: PictureRef, props: Record<string, unknown>): void {
+function setProps(services: import('../types').CommandServices, ref: PictureRef, props: Record<string, unknown>): any {
   if (ref.type === 'shape') {
-    services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, props);
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.setCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+    }
+    return services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, props);
   } else if (ref.headerFooter) {
     // [Task #831] 머리말/꼬리말 picture setter — 5-tuple lookup 으로 IR 갱신.
-    services.wasm.setHeaderFooterPictureProperties(
+    return services.wasm.setHeaderFooterPictureProperties(
       ref.sec,
       ref.headerFooter.outerParaIdx,
       ref.headerFooter.outerControlIdx,
@@ -538,7 +547,10 @@ function setProps(services: import('../types').CommandServices, ref: PictureRef,
       props,
     );
   } else {
-    services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.setCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+    }
+    return services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
   }
 }
 

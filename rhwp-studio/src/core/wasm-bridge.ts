@@ -1,5 +1,5 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
-import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree } from './types';
+import type { DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree } from './types';
 
 /** HWPX 비표준 감지 경고 리포트 (#177). */
 export interface ValidationReport {
@@ -895,7 +895,7 @@ export class WasmBridge {
   getCellShapePropertiesByPath(
     sec: number,
     parentPara: number,
-    cellPath: import('./types').CellPath,
+    cellPath: CellPathLike,
     innerControlIdx: number,
   ): import('./types').ShapeProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
@@ -910,7 +910,7 @@ export class WasmBridge {
   getCellPicturePropertiesByPath(
     sec: number,
     parentPara: number,
-    cellPath: import('./types').CellPath,
+    cellPath: CellPathLike,
     innerControlIdx: number,
   ): import('./types').PictureProperties {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
@@ -925,7 +925,7 @@ export class WasmBridge {
   setCellShapePropertiesByPath(
     sec: number,
     parentPara: number,
-    cellPath: import('./types').CellPath,
+    cellPath: CellPathLike,
     innerControlIdx: number,
     props: Record<string, unknown>,
   ): { ok: boolean } {
@@ -946,7 +946,7 @@ export class WasmBridge {
   setCellPicturePropertiesByPath(
     sec: number,
     parentPara: number,
-    cellPath: import('./types').CellPath,
+    cellPath: CellPathLike,
     innerControlIdx: number,
     props: Record<string, unknown>,
   ): { ok: boolean } {
@@ -1002,6 +1002,21 @@ export class WasmBridge {
   deletePictureControl(sec: number, para: number, ci: number): { ok: boolean } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.deletePictureControl(sec, para, ci));
+  }
+
+  /** [Task #1171 / PR #1254] 표 셀/글상자 내부 Picture 삭제 (by_path). */
+  deleteCellPictureControlByPath(
+    sec: number,
+    parentPara: number,
+    cellPath: CellPathLike,
+    innerControlIdx: number,
+  ): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(
+      (this.doc as any).deleteCellPictureControlByPath(
+        sec, parentPara, JSON.stringify(cellPath), innerControlIdx,
+      )
+    );
   }
 
   createShapeControl(params: Record<string, unknown>): { ok: boolean; paraIdx: number; controlIdx: number } {

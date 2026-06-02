@@ -692,9 +692,21 @@ impl DocumentCore {
             .map_err(|e| HwpError::RenderError(format!("cell_path JSON 파싱 실패: {}", e)))?
             .iter()
             .map(|v| {
-                let c = v.get("controlIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                let ci = v.get("cellIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
-                let cpi = v.get("cellParaIdx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                let c = v
+                    .get("controlIdx")
+                    .or_else(|| v.get("controlIndex"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0) as usize;
+                let ci = v
+                    .get("cellIdx")
+                    .or_else(|| v.get("cellIndex"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0) as usize;
+                let cpi = v
+                    .get("cellParaIdx")
+                    .or_else(|| v.get("cellParaIndex"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0) as usize;
                 (c, ci, cpi)
             })
             .collect();
@@ -3225,6 +3237,104 @@ impl DocumentCore {
             section: section_idx,
             para: parent_para_idx,
             ctrl: outer_table_ctrl,
+        });
+        Ok("{\"ok\":true}".to_string())
+    }
+
+    /// [Task #1171 / PR #1254] 표 셀/글상자 내부 Picture 삭제 (cell_path 기반).
+    pub fn delete_cell_picture_control_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        cell_path_json: &str,
+        inner_control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let path = Self::parse_cell_path_json(cell_path_json)?;
+        {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let para = Self::resolve_cell_paragraph_mut(section, parent_para_idx, &path)?;
+            if inner_control_idx >= para.controls.len() {
+                return Err(HwpError::RenderError(format!(
+                    "셀 내 컨트롤 {} 범위 초과",
+                    inner_control_idx
+                )));
+            }
+            if !matches!(&para.controls[inner_control_idx], Control::Picture(_)) {
+                return Err(HwpError::RenderError(
+                    "지정된 셀 내 컨트롤이 그림이 아닙니다".to_string(),
+                ));
+            }
+
+            let text_chars: Vec<char> = para.text.chars().collect();
+            let mut ci = 0usize;
+            let mut prev_end: u32 = 0;
+            let mut gap_start: Option<u32> = None;
+            'outer: for i in 0..text_chars.len() {
+                let offset = if i < para.char_offsets.len() {
+                    para.char_offsets[i]
+                } else {
+                    prev_end
+                };
+                while prev_end + 8 <= offset && ci < para.controls.len() {
+                    if ci == inner_control_idx {
+                        gap_start = Some(prev_end);
+                        break 'outer;
+                    }
+                    ci += 1;
+                    prev_end += 8;
+                }
+                let char_size: u32 = if text_chars[i] == '\t' {
+                    8
+                } else if text_chars[i].len_utf16() == 2 {
+                    2
+                } else {
+                    1
+                };
+                prev_end = offset + char_size;
+            }
+            if gap_start.is_none() {
+                while ci < para.controls.len() {
+                    if ci == inner_control_idx {
+                        gap_start = Some(prev_end);
+                        break;
+                    }
+                    ci += 1;
+                    prev_end += 8;
+                }
+            }
+
+            if let Some(gs) = gap_start {
+                let threshold = gs + 8;
+                for offset in para.char_offsets.iter_mut() {
+                    if *offset >= threshold {
+                        *offset -= 8;
+                    }
+                }
+            }
+
+            para.controls.remove(inner_control_idx);
+            if inner_control_idx < para.ctrl_data_records.len() {
+                para.ctrl_data_records.remove(inner_control_idx);
+            }
+            if para.char_count >= 8 {
+                para.char_count -= 8;
+            }
+            Self::reflow_paragraph_line_segs_after_control_delete(para, &self.styles, self.dpi);
+        }
+
+        let section = &mut self.document.sections[section_idx];
+        section.raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+
+        let outer_ctrl = path.first().unwrap().0;
+        self.event_log.push(DocumentEvent::PictureDeleted {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_ctrl,
         });
         Ok("{\"ok\":true}".to_string())
     }
