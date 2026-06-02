@@ -197,6 +197,9 @@ struct TypesetState {
     endnotes: Vec<EndnoteRef>,
     endnote_paragraphs: Vec<Paragraph>,
     endnote_para_sources: Vec<EndnoteParaSource>,
+    /// [Task #1246] 현재 섹션 미주의 between-notes 마진(HU, 0=미적용). HeightCursor 가 미주 사이
+    /// min-gap 보정에 사용. 모든 경계에서 동일한 섹션 설정값이므로 스칼라로 보관.
+    endnote_between_notes_hu: i32,
     /// [Task #362] Square wrap 표의 column_start (HU). -1 = 비활성. 후속 같은 cs/sw paragraph 흡수용.
     wrap_around_cs: i32,
     /// [Task #362] Square wrap 표의 segment_width (HU). -1 = 비활성.
@@ -639,6 +642,7 @@ impl TypesetState {
             endnotes: Vec::new(),
             endnote_paragraphs: Vec::new(),
             endnote_para_sources: Vec::new(),
+            endnote_between_notes_hu: 0,
             wrap_around_cs: -1,
             wrap_around_sw: -1,
             wrap_around_table_para: 0,
@@ -2199,6 +2203,9 @@ impl TypesetEngine {
                             {
                                 let between_notes = endnote_between_notes_margin(shape) as i32;
                                 if between_notes > 0 {
+                                    // [Task #1246] 섹션 미주 between-notes 마진(HU)을 보관 →
+                                    // HeightCursor 가 미주 사이 min-gap 보정에 사용. 모든 경계 동일값.
+                                    st.endnote_between_notes_hu = between_notes;
                                     let prev_spacing = st
                                         .endnote_paragraphs
                                         .get(prev_local_idx)
@@ -2728,6 +2735,7 @@ impl TypesetEngine {
             endnotes: st.endnotes,
             endnote_paragraphs: st.endnote_paragraphs,
             endnote_para_sources: st.endnote_para_sources,
+            endnote_between_notes_hu: st.endnote_between_notes_hu,
         }
     }
 
@@ -2777,6 +2785,7 @@ impl TypesetEngine {
             allow_vpos_rewind: false,
             allow_start_height_backtrack: false,
             suppress_large_forward_jump: false,
+            endnote_between_notes_hu: 0,
         };
         let y = hc.vpos_adjust(st.current_height, para_idx, paragraphs, styles);
         // lazy_base 는 지연 산출 시 갱신될 수 있으므로 회수.

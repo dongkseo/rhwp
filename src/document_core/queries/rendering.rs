@@ -1929,6 +1929,7 @@ impl DocumentCore {
                 endnotes: Vec::new(),
                 endnote_paragraphs: Vec::new(),
                 endnote_para_sources: Vec::new(),
+                endnote_between_notes_hu: 0,
             });
         }
         self.pagination.truncate(sec_count);
@@ -3117,6 +3118,9 @@ impl DocumentCore {
                 .set_hidden_empty_paras(&pr.hidden_empty_paras);
             self.layout_engine
                 .set_endnote_para_sources(paragraphs.len(), &pr.endnote_para_sources);
+            // [Task #1246] 섹션 미주 between-notes 마진(HU) 전달 → HeightCursor min-gap 보정.
+            self.layout_engine
+                .set_endnote_between_notes_hu(pr.endnote_between_notes_hu);
         }
 
         // [Task #836] 미주 paragraphs를 본문 paragraphs 뒤에 합쳐서 전달

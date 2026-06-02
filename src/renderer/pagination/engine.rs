@@ -920,6 +920,7 @@ impl Paginator {
             endnotes: Vec::new(),
             endnote_paragraphs: Vec::new(),
             endnote_para_sources: Vec::new(),
+            endnote_between_notes_hu: 0,
         }
     }
 

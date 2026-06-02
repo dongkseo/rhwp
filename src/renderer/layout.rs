@@ -506,6 +506,9 @@ pub struct LayoutEngine {
     endnote_para_base: std::cell::Cell<usize>,
     /// 가상 미주 문단별 원본 위치
     endnote_para_sources: std::cell::RefCell<Vec<EndnoteParaSource>>,
+    /// [Task #1246] 현재 섹션 미주의 between-notes 마진(HWPUNIT, 0=미적용). HeightCursor 가 미주
+    /// 사이 min-gap 보정(gap 부족 시 끌어올림)에 사용한다. 섹션 렌더 셋업마다 갱신.
+    endnote_between_notes_hu: std::cell::Cell<i32>,
     /// 현재 활성 필드 위치 — 안내문 렌더링 스킵용
     /// (section_idx, para_idx, control_idx, cell_path)
     /// cell_path: 셀 내 필드일 경우 Some(Vec<(ctrl, cell, para)>)
@@ -578,6 +581,7 @@ impl LayoutEngine {
             hidden_empty_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
             endnote_para_base: std::cell::Cell::new(usize::MAX),
             endnote_para_sources: std::cell::RefCell::new(Vec::new()),
+            endnote_between_notes_hu: std::cell::Cell::new(0),
             active_field: std::cell::RefCell::new(None),
             show_control_codes: std::cell::Cell::new(false),
             current_paper_width: std::cell::Cell::new(0.0),
@@ -635,6 +639,12 @@ impl LayoutEngine {
             }
             _ => false,
         }
+    }
+
+    /// [Task #1246] 현재 섹션 미주의 between-notes 마진(HU)을 설정한다(섹션 렌더 셋업마다 호출).
+    /// HeightCursor 가 미주 사이 min-gap 보정에 사용. 0 = 미적용.
+    pub fn set_endnote_between_notes_hu(&self, between_notes_hu: i32) {
+        self.endnote_between_notes_hu.set(between_notes_hu.max(0));
     }
 
     fn note_ref_for_endnote_equation(
@@ -2724,6 +2734,11 @@ impl LayoutEngine {
             col_content.endnote_flow && col_content.start_height < -0.5,
             col_content.endnote_flow,
         );
+        // [Task #1246] 미주 흐름 컬럼에만 between-notes 마진(HU)을 주입 → HeightCursor 가 새 미주
+        // 제목 forward 흐름의 min-gap 보정에 사용. 본문 컬럼은 0 (무영향).
+        if col_content.endnote_flow {
+            hcursor.endnote_between_notes_hu = self.endnote_between_notes_hu.get();
+        }
 
         // 1차 패스: 표, 문단, 텍스트 렌더링 (글상자 제외)
         for (item_ordinal, item) in col_content.items.iter().enumerate() {

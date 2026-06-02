@@ -55,6 +55,10 @@ pub(crate) struct HeightCursor {
     pub allow_start_height_backtrack: bool,
     /// 미주 흐름의 큰 forward vpos 점프는 단/쪽 재배치 흔적일 수 있어 순차 배치를 유지한다.
     pub suppress_large_forward_jump: bool,
+    /// [Task #1246] 현재 섹션 미주의 between-notes 마진(HU, 0=미적용). 새 미주 제목이 forward
+    /// 흐름에서 이 마진보다 작은 간격을 가지면(다줄 풀이 끝 trailing 누락=문22) 끌어올린다.
+    /// 생성자는 0 으로 두고 호출자(build_single_column)가 미주 흐름 컬럼에서만 설정한다.
+    pub endnote_between_notes_hu: i32,
 }
 
 impl HeightCursor {
@@ -83,6 +87,7 @@ impl HeightCursor {
             allow_vpos_rewind,
             allow_start_height_backtrack,
             suppress_large_forward_jump,
+            endnote_between_notes_hu: 0,
         }
     }
 
@@ -397,7 +402,7 @@ impl HeightCursor {
                 }
             }
         }
-        if compact_endnote_title_tail_backtrack {
+        let result = if compact_endnote_title_tail_backtrack {
             y_offset - (y_offset - end_y).min(16.0)
         } else if (applied || compact_endnote_deep_backtrack || compact_endnote_safe_vpos_backtrack)
             && !stale_forward
@@ -411,7 +416,29 @@ impl HeightCursor {
             y
         } else {
             y_offset
+        };
+        // [Task #1246] 미주 사이 min-gap: 새 미주 제목이 forward 흐름인데 between-notes 간격을
+        // 확보하지 못하면(다줄 풀이로 끝나는 미주 → 직전 다줄 문단 마지막 줄 trailing 이 render
+        // 에서 누락 → gap≈0, 문22) 직전 줄간격(주입된 between_notes)만큼 끌어올린다.
+        // - 다줄 prev 한정: 단일줄 prev 는 trailing 이 이미 sequential y(y_offset)에 포함되어
+        //   이중가산 위험 → 제외.
+        // - 이미 충분한 간격(result >= y_offset + prev_ls, 3-09월 문15 등)은 무변경(max 의미).
+        // - backtrack/rewind 류(result < y_offset)는 위 분기가 의도 선택한 값이므로 제외.
+        // #1238 render-클램프가 침범하던 #1209 safe-vpos-backtrack 과 양립(여기선 forward 만).
+        // 핵심: stored vpos 가 gap 을 거의 안 주는 경우(≈0)만 보정한다. 다줄 풀이로 끝나는 미주의
+        // 마지막 줄 trailing 이 render 에서 누락되어 gap≈0 이 된 케이스(문22)가 대상.
+        // stored vpos 가 의도적으로 작은 gap(예: 문13 ~12px)을 인코딩한 경우는 존중(over-lift 방지).
+        let prev_is_multiline = prev_para.line_segs.len() > 1;
+        let stored_gap_px = result - y_offset;
+        if self.endnote_between_notes_hu > 0
+            && compact_endnote_question_title
+            && !vpos_rewind
+            && prev_is_multiline
+            && (-0.5..4.0).contains(&stored_gap_px)
+        {
+            return y_offset + prev_line_spacing_px;
         }
+        result
     }
 
     /// 이미 계산된 vpos 기준 y보다 실제 렌더 y를 아래로 밀었을 때, 후속 항목도
@@ -881,5 +908,71 @@ mod tests {
 
         assert!((got - expected_end_y).abs() < 1e-6, "got={got}");
         assert_eq!(c.vpos_page_base, Some(0));
+    }
+
+    fn multiline_prev_with_injected_gap() -> Paragraph {
+        // 다줄(2 seg) 미주 문단, 마지막 seg ls=1984(typeset 가 주입한 between-notes).
+        let mut p = para(0, 1000, 900, 0, 5000);
+        p.line_segs.push(LineSeg {
+            vertical_pos: 1900,
+            line_height: 900,
+            line_spacing: 1984,
+            segment_width: 5000,
+            ..Default::default()
+        });
+        p
+    }
+
+    /// [Task #1246] 다줄 풀이로 끝나는 미주 다음 제목이 stored vpos gap≈0(마지막 줄 trailing
+    /// 누락=문22)이면 between-notes(직전 주입 줄간격)만큼 끌어올린다.
+    #[test]
+    fn compact_endnote_min_gap_lifts_zero_gap_question_title() {
+        let mut c = compact_endnote_cursor(Some(0));
+        c.endnote_between_notes_hu = 1984;
+        c.prev_layout_para = Some(0);
+        let mut curr = para(0, 2800, 900, 0, 5000); // prev 내용 바닥(1900+900) → stored gap≈0
+        curr.text = "문11)".to_string();
+        let ps = vec![multiline_prev_with_injected_gap(), curr];
+        let y_in = 100.0 + 2800.0 / 75.0; // page_path end_y 와 동일 → stored gap 0
+        let got = c.vpos_adjust(y_in, 1, &ps, &styles(0.0));
+        let expected = y_in + 1984.0 / 75.0;
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "got={got} expected={expected}"
+        );
+    }
+
+    /// stored vpos 가 의도적 gap(>4px)을 인코딩하면 over-lift 하지 않는다(문13 류 backtrack/소gap).
+    #[test]
+    fn compact_endnote_min_gap_respects_existing_vpos_gap() {
+        let mut c = compact_endnote_cursor(Some(0));
+        c.endnote_between_notes_hu = 1984;
+        c.prev_layout_para = Some(0);
+        let mut curr = para(0, 3550, 900, 0, 5000); // 2800 + 750(=10px) → stored gap 10px
+        curr.text = "문13)".to_string();
+        let ps = vec![multiline_prev_with_injected_gap(), curr];
+        let y_in = 100.0 + 2800.0 / 75.0;
+        let got = c.vpos_adjust(y_in, 1, &ps, &styles(0.0));
+        let expected_end = 100.0 + 3550.0 / 75.0; // 보정 없이 vpos 위치 유지
+        assert!(
+            (got - expected_end).abs() < 1e-6,
+            "got={got} expected={expected_end}"
+        );
+    }
+
+    /// 단일줄 prev 는 trailing 이 이미 sequential y 에 포함되므로 min-gap 보정 대상이 아니다.
+    #[test]
+    fn compact_endnote_min_gap_skips_single_line_prev() {
+        let mut c = compact_endnote_cursor(Some(0));
+        c.endnote_between_notes_hu = 1984;
+        c.prev_layout_para = Some(0);
+        let prev = para(0, 1900, 900, 1984, 5000); // 단일줄, ls=1984
+        let mut curr = para(0, 2800, 900, 0, 5000);
+        curr.text = "문11)".to_string();
+        let ps = vec![prev, curr];
+        let y_in = 100.0 + 2800.0 / 75.0;
+        let got = c.vpos_adjust(y_in, 1, &ps, &styles(0.0));
+        // 단일줄 prev → 보정 없음 (stored gap 0 이어도 lift 안 함)
+        assert!((got - y_in).abs() < 1e-6, "got={got} expected={y_in}");
     }
 }

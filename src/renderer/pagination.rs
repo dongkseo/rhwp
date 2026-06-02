@@ -58,6 +58,9 @@ pub struct PaginationResult {
     pub endnote_paragraphs: Vec<crate::model::paragraph::Paragraph>,
     /// `endnote_paragraphs` 각 항목의 원본 Endnote 내부 위치.
     pub endnote_para_sources: Vec<EndnoteParaSource>,
+    /// [Task #1246] 현재 섹션 미주의 between-notes 마진(HU, 0=미적용). HeightCursor 가 미주 사이
+    /// min-gap 보정에 사용.
+    pub endnote_between_notes_hu: i32,
 }
 
 /// 한 페이지에 배치될 콘텐츠
