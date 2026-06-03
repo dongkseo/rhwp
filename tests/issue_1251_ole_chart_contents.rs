@@ -9,8 +9,6 @@ use rhwp::ole_chart::{
     ole_chart_ir_json, parse_ole_chart_contents, probe_ole_chart_contents,
     render_ole_chart_standalone_svg, render_ole_chart_svg_fragment, OleChartType,
 };
-#[cfg(all(not(target_arch = "wasm32"), feature = "charming-renderer"))]
-use rhwp::ole_chart::{render_ole_chart_charming_svg, render_smoke_chart_svg};
 use rhwp::parser::ole_container::parse_ole_container;
 
 fn read_fixture() -> Vec<u8> {
@@ -140,27 +138,6 @@ fn ole_chart_contents_renders_standalone_rust_svg() {
     assert!(!svg.contains("charming SSR unavailable"));
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "charming-renderer"))]
-#[test]
-fn ole_chart_contents_renders_charming_svg_adapter() {
-    let raw_contents = bin_data_2_raw_contents();
-    let chart = parse_ole_chart_contents(&raw_contents).expect("parse legacy chart contents");
-    let svg = render_ole_chart_charming_svg(&chart, 420, 320).expect("render parsed chart");
-
-    assert!(
-        svg.starts_with("<svg"),
-        "unexpected charming SVG prefix: {svg}"
-    );
-    assert!(
-        svg.contains("연금"),
-        "rendered SVG should include chart title"
-    );
-    assert!(
-        svg.contains("적립금"),
-        "rendered SVG should include series name"
-    );
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn issue_1251_svg_uses_legacy_ole_chart_renderer() {
@@ -173,19 +150,4 @@ fn issue_1251_svg_uses_legacy_ole_chart_renderer() {
     assert!(svg.contains("적립금"));
     assert!(!svg.contains("OLE 개체 (BinData #2)"));
     assert!(!svg.contains("OLE 차트 미지원"));
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "charming-renderer"))]
-#[test]
-fn charming_ssr_smoke_renders_svg_string() {
-    let svg = render_smoke_chart_svg(420, 320).expect("charming SSR SVG render");
-
-    assert!(
-        svg.starts_with("<svg"),
-        "unexpected charming SVG prefix: {svg}"
-    );
-    assert!(
-        svg.contains("alpha"),
-        "charming SVG should include sample data labels"
-    );
 }

@@ -2,7 +2,7 @@
 
 - **이슈**: [#1251](https://github.com/edwardkim/rhwp/issues/1251)
 - **작성일**: 2026-06-03
-- **결정**: Rust SVG renderer를 canonical path로 두고, `charming`은 optional native adapter로 유지한다.
+- **결정**: Rust SVG renderer를 canonical path로 두고, `charming`은 검토 결과 후속 adapter 후보로 분리한다.
 
 ## 1. 배경
 
@@ -82,28 +82,27 @@ HWP OLE Contents
 → native/WASM 공통 소비
 ```
 
-`charming`은 다음 용도로 유지한다.
+`charming`은 다음 용도로 검토했다.
 
 - native 고품질 export/비교용 adapter
 - maintainer 지시를 반영한 Rust chart adapter 검증 경로
 - 후속 논의에서 ECharts backend가 필요한 downstream을 위한 optional feature
 
-이를 위해 `Cargo.toml`에는 다음 구조를 사용한다.
+다만 통합 검증에서 `charming`의 `ssr` feature가 끌어오는 `deno_core/v8`가 현재 `cdylib` crate-type 링크와 충돌했다.
 
-```toml
-[features]
-charming-renderer = ["dep:charming"]
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-charming = { version = "0.6", optional = true, default-features = false, features = ["ssr"] }
+```text
+rust-lld: error: relocation R_X86_64_TPOFF32 against v8::internal::g_current_isolate_
+cannot be used with -shared
 ```
+
+따라서 PR #1268 통합본에서는 `charming-renderer` feature와 `charming` dependency를 제외하고, Rust SVG renderer만 canonical path로 유지한다.
 
 ## 4. PR에서 설명할 점
 
 - `charming`은 parser가 아니므로 HWP OLE `/Contents` 해석은 rhwp가 직접 수행해야 한다.
-- `charming` native SSR은 유효하지만 WASM renderer는 DOM/ECharts runtime dependency가 필요하다.
+- `charming` native SSR은 renderer 후보로는 유효하지만 현재 crate-type과의 링크 호환성 검증이 더 필요하다.
 - rhwp upstream은 `PageLayerTree`, Skia, CanvasKit 등 multi-backend renderer로 확장 중이므로 chart도 renderer-neutral path에 올리는 것이 장기적으로 낫다.
-- 따라서 `charming`을 기본 renderer로 강제하지 않고 optional adapter로 둔다.
+- 따라서 `charming`을 기본 renderer로 강제하지 않고 후속 adapter 이슈로 분리한다.
 
 ## 5. 후속 판단 지점
 
