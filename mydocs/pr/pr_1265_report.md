@@ -21,7 +21,7 @@ PR #1265의 핵심 수정은 수용했다.
 | file | 내용 |
 |---|---|
 | `src/serializer/body_text.rs` | TAB 확장 데이터 폴백의 `ext[6]`을 `0x0009`로 설정 |
-| `tests/issue_1244_tab_extended_fallback.rs` | 편집 삽입 탭 1개/2개 roundtrip 검증 추가 |
+| `tests/issue_1244_tab_extended_fallback.rs` | 편집 삽입 탭 1개/2개 roundtrip 및 HWPX→HWP 저장 경로 tab_extended 보존 검증 추가 |
 | `mydocs/plans/archives/task_1244.md` | PR 수행계획서를 archives 위치로 정리 |
 | `mydocs/pr/pr_1265_review.md` | PR 검토 보고서 작성 |
 
@@ -43,7 +43,7 @@ git diff --check
 | 항목 | 결과 |
 |---|---|
 | 포맷 체크 | 통과 |
-| 신규 issue #1244 테스트 | 2 passed |
+| 신규 issue #1244 테스트 | 3 passed |
 | 전체 테스트 | 통과 |
 | clippy | 통과 |
 | wasm target check | 통과 |
@@ -65,6 +65,10 @@ GitHub PR head 기준:
 
 이번 PR은 HWP 저장 호환성의 매우 좁은 폴백 보강이며, 기존 `tab_extended`가 있는 문서의 저장 경로는 변경하지 않는다.
 따라서 기존 렌더링/저장 경로 회귀 위험은 낮고, 편집 삽입 탭의 한컴 호환성은 개선된다.
+
+추가 확인 결과, HWPX 파서는 `<hp:tab>` 파싱 시 `tab_extended[6] = 0x0009`를 이미 생성하고,
+HWPX 출처 HWP 저장 경로(`export_hwp_with_adapter`)도 이 값을 HWP 직렬화까지 보존한다.
+이를 `samples/hwpx/ref/ref_mixed.hwpx` 기반 회귀 테스트로 고정했다.
 
 ## 5. 후속 절차
 

@@ -7,10 +7,27 @@
 //! 수정: 폴백을 [0,0,0,0,0,0,0x0009]로 변경하여 마커를 올바르게 출력.
 
 use rhwp::document_core::DocumentCore;
+use rhwp::model::document::Document;
 
 /// blank2010.hwp를 로드한다.
 fn load_blank() -> Vec<u8> {
     std::fs::read("saved/blank2010.hwp").expect("saved/blank2010.hwp 없음")
+}
+
+fn first_tab_extended(doc: &Document) -> [u16; 7] {
+    for section in &doc.sections {
+        for para in &section.paragraphs {
+            if para.text.contains('\t') {
+                return *para.tab_extended.first().unwrap_or_else(|| {
+                    panic!(
+                        "탭 문단을 찾았으나 tab_extended가 비어 있음: {:?}",
+                        para.text
+                    )
+                });
+            }
+        }
+    }
+    panic!("문서에서 탭 문단을 찾지 못함")
 }
 
 /// 편집으로 삽입한 탭이 HWP 직렬화 후 재파싱 시 ext[6]=0x0009를 갖는지 확인한다.
@@ -67,4 +84,35 @@ fn issue_1244_multiple_inserted_tabs_all_have_marker() {
             "tab_extended[{i}][6]이 0x0009가 아님: {ext:?} (issue #1244)"
         );
     }
+}
+
+/// HWPX에서 파싱된 탭 확장 정보가 HWP 저장 경로에서도 유지되는지 확인한다.
+#[test]
+fn issue_1244_hwpx_to_hwp_save_preserves_tab_extended_marker() {
+    let hwpx_bytes = include_bytes!("../samples/hwpx/ref/ref_mixed.hwpx");
+
+    let source_doc = rhwp::parser::hwpx::parse_hwpx(hwpx_bytes).expect("HWPX 파싱 실패");
+    let source_ext = first_tab_extended(&source_doc);
+    assert_eq!(
+        source_ext[6], 0x0009,
+        "HWPX 파서가 만든 tab_extended 마커가 0x0009가 아님: {source_ext:?}"
+    );
+
+    let mut core = DocumentCore::from_bytes(hwpx_bytes).expect("HWPX 로드 실패");
+    let hwp_bytes = core.export_hwp_with_adapter().expect("HWPX→HWP 저장 실패");
+    let saved_doc = rhwp::parser::parse_hwp(&hwp_bytes).expect("저장 HWP 재파싱 실패");
+    let saved_ext = first_tab_extended(&saved_doc);
+
+    assert_eq!(
+        saved_ext[6], 0x0009,
+        "HWPX→HWP 저장 후 ext[6] 마커가 0x0009가 아님: {saved_ext:?}"
+    );
+    assert_eq!(
+        saved_ext[0], source_ext[0],
+        "HWPX 탭 width가 HWP 저장 후 보존되지 않음: source={source_ext:?}, saved={saved_ext:?}"
+    );
+    assert_eq!(
+        saved_ext[2], source_ext[2],
+        "HWPX 탭 type/leader가 HWP 저장 후 보존되지 않음: source={source_ext:?}, saved={saved_ext:?}"
+    );
 }
