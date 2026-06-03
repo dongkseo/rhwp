@@ -2,8 +2,8 @@
 //!
 //! Pure-Rust replacement for `tools/verify_hwpx.py`, which requires Windows
 //! + Hancom Office + pyhwpx and cannot run in CI. This harness invokes
-//! `rhwp::wasm_api::HwpDocument::render_page_svg_native()` directly so the
-//! same SVG the CLI produces is diffed against committed golden files.
+//!   `rhwp::wasm_api::HwpDocument::render_page_svg_native()` directly so the
+//!   same SVG the CLI produces is diffed against committed golden files.
 //!
 //! # Updating goldens
 //!

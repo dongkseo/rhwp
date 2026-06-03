@@ -5104,7 +5104,7 @@ mod issue_1151_v9_helper_tests {
     fn skips_table_and_other_controls() {
         // Table / Shape 는 가로 분배 대상 아님 (Picture 만).
         let controls = vec![
-            Control::Table(Box::new(Table::default())),
+            Control::Table(Box::default()),
             Control::Picture(Box::new(make_pic(5670, 5670, true))),
             Control::Picture(Box::new(make_pic(5670, 5670, true))),
         ];
@@ -5118,7 +5118,7 @@ mod issue_1151_v9_helper_tests {
     fn realistic_v1_scenario_1x1_table_two_tac_pictures() {
         // 사용자 시연 정확 재현: [Table(tac=false), Pic1(tac=true), Pic2(tac=true)]
         let controls = vec![
-            Control::Table(Box::new(Table::default())),
+            Control::Table(Box::default()),
             Control::Picture(Box::new(make_pic(5670, 5670, true))),
             Control::Picture(Box::new(make_pic(5670, 5670, true))),
         ];

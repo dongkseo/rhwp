@@ -1310,7 +1310,7 @@ mod tests {
         assert_eq!(detect_format(&data), FileFormat::Hwp3);
         let doc = parse_document(&data).expect("Should successfully parse HWP3 sample");
         assert!(
-            doc.sections.len() > 0,
+            !doc.sections.is_empty(),
             "Document should have at least one section"
         );
     }

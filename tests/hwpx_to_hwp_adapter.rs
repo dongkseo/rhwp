@@ -1228,16 +1228,16 @@ fn task903_para29_shape_pair_mut<'a>(
         .expect("target section0 para29 필요");
     let positive_shape = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
-        .and_then(|para| para.controls.get(0))
+        .and_then(|para| para.controls.first())
         .and_then(|ctrl| match ctrl {
             Control::Shape(shape) => Some(shape.as_ref()),
             _ => None,
         })
         .expect("positive section0 para29 ctrl0 shape 필요");
 
-    let is_target_shape = matches!(target_para.controls.get(0), Some(Control::Shape(_)));
+    let is_target_shape = matches!(target_para.controls.first(), Some(Control::Shape(_)));
     assert!(is_target_shape, "target section0 para29 ctrl0 shape 필요");
     (target_para, positive_shape)
 }
@@ -1252,12 +1252,12 @@ fn task903_target_shape_mut(para: &mut Paragraph) -> &mut ShapeObject {
 fn task903_copy_para29_ctrl_data_record(target_para: &mut Paragraph, positive: &Document) {
     let positive_para = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
         .expect("positive section0 para29 필요");
     let positive_ctrl_data = positive_para
         .ctrl_data_records
-        .get(0)
+        .first()
         .cloned()
         .unwrap_or(None);
 
@@ -1270,12 +1270,12 @@ fn task903_copy_para29_ctrl_data_record(target_para: &mut Paragraph, positive: &
 fn task903_copy_para29_shape_control(target_para: &mut Paragraph, positive: &Document) {
     let positive_para = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
         .expect("positive section0 para29 필요");
     target_para.controls[0] = positive_para
         .controls
-        .get(0)
+        .first()
         .expect("positive para29 ctrl0 필요")
         .clone();
     task903_copy_para29_ctrl_data_record(target_para, positive);
@@ -3844,7 +3844,7 @@ fn task903_shape_picture_extra(data: &[u8]) -> &[u8] {
 
 fn task903_decode_shape_picture_extra(data: &[u8]) -> String {
     let extra = task903_shape_picture_extra(data);
-    let border_opacity = extra.get(0).copied().unwrap_or(0);
+    let border_opacity = extra.first().copied().unwrap_or(0);
     let instance_id = task903_read_u32_at(data, 74).unwrap_or(0);
     let image_effect_extra = task903_read_u32_at(data, 78).unwrap_or(0);
     let original_width = task903_read_u32_at(data, 82).unwrap_or(0);
