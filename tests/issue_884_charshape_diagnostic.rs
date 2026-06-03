@@ -4,12 +4,12 @@
 //! " 충남중부권지사장" 의 char_shape:
 //!   - (start_pos=0, id=14 HY헤드라인M 26pt)
 //!   - (start_pos=9, id=20 HY수평선B 16pt)
-//! char_offsets = [8,9,…,16] — 선두 인라인 그림이 stream offset 0~7 을 점유.
+//!     char_offsets = [8,9,…,16] — 선두 인라인 그림이 stream offset 0~7 을 점유.
 //!
 //! `start_pos` 는 paragraph 텍스트의 UTF-16 stream offset 이다 (해석 A):
 //!   - start_pos=0 → offset 0 이상 첫 가시문자 = visible[0](" ") → id=14
 //!   - start_pos=9 → offset 9 이상 첫 가시문자 = visible[1]("충") → id=20
-//!   ⇒ "충남중부권지사장" = id=20 HY수평선B 16pt.
+//!     ⇒ "충남중부권지사장" = id=20 HY수평선B 16pt.
 //!
 //! 이력: #884 가 이 footer 를 "26pt HY헤드라인M" 으로 오진(HY수평선B 굵은
 //! 글꼴 + 로고 옆 배치로 인한 육안 착시)하고 `start_pos` 를 visible char

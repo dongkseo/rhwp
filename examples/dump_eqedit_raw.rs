@@ -48,7 +48,7 @@ fn main() {
                     println!();
                 }
             }
-            if size % 16 != 0 {
+            if !size.is_multiple_of(16) {
                 println!();
             }
             // 첫 2개 EQEDIT만

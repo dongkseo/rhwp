@@ -7,8 +7,8 @@
 //!   1) 줄 끝 위치(= 다음 줄 선두) 수식이 현재 줄 폭에 오포함되고
 //!      (`est_x`/`total_tac_width_in_line` 가 전역 tac_offsets_px 를 run 경계로 재필터),
 //!   2) 선두 미주 마커("문26)")가 inline_offset 과 fn_text 위첨자로 이중 계상되어
-//! `total_text_width > available_width` 거짓 오버플로우가 발생, 비정렬(Left) 줄에도
-//! 음수 자간 압축이 걸려 본문 한글이 8.96px(0.746em)로 겹쳤다.
+//!      `total_text_width > available_width` 거짓 오버플로우가 발생, 비정렬(Left) 줄에도
+//!      음수 자간 압축이 걸려 본문 한글이 8.96px(0.746em)로 겹쳤다.
 //!
 //! 수정: 측정 TAC 소스를 줄-경계 정규 집합 `line_tac_offsets`(렌더 경로와 동일)로
 //! 통일 + 선두 미주(start_line==0 Endnote)를 fn_text 측정에서 제외.

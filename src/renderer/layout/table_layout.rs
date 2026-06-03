@@ -4381,7 +4381,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 50.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 50.0, &styles);
         assert_eq!(r.end_cut, vec![3]);
         assert!(!r.fully_consumed);
         assert!(!r.hit_hard_break);
@@ -4393,7 +4393,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 500.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 500.0, &styles);
         assert_eq!(r.end_cut, vec![6]);
         assert!(r.fully_consumed);
     }
@@ -4404,7 +4404,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 5.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 5.0, &styles);
         assert_eq!(r.end_cut, vec![1]);
         assert!(!r.fully_consumed);
     }
@@ -4417,7 +4417,7 @@ mod row_cut_tests {
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(3, 0), text_para(2, 1000)])]);
         // avail 충분해도 리셋에서 정지.
-        let r = eng.advance_row_cut(&t, 0, &vec![], 1000.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 1000.0, &styles);
         assert_eq!(r.end_cut, vec![3]);
         assert!(r.hit_hard_break);
         assert!(!r.fully_consumed);
@@ -4437,7 +4437,7 @@ mod row_cut_tests {
             cell(0, 0, vec![text_para(3, 0)]),
             cell(0, 1, vec![text_para(6, 0)]),
         ]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 500.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 500.0, &styles);
         assert_eq!(r.end_cut, vec![3, 6]);
         assert!(r.fully_consumed);
         assert!((r.consumed_height - 96.0).abs() < 0.5);

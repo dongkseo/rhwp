@@ -2281,7 +2281,7 @@ mod tests {
             0.0,
             0.0,
             0.0,
-            f64::from(924.090_027_f32),
+            f64::from(924.09_f32),
             0.0,
         ]));
         raw_rendering.extend_from_slice(&matrix([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]));

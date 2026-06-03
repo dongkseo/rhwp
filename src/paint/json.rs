@@ -2451,6 +2451,10 @@ fn form_type_str(value: FormType) -> &'static str {
     }
 }
 
+fn json_escape(value: &str) -> String {
+    format!("\"{}\"", raw_json_escape(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3531,8 +3535,4 @@ mod tests {
         assert!(json.contains("\"clipEnabled\":false"));
         assert!(json.contains("\"debugOverlay\":true"));
     }
-}
-
-fn json_escape(value: &str) -> String {
-    format!("\"{}\"", raw_json_escape(value))
 }

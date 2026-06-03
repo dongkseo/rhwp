@@ -206,18 +206,18 @@ pub const ST_PARA: u32 = 0;
 pub const ST_CHAR: u32 = 1;
 
 #[cfg(test)]
+const _: () = {
+    assert!(PARASHAPE_SNAP_TO_GRID);
+    assert!(!PARASHAPE_FONT_LINE_HEIGHT);
+    assert!(!PARASHAPE_SUPPRESS_LINE_NUMBERS);
+    assert!(!PARASHAPE_CHECKED);
+    assert!(!CHARSHAPE_USE_FONT_SPACE);
+    assert!(!CHARSHAPE_USE_KERNING);
+};
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn snap_to_grid_is_the_only_true_default() {
-        assert!(PARASHAPE_SNAP_TO_GRID);
-        assert!(!PARASHAPE_FONT_LINE_HEIGHT);
-        assert!(!PARASHAPE_SUPPRESS_LINE_NUMBERS);
-        assert!(!PARASHAPE_CHECKED);
-        assert!(!CHARSHAPE_USE_FONT_SPACE);
-        assert!(!CHARSHAPE_USE_KERNING);
-    }
 
     #[test]
     fn cell_span_defaults_are_one() {

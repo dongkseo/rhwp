@@ -9,7 +9,7 @@
 //!    (src/parser/hwpx/header.rs::parse_para_shape)
 //! 3. **Style lang_id (INT16) + trailing 2 byte** — 각주 추가 시 왼쪽 여백 60.0pt 부작용 해소
 //!    (src/model/style.rs, src/parser/doc_info.rs, src/serializer/doc_info.rs,
-//!     src/parser/hwpx/header.rs::parse_style)
+//!    src/parser/hwpx/header.rs::parse_style)
 //! 4. **HWPX `<hh:bullet>` 파싱 추가** — 일반 문단 자동 글머리표 부작용 해소
 //!    (src/parser/hwpx/header.rs, parse_bullet_hwpx)
 //!
