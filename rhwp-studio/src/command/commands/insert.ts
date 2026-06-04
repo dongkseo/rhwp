@@ -1,10 +1,13 @@
 import type { CommandDef } from '../types';
 import { PicturePropsDialog } from '@/ui/picture-props-dialog';
 import { EquationEditorDialog } from '@/ui/equation-editor-dialog';
+import { EquationPropertiesDialog } from '@/ui/equation-props-dialog';
 import { SymbolsDialog } from '@/ui/symbols-dialog';
 import { BookmarkDialog } from '@/ui/bookmark-dialog';
+import { EndnoteShapeDialog } from '@/ui/endnote-shape-dialog';
 import { showShapePicker } from '@/ui/shape-picker';
 import type { ShapeType } from '@/ui/shape-picker';
+import type { CellPathLike } from '@/core/types';
 
 /** 스텁 커맨드 생성 헬퍼 */
 function stub(id: string, label: string, icon?: string, shortcut?: string): CommandDef {
@@ -20,8 +23,35 @@ function stub(id: string, label: string, icon?: string, shortcut?: string): Comm
 
 let picturePropsDialog: PicturePropsDialog | null = null;
 let equationEditorDialog: EquationEditorDialog | null = null;
+let equationPropsDialog: EquationPropertiesDialog | null = null;
 let symbolsDialog: SymbolsDialog | null = null;
 let bookmarkDialog: BookmarkDialog | null = null;
+let endnoteShapeDialog: EndnoteShapeDialog | null = null;
+
+function enterNoteEditing(
+  services: any,
+  ih: any,
+  sectionIdx: number,
+  paraIdx: number,
+  controlIdx: number,
+): void {
+  const info = services.wasm.getNoteEditInfo(sectionIdx, paraIdx, controlIdx);
+  if (!info?.ok) return;
+  const cursor = (ih as any).cursor;
+  if (!cursor?.enterFootnoteMode) return;
+  cursor.enterFootnoteMode(
+    sectionIdx,
+    paraIdx,
+    controlIdx,
+    info.footnoteIndex ?? 0,
+    info.pageNum ?? 0,
+  );
+  cursor.setFnCursorPosition(info.fnParaIndex ?? 0, info.charOffset ?? 2);
+  services.eventBus.emit('footnoteModeChanged', true);
+  (ih as any).active = true;
+  (ih as any).updateCaret?.();
+  (ih as any).textarea?.focus();
+}
 
 export const insertCommands: CommandDef[] = [
   {
@@ -129,19 +159,65 @@ export const insertCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       if (!ih) return;
       const pos = ih.getPosition();
-      console.log('[footnote] pos:', pos);
       try {
         const result = services.wasm.insertFootnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
-        console.log('[footnote] result:', result);
         if (result.ok) {
           services.eventBus.emit('document-changed');
+          enterNoteEditing(services, ih, pos.sectionIndex, result.paraIdx, result.controlIdx);
         }
       } catch (err) {
         console.warn('[insert:footnote] 각주 삽입 실패:', err);
       }
     },
   },
-  stub('insert:endnote', '미주', 'icon-endnote'),
+  {
+    id: 'insert:endnote',
+    label: '미주',
+    icon: 'icon-endnote',
+    canExecute: () => true,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const pos = ih.getPosition();
+      try {
+        const result = services.wasm.insertEndnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+        if (result.ok) {
+          services.eventBus.emit('document-changed');
+          enterNoteEditing(services, ih, pos.sectionIndex, result.paraIdx, result.controlIdx);
+        }
+      } catch (err) {
+        console.warn('[insert:endnote] 미주 삽입 실패:', err);
+      }
+    },
+  },
+  {
+    id: 'insert:note-close',
+    label: '닫기',
+    icon: 'icon-delete',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const cursor = (ih as any).cursor;
+      if (!cursor?.isInFootnote?.()) return;
+      cursor.exitFootnoteMode();
+      services.eventBus.emit('footnoteModeChanged', false);
+      (ih as any).updateCaret?.();
+      (ih as any).textarea?.focus();
+    },
+  },
+  {
+    id: 'insert:endnote-shape',
+    label: '미주 모양',
+    icon: 'icon-endnote',
+    canExecute: (ctx) => ctx.hasDocument,
+    execute(services) {
+      const pos = services.getInputHandler()?.getPosition();
+      const sectionIdx = pos?.sectionIndex ?? 0;
+      endnoteShapeDialog = new EndnoteShapeDialog(services.wasm, services.eventBus, sectionIdx);
+      endnoteShapeDialog.show();
+    },
+  },
   {
     id: 'insert:symbols',
     label: '문자표',
@@ -176,12 +252,42 @@ export const insertCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
-      if (!ref || ref.type === 'equation' || ref.type === 'group') return;
+      if (!ref) return;
+      if (ref.type === 'equation') {
+        if (!equationPropsDialog) {
+          equationPropsDialog = new EquationPropertiesDialog(services.wasm, services.eventBus);
+        }
+        equationPropsDialog.open(ref.sec, ref.ppi, ref.ci, ref.cellIdx, ref.cellParaIdx, ref.noteRef);
+        return;
+      }
       if (!picturePropsDialog) {
         picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus);
       }
       // [Task #825] 머리말/꼬리말 그림은 ref.headerFooter 동반 — dialog 에 전달.
-      picturePropsDialog.open(ref.sec, ref.ppi, ref.ci, ref.type, ref.headerFooter);
+      // [Task #1138] 표 셀 내 도형(shape/line) 은 cellPath 구성하여 dialog 에 전달
+      // → by_path API 사용.
+      // [Task #1151 v4] picture (image) 도 셀 안 inline picture (tac-img-02.hwp 같은
+      // 케이스) 의 경우 cellPath 구성 필요 — getCellPicturePropertiesByPath /
+      // setCellPicturePropertiesByPath wasm API 호출. cell context (cellIdx/cellParaIdx/
+      // outerTableControlIdx) 가 모두 있으면 셀 안 picture.
+      const cellPath: CellPathLike | undefined = ref.cellPath ?? (
+        (
+          ref.cellIdx !== undefined &&
+          ref.cellParaIdx !== undefined &&
+          (ref as any).outerTableControlIdx !== undefined &&
+          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image')
+        )
+          ? [{
+              controlIdx: (ref as any).outerTableControlIdx as number,
+              cellIdx: ref.cellIdx,
+              cellParaIdx: ref.cellParaIdx,
+            }]
+          : undefined
+      );
+      picturePropsDialog.open(
+        ref.sec, ref.ppi, ref.ci, ref.type, ref.headerFooter,
+        cellPath, cellPath ? ref.ci : undefined,
+      );
     },
   },
   {
@@ -196,7 +302,7 @@ export const insertCommands: CommandDef[] = [
       if (!equationEditorDialog) {
         equationEditorDialog = new EquationEditorDialog(services.wasm, services.eventBus);
       }
-      equationEditorDialog.open(ref.sec, ref.ppi, ref.ci, ref.cellIdx, ref.cellParaIdx);
+      equationEditorDialog.open(ref.sec, ref.ppi, ref.ci, ref.cellIdx, ref.cellParaIdx, ref.noteRef);
     },
   },
   {
@@ -211,15 +317,13 @@ export const insertCommands: CommandDef[] = [
       // 현재 캡션 상태 조회
       let props: any;
       try {
-        props = ref.type === 'image'
-          ? services.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci)
-          : services.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci);
+        props = getProps(services, ref);
       } catch (e) { return; }
       if (!props) return;
       // 캡션 없으면 추가 (기본: 아래, 크기 30mm, 간격 3mm)
       let charOffset = 0;
       if (!props.hasCaption) {
-        const setProps = {
+        const captionProps = {
           hasCaption: true,
           captionDirection: 'Bottom',
           captionVertAlign: 'Top',
@@ -228,11 +332,7 @@ export const insertCommands: CommandDef[] = [
           captionIncludeMargin: false,
         };
         let result: any;
-        if (ref.type === 'image') {
-          result = services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, setProps);
-        } else {
-          result = services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, setProps);
-        }
+        result = setProps(services, ref, captionProps);
         // "그림 N " 끝 위치를 Rust가 반환
         charOffset = result?.captionCharOffset ?? 4;
         services.eventBus.emit('document-changed');
@@ -313,6 +413,8 @@ export const insertCommands: CommandDef[] = [
         services.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
       } else if (ref.type === 'equation') {
         services.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
+      } else if (ref.cellPath && ref.cellPath.length > 0) {
+        services.wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
       } else {
         services.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
       }
@@ -399,12 +501,16 @@ type PictureRef = {
   ppi: number;
   ci: number;
   type: string;
+  cellPath?: CellPathLike;
   headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number };
 };
 
 /** 선택 개체의 속성을 조회/변경 헬퍼 (shape/picture 분기) */
 function getProps(services: import('../types').CommandServices, ref: PictureRef): Record<string, unknown> {
   if (ref.type === 'shape') {
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.getCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci) as unknown as Record<string, unknown>;
+    }
     return services.wasm.getShapeProperties(ref.sec, ref.ppi, ref.ci) as unknown as Record<string, unknown>;
   }
   // [Task #831] 머리말/꼬리말 picture 의 경우 별도 API 호출 (PR #832 의 wasm-bridge).
@@ -418,15 +524,21 @@ function getProps(services: import('../types').CommandServices, ref: PictureRef)
       ref.ci,
     ) as unknown as Record<string, unknown>;
   }
+  if (ref.cellPath && ref.cellPath.length > 0) {
+    return services.wasm.getCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci) as unknown as Record<string, unknown>;
+  }
   return services.wasm.getPictureProperties(ref.sec, ref.ppi, ref.ci) as unknown as Record<string, unknown>;
 }
 
-function setProps(services: import('../types').CommandServices, ref: PictureRef, props: Record<string, unknown>): void {
+function setProps(services: import('../types').CommandServices, ref: PictureRef, props: Record<string, unknown>): any {
   if (ref.type === 'shape') {
-    services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, props);
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.setCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+    }
+    return services.wasm.setShapeProperties(ref.sec, ref.ppi, ref.ci, props);
   } else if (ref.headerFooter) {
     // [Task #831] 머리말/꼬리말 picture setter — 5-tuple lookup 으로 IR 갱신.
-    services.wasm.setHeaderFooterPictureProperties(
+    return services.wasm.setHeaderFooterPictureProperties(
       ref.sec,
       ref.headerFooter.outerParaIdx,
       ref.headerFooter.outerControlIdx,
@@ -435,7 +547,10 @@ function setProps(services: import('../types').CommandServices, ref: PictureRef,
       props,
     );
   } else {
-    services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      return services.wasm.setCellPicturePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
+    }
+    return services.wasm.setPictureProperties(ref.sec, ref.ppi, ref.ci, props);
   }
 }
 

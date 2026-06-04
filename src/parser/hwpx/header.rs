@@ -755,6 +755,8 @@ fn parse_para_shape(
     doc_info: &mut DocInfo,
 ) -> Result<(), HwpxError> {
     let mut ps = ParaShape::default();
+    // OWPML ParaShapeType의 snapToGrid 기본값은 true.
+    ps.attr1 |= 1 << 8;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
@@ -768,6 +770,13 @@ fn parse_para_shape(
                     ps.attr1 |= 1 << 22;
                 } else {
                     ps.attr1 &= !(1 << 22);
+                }
+            }
+            b"snapToGrid" => {
+                if parse_bool(&attr) {
+                    ps.attr1 |= 1 << 8;
+                } else {
+                    ps.attr1 &= !(1 << 8);
                 }
             }
             _ => {}
@@ -1306,9 +1315,20 @@ fn parse_border_fill(
                                 pattern_type: -1,
                                 ..SolidFill::default()
                             };
+                            // [Issue #1172] faceColor="none" 은 "배경 채우기 없음" 을 뜻한다.
+                            // 무늬(hatchStyle) 도 없으면 이 winBrush 는 빈 채우기이므로
+                            // FillType::None 으로 둔다. 종전엔 winBrush 존재만으로 무조건
+                            // Solid 로 처리해 faceColor="none" 배경이 흰색 Solid 로 잘못
+                            // 해석되어, 문단모양/렌더에 의도치 않은 배경이 생겼다.
+                            let mut face_is_none = false;
                             for attr in ce.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"faceColor" => solid.background_color = parse_color(&attr),
+                                    b"faceColor" => {
+                                        if attr_str(&attr).eq_ignore_ascii_case("none") {
+                                            face_is_none = true;
+                                        }
+                                        solid.background_color = parse_color(&attr);
+                                    }
                                     b"hatchColor" => solid.pattern_color = parse_color(&attr),
                                     b"hatchStyle" => {
                                         if let Some(pattern_type) =
@@ -1327,7 +1347,12 @@ fn parse_border_fill(
                                     _ => {}
                                 }
                             }
-                            bf.fill.solid = Some(solid);
+                            // faceColor=none + 무늬 없음 → 채우기 없음
+                            if face_is_none && solid.pattern_type < 0 {
+                                bf.fill.fill_type = FillType::None;
+                            } else {
+                                bf.fill.solid = Some(solid);
+                            }
                         }
                         b"gradation" => {
                             bf.fill.fill_type = FillType::Gradient;
@@ -1393,14 +1418,33 @@ fn parse_border_fill(
                             bf.fill.image = Some(img_fill);
                         }
                         b"img" | b"image" => {
-                            // imgBrush 내부의 이미지 참조
+                            // imgBrush 내부의 이미지 참조.
+                            // [Issue #1156] 쪽 테두리/배경 그림의 "워터마크 효과" 는
+                            // <hc:img> 의 bright/contrast/effect 로 표현된다 (한컴 UI:
+                            // 쪽 테두리/배경 > 그림 > 워터마크 효과). 종전에는
+                            // binaryItemIDRef 만 읽어 bright/contrast/effect 가 손실되어
+                            // 배경 워터마크 반투명 합성이 빠졌다 (SVG/PNG 회귀).
                             if let Some(ref mut img_fill) = bf.fill.image {
                                 for attr in ce.attributes().flatten() {
-                                    if attr.key.as_ref() == b"binaryItemIDRef" {
-                                        let val = attr_str(&attr);
-                                        let num: String =
-                                            val.chars().filter(|c| c.is_ascii_digit()).collect();
-                                        img_fill.bin_data_id = num.parse().unwrap_or(0);
+                                    match attr.key.as_ref() {
+                                        b"binaryItemIDRef" => {
+                                            let val = attr_str(&attr);
+                                            let num: String = val
+                                                .chars()
+                                                .filter(|c| c.is_ascii_digit())
+                                                .collect();
+                                            img_fill.bin_data_id = num.parse().unwrap_or(0);
+                                        }
+                                        b"bright" => img_fill.brightness = parse_i8(&attr),
+                                        b"contrast" => img_fill.contrast = parse_i8(&attr),
+                                        b"effect" => {
+                                            img_fill.effect = match attr_str(&attr).as_str() {
+                                                "GRAY_SCALE" => 1,
+                                                "BLACK_WHITE" => 2,
+                                                _ => 0, // REAL_PIC
+                                            };
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -2048,6 +2092,32 @@ mod tests {
 
         assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 7), 1 << 7);
         assert_eq!(doc_info.para_shapes[1].attr1 & (1 << 7), 0);
+    }
+
+    #[test]
+    fn test_parse_hwpx_para_shape_snap_to_grid_bit() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+    <hh:refList>
+    <hh:paraProperties itemCnt="3">
+      <hh:paraPr id="1" tabPrIDRef="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+      <hh:paraPr id="2" tabPrIDRef="0" snapToGrid="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+      <hh:paraPr id="3" tabPrIDRef="0" snapToGrid="1">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+
+        assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 8), 1 << 8);
+        assert_eq!(doc_info.para_shapes[1].attr1 & (1 << 8), 0);
+        assert_eq!(doc_info.para_shapes[2].attr1 & (1 << 8), 1 << 8);
     }
 
     #[test]

@@ -5,6 +5,7 @@
  */
 import type { CommandServices } from '@/command/types';
 import type { BookmarkInfo } from '@/core/types';
+import { enableDialogDrag } from './dialog-drag';
 
 type SortMode = 'name' | 'position';
 
@@ -77,6 +78,7 @@ export class BookmarkDialog {
     closeBtn.addEventListener('click', () => this.hide());
     titleBar.appendChild(closeBtn);
     this.dialog.appendChild(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
 
     // 본문
     const body = document.createElement('div');

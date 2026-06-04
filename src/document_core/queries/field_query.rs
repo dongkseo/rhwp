@@ -319,6 +319,10 @@ impl DocumentCore {
     }
 
     /// 필드 위치에서 텍스트를 교체한다.
+    ///
+    /// delete_text_at + insert_text_at를 사용하여 char_shapes, line_segs,
+    /// range_tags, char_count 등 모든 메타데이터를 올바르게 시프트한다.
+    /// (직접 para.text 조작 시 메타데이터 불일치로 한컴 "파일 손상" 발생 — #838)
     fn set_field_text_at(
         &mut self,
         location: &FieldLocation,
@@ -336,33 +340,29 @@ impl DocumentCore {
             .ok_or_else(|| HwpError::InvalidField("field_range 인덱스 초과".into()))?
             .clone();
 
-        // 필드 범위 내 텍스트 교체
-        let text_chars: Vec<char> = para.text.chars().collect();
-        let before: String = text_chars[..fr.start_char_idx].iter().collect();
-        let after: String = text_chars[fr.end_char_idx..].iter().collect();
-        para.text = format!("{}{}{}", before, value, after);
+        let start_idx = fr.start_char_idx;
+        let count = fr.end_char_idx.saturating_sub(start_idx);
 
-        // field_range 업데이트
-        let new_end = fr.start_char_idx + value.chars().count();
-        let delta = new_end as isize - fr.end_char_idx as isize;
-
-        // 현재 필드 범위 업데이트
-        if let Some(current_fr) = para.field_ranges.get_mut(field_range_index) {
-            current_fr.end_char_idx = new_end;
+        // 기존 텍스트 삭제 (char_shapes, line_segs, range_tags 등 자동 시프트)
+        if count > 0 {
+            para.delete_text_at(start_idx, count);
         }
 
-        // 이후 필드 범위들의 위치 조정
-        for (i, other_fr) in para.field_ranges.iter_mut().enumerate() {
-            if i == field_range_index {
-                continue;
-            }
-            if other_fr.start_char_idx >= fr.end_char_idx {
-                other_fr.start_char_idx = (other_fr.start_char_idx as isize + delta) as usize;
-                other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
-            }
+        // 새 값 삽입
+        if !value.is_empty() {
+            para.insert_text_at(start_idx, value);
         }
 
-        // char_offsets 재생성: 컨트롤 문자(8 code unit)와 일반 문자(1~2 code unit) 반영
+        // field_ranges 갱신: start와 end를 명시적으로 재설정
+        let new_end = start_idx + value.chars().count();
+        let current_fr = para
+            .field_ranges
+            .get_mut(field_range_index)
+            .ok_or_else(|| HwpError::InvalidField("field_range 인덱스 초과".into()))?;
+        current_fr.start_char_idx = start_idx;
+        current_fr.end_char_idx = new_end;
+
+        // char_offsets 재생성: FIELD_BEGIN/END 갭, 탭 폭, UTF-16 code unit 크기 반영
         rebuild_char_offsets(para);
 
         Ok(())

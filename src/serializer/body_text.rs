@@ -364,7 +364,7 @@ fn serialize_para_header_with_mask(
     w.write_u16(para.line_segs.len() as u16).unwrap();
 
     // instanceId + 추가 바이트: raw_header_extra에서 복원
-    // raw_header_extra[0..5] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2) → 건너뜀
+    // raw_header_extra[0..6] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2) → 건너뜀
     // raw_header_extra[6..] = instanceId(4) + (옵션) 변경추적 UINT16 (2, 5.0.3.2 이상)
     if para.raw_header_extra.len() >= 10 {
         let extra = &para.raw_header_extra[6..];
@@ -507,8 +507,9 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                         code_units.push(cu);
                     }
                 } else {
-                    for _ in 0..7 {
-                        code_units.push(0);
+                    // tab_extended 없을 때: ext[6]=0x0009 마커 필수, 나머지 0
+                    for cu in [0u16, 0, 0, 0, 0, 0, 0x0009] {
+                        code_units.push(cu);
                     }
                 }
                 tab_idx += 1;
@@ -1121,7 +1122,7 @@ mod tests {
     #[test]
     fn test_control_char_code() {
         assert_eq!(
-            control_char_code_and_id(&Control::SectionDef(Box::new(SectionDef::default()))).0,
+            control_char_code_and_id(&Control::SectionDef(Box::default())).0,
             0x0002
         );
         assert_eq!(

@@ -160,6 +160,15 @@ fn test_compose_empty_paragraph() {
     assert!(composed.inline_controls.is_empty());
 }
 
+/// table-vpos-01 page 5의 10/11/12 마커는 CharOverlap 하나에 두 개의
+/// HWP PUA 구성 글자가 들어온다. 텍스트 흐름과 캐럿 이동은 한 글자 폭이어야 한다.
+#[test]
+fn test_char_overlap_multi_component_is_single_advance() {
+    let chars = vec!['\u{F02BA}', '\u{F02C3}'];
+    assert_eq!(decode_pua_overlap_number(&chars), None);
+    assert_eq!(char_overlap_advance_units(&chars), 1);
+}
+
 /// LineSeg 없는 텍스트 문단
 #[test]
 fn test_compose_no_line_segs() {
@@ -215,7 +224,7 @@ fn test_identify_inline_controls_table() {
 
     let para = Paragraph {
         text: "표 앞 텍스트".to_string(),
-        controls: vec![Control::Table(Box::new(Table::default()))],
+        controls: vec![Control::Table(Box::default())],
         ..Default::default()
     };
 

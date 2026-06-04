@@ -277,8 +277,8 @@ fn test_parse_section_with_section_def() {
     ctrl_data.extend_from_slice(&tags::CTRL_SECTION_DEF.to_le_bytes()); // ctrl_id
     ctrl_data.extend_from_slice(&0u32.to_le_bytes()); // flags
     ctrl_data.extend_from_slice(&0i16.to_le_bytes()); // column_spacing
-    ctrl_data.extend_from_slice(&0u16.to_le_bytes()); // vertical_align
-    ctrl_data.extend_from_slice(&0u16.to_le_bytes()); // horizontal_align
+    ctrl_data.extend_from_slice(&1200i16.to_le_bytes()); // line_grid
+    ctrl_data.extend_from_slice(&900i16.to_le_bytes()); // char_grid
     ctrl_data.extend_from_slice(&800u32.to_le_bytes()); // default_tab_spacing
     ctrl_data.extend_from_slice(&0u16.to_le_bytes()); // numbering_id
     ctrl_data.extend_from_slice(&1u16.to_le_bytes()); // page_num
@@ -299,6 +299,8 @@ fn test_parse_section_with_section_def() {
 
     let section = parse_body_text_section(&section_bytes).unwrap();
     assert_eq!(section.section_def.default_tab_spacing, 800);
+    assert_eq!(section.section_def.line_grid, 1200);
+    assert_eq!(section.section_def.char_grid, 900);
     assert_eq!(section.section_def.page_num, 1);
     assert_eq!(section.section_def.page_def.width, 59528);
 }
@@ -407,6 +409,14 @@ fn test_parse_page_border_fill() {
     assert_eq!(pbf.attr, 0x01);
     assert_eq!(pbf.spacing_left, 100);
     assert_eq!(pbf.border_fill_id, 7);
+    assert_eq!(pbf.basis, crate::model::page::PageBorderBasis::BodyBased);
+    assert_eq!(pbf.ui_basis, crate::model::page::PageBorderUiBasis::Page);
+
+    data[0..4].copy_from_slice(&0x00u32.to_le_bytes());
+    let pbf = parse_page_border_fill(&data);
+    assert_eq!(pbf.attr, 0x00);
+    assert_eq!(pbf.basis, crate::model::page::PageBorderBasis::PaperBased);
+    assert_eq!(pbf.ui_basis, crate::model::page::PageBorderUiBasis::Paper);
 }
 
 #[test]

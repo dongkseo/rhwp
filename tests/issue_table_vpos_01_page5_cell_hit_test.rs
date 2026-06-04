@@ -174,6 +174,36 @@ fn page5_inner_11x3_c0_row9_label_cell() {
     assert_nested_inner_cell(&hit, 19);
 }
 
+/// inner 11x3 c=0 row=9 의 10번 글자겹침 마커는 두 개의 PUA 구성 글자로
+/// 저장되지만, 편집 커서는 한 글자 단위로 이동해야 한다.
+#[test]
+fn page5_inner_11x3_char_overlap_marker_advances_one_box() {
+    let doc = load_doc();
+    let path_json = r#"
+        [
+          {"controlIndex":0,"cellIndex":0,"cellParaIndex":1},
+          {"controlIndex":0,"cellIndex":19,"cellParaIndex":0}
+        ]
+    "#;
+    let before_json = doc
+        .get_cursor_rect_by_path(0, 34, path_json, 0)
+        .unwrap_or_else(|e| panic!("cursor before marker failed: {e:?}"));
+    let after_json = doc
+        .get_cursor_rect_by_path(0, 34, path_json, 1)
+        .unwrap_or_else(|e| panic!("cursor after marker failed: {e:?}"));
+    let before: serde_json::Value =
+        serde_json::from_str(&before_json).expect("parse cursor before marker");
+    let after: serde_json::Value =
+        serde_json::from_str(&after_json).expect("parse cursor after marker");
+    let x0 = before["x"].as_f64().expect("before x");
+    let x1 = after["x"].as_f64().expect("after x");
+    let delta = x1 - x0;
+    assert!(
+        delta > 16.0 && delta < 30.0,
+        "CharOverlap cursor advance must cover one full marker box, got {delta:.2}; before={before_json}, after={after_json}"
+    );
+}
+
 // =======================================================================
 // pi=34 inner 11x3 — c=2 column 본문 셀들
 // =======================================================================

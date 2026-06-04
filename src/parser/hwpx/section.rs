@@ -15,7 +15,8 @@ use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply, MasterPage};
 use crate::model::image::{CropInfo, ImageAttr, ImageEffect};
 use crate::model::page::{
-    BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderFill, PageDef,
+    BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
+    PageBorderUiBasis, PageDef,
 };
 use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
 use crate::model::shape::{
@@ -66,6 +67,45 @@ pub fn parse_hwpx_section(xml: &str) -> Result<Section, HwpxError> {
     }
 
     Ok(section)
+}
+
+/// section XML의 `<hp:masterPage idRef="...">` 참조를 문서 순서대로 수집한다.
+pub fn collect_hwpx_section_master_page_refs(xml: &str) -> Result<Vec<String>, HwpxError> {
+    let mut reader = Reader::from_str(xml);
+    let mut refs = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                if local_name(e.name().as_ref()) == b"masterPage" {
+                    push_master_page_id_ref(e, &mut refs);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => {
+                return Err(HwpxError::XmlError(format!(
+                    "section masterPage refs: {}",
+                    e
+                )))
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(refs)
+}
+
+fn push_master_page_id_ref(e: &quick_xml::events::BytesStart, refs: &mut Vec<String>) {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"idRef" {
+            let id_ref = attr_str(&attr);
+            if !id_ref.is_empty() {
+                refs.push(id_ref);
+            }
+        }
+    }
 }
 
 /// masterpage*.xml을 파싱하여 기존 HWP 바탕쪽 모델로 변환한다.
@@ -119,27 +159,55 @@ pub fn parse_hwpx_master_page(xml: &str) -> Result<MasterPage, HwpxError> {
     Ok(master_page)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HwpxMasterPageType {
+    Both,
+    Even,
+    Odd,
+    LastPage,
+    OptionalPage,
+}
+
+fn parse_hwpx_master_page_type(value: &str) -> HwpxMasterPageType {
+    let normalized: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+
+    match normalized.as_str() {
+        "EVEN" => HwpxMasterPageType::Even,
+        "ODD" => HwpxMasterPageType::Odd,
+        "LASTPAGE" => HwpxMasterPageType::LastPage,
+        "OPTIONALPAGE" => HwpxMasterPageType::OptionalPage,
+        _ => HwpxMasterPageType::Both,
+    }
+}
+
 fn parse_master_page_start(e: &quick_xml::events::BytesStart, master_page: &mut MasterPage) {
     let mut is_last_page = false;
     let mut is_optional_page = false;
     let mut page_duplicate: Option<bool> = None;
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"type" => match attr_str(&attr).as_str() {
-                "EVEN" => master_page.apply_to = HeaderFooterApply::Even,
-                "ODD" => master_page.apply_to = HeaderFooterApply::Odd,
-                "LAST_PAGE" => {
-                    is_last_page = true;
-                    master_page.apply_to = HeaderFooterApply::Both;
-                    master_page.is_extension = true;
+            b"type" => {
+                let value = attr_str(&attr);
+                match parse_hwpx_master_page_type(&value) {
+                    HwpxMasterPageType::Even => master_page.apply_to = HeaderFooterApply::Even,
+                    HwpxMasterPageType::Odd => master_page.apply_to = HeaderFooterApply::Odd,
+                    HwpxMasterPageType::LastPage => {
+                        is_last_page = true;
+                        master_page.apply_to = HeaderFooterApply::Both;
+                        master_page.is_extension = true;
+                    }
+                    HwpxMasterPageType::OptionalPage => {
+                        is_optional_page = true;
+                        master_page.apply_to = HeaderFooterApply::Both;
+                        master_page.is_extension = true;
+                    }
+                    HwpxMasterPageType::Both => master_page.apply_to = HeaderFooterApply::Both,
                 }
-                "OPTIONAL_PAGE" => {
-                    is_optional_page = true;
-                    master_page.apply_to = HeaderFooterApply::Both;
-                    master_page.is_extension = true;
-                }
-                _ => master_page.apply_to = HeaderFooterApply::Both,
-            },
+            }
             b"pageDuplicate" => {
                 let duplicate = attr_str(&attr) != "0";
                 page_duplicate = Some(duplicate);
@@ -225,12 +293,16 @@ fn parse_page_pr(e: &quick_xml::events::BytesStart, page: &mut PageDef) {
         match attr.key.as_ref() {
             b"width" => page.width = parse_u32(&attr),
             b"height" => page.height = parse_u32(&attr),
-            // HWPX에서는 landscape 플래그를 false로 유지한다.
-            // HWPX의 width/height는 이미 실제 용지 방향대로 저장되어 있어
-            // 렌더러가 추가로 교환(swap)할 필요가 없다.
-            // HWP 바이너리는 항상 짧은변=width, 긴변=height로 저장하고
-            // landscape=true일 때 렌더러가 교환하지만, HWPX는 다른 규약을 따른다.
-            b"landscape" => { /* 무시: landscape = false 유지 */ }
+            // [#1166] HWPX 용지 방향. OWPML landscape 값:
+            //   WIDELY  = 세로(Portrait)  → landscape=false
+            //   NARROWLY= 가로(Landscape) → landscape=true
+            // (hwplib ForSecPr: Portrait→WIDELY, Landscape→NARROWLY 매핑 권위.)
+            // width/height 는 HWP 바이너리와 동일하게 짧은변=width/긴변=height 로
+            // 저장되고, landscape=true 일 때 렌더러가 swap 한다(page.rs). 종전엔
+            // landscape 를 무시해 가로 용지 HWPX 가 항상 세로로 렌더되는 결함.
+            b"landscape" => {
+                page.landscape = attr_str(&attr).eq_ignore_ascii_case("NARROWLY");
+            }
             b"gutterType" => {
                 let value = attr_str(&attr);
                 let binding_code = match value.as_str() {
@@ -245,6 +317,16 @@ fn parse_page_pr(e: &quick_xml::events::BytesStart, page: &mut PageDef) {
                     _ => BindingMethod::SingleSided,
                 };
             }
+            _ => {}
+        }
+    }
+}
+
+fn parse_grid(e: &quick_xml::events::BytesStart, sec_def: &mut SectionDef) {
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"lineGrid" => sec_def.line_grid = parse_i32(&attr) as i16,
+            b"charGrid" => sec_def.char_grid = parse_i32(&attr) as i16,
             _ => {}
         }
     }
@@ -645,7 +727,7 @@ fn parse_paragraph(
     if para.line_segs.is_empty() {
         para.line_segs.push(LineSeg {
             text_start: 0,
-            tag: 0x00060000,
+            tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
             ..Default::default()
         });
     }
@@ -682,6 +764,7 @@ fn parse_sec_pr_children(
                 match local {
                     b"pagePr" => parse_page_pr(e, &mut sec_def.page_def),
                     b"margin" => parse_page_margin(e, &mut sec_def.page_def),
+                    b"grid" => parse_grid(e, sec_def),
                     b"colPr" => {
                         col_def = Some(parse_col_pr_with_children(e, reader)?);
                     }
@@ -708,6 +791,7 @@ fn parse_sec_pr_children(
                 match local {
                     b"pagePr" => parse_page_pr(e, &mut sec_def.page_def),
                     b"margin" => parse_page_margin(e, &mut sec_def.page_def),
+                    b"grid" => parse_grid(e, sec_def),
                     b"colPr" => {
                         col_def = Some(parse_col_pr(e));
                     }
@@ -816,12 +900,10 @@ fn parse_note_pr_children(
                                     }
                                 }
                                 b"width" => {
-                                    // "0.12 mm" 형식 — 0.1mm 단위로 변환 (정답지 0.12mm → 1)
+                                    // 미주/각주 구분선 굵기도 테두리 굵기 raw 코드와 같은 표를 쓴다.
+                                    // 예: 0.12mm → 1, 0.7mm → 9.
                                     if let Ok(s) = std::str::from_utf8(&attr.value) {
-                                        let s = s.trim().trim_end_matches("mm").trim();
-                                        if let Ok(mm) = s.parse::<f32>() {
-                                            shape.separator_line_width = (mm * 10.0).round() as u8;
-                                        }
+                                        shape.separator_line_width = parse_hwpx_line_width(s);
                                     }
                                 }
                                 b"color" => {
@@ -885,11 +967,62 @@ fn parse_note_pr_children(
                     }
                     b"numbering" => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"newNum" {
-                                if let Ok(s) = std::str::from_utf8(&attr.value) {
-                                    if let Ok(v) = s.parse::<u16>() {
-                                        shape.start_number = v;
+                            match attr.key.as_ref() {
+                                b"type" => {
+                                    if let Ok(s) = std::str::from_utf8(&attr.value) {
+                                        let (numbering, attr_bits) = match s {
+                                            "CONTINUOUS" | "continue" => (
+                                                crate::model::footnote::FootnoteNumbering::Continue,
+                                                0u32,
+                                            ),
+                                            "ON_SECTION" | "RESTART_SECTION" | "restartSection" => (
+                                                crate::model::footnote::FootnoteNumbering::RestartSection,
+                                                1u32,
+                                            ),
+                                            "ON_PAGE" | "RESTART_PAGE" | "restartPage" => (
+                                                crate::model::footnote::FootnoteNumbering::RestartPage,
+                                                2u32,
+                                            ),
+                                            _ => continue,
+                                        };
+                                        shape.numbering = numbering;
+                                        shape.attr = (shape.attr & !(0x03 << 8)) | (attr_bits << 8);
                                     }
+                                }
+                                b"newNum" => {
+                                    if let Ok(s) = std::str::from_utf8(&attr.value) {
+                                        if let Ok(v) = s.parse::<u16>() {
+                                            shape.start_number = v;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"placement" => {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"place" {
+                                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                                    let (placement, attr_bits) = match s {
+                                        "END_OF_SECTION" | "BELOW_TEXT" | "sectionEnd"
+                                        | "belowText" => (
+                                            crate::model::footnote::FootnotePlacement::BelowText,
+                                            1u32,
+                                        ),
+                                        "RIGHT_COLUMN" | "rightColumn" => (
+                                            crate::model::footnote::FootnotePlacement::RightColumn,
+                                            2u32,
+                                        ),
+                                        "END_OF_DOCUMENT" | "EACH_COLUMN" | "documentEnd"
+                                        | "eachColumn" => (
+                                            crate::model::footnote::FootnotePlacement::EachColumn,
+                                            0u32,
+                                        ),
+                                        _ => continue,
+                                    };
+                                    shape.placement = placement;
+                                    shape.attr = (shape.attr & !(0x03 << 8)) | (attr_bits << 8);
                                 }
                             }
                         }
@@ -986,8 +1119,15 @@ fn parse_page_border_fill_empty(e: &quick_xml::events::BytesStart) -> PageBorder
         header_inside,
         footer_inside,
     );
-    // [Task #1006] HWPX: PR #956 한컴 viewer 정합 — paper-based.
-    page_border_fill.basis = crate::model::page::PageBorderBasis::PaperBased;
+    page_border_fill.ui_basis = if text_border.eq_ignore_ascii_case("PAPER") {
+        // Task #1129 Stage 28: textBorder=PAPER is shown as page basis in the
+        // dialog and renders from the page/body area edge.
+        page_border_fill.basis = PageBorderBasis::BodyBased;
+        PageBorderUiBasis::Page
+    } else {
+        page_border_fill.basis = PageBorderBasis::PaperBased;
+        PageBorderUiBasis::Paper
+    };
     page_border_fill
 }
 
@@ -1416,6 +1556,14 @@ fn parse_table(
                     _ => crate::model::shape::TextWrap::Square,
                 };
             }
+            b"textFlow" => {
+                table.common.text_flow = match attr_str(&attr).as_str() {
+                    "LEFT_ONLY" => crate::model::shape::TextFlow::LeftOnly,
+                    "RIGHT_ONLY" => crate::model::shape::TextFlow::RightOnly,
+                    "LARGEST_ONLY" => crate::model::shape::TextFlow::LargestOnly,
+                    _ => crate::model::shape::TextFlow::BothSides,
+                };
+            }
             _ => {}
         }
     }
@@ -1658,8 +1806,14 @@ fn pack_hwpx_common_obj_attr(common: &CommonObjAttr) -> u32 {
     if common.allow_overlap {
         attr |= 1 << 14;
     }
+    if common.size_protect {
+        attr |= 1 << 20;
+    }
     if common.hwp5_gen_shape_attr_bit26 {
         attr |= 1 << 26;
+    }
+    if common.hwp5_gen_shape_attr_bit28 {
+        attr |= 1 << 28;
     }
 
     attr |= (match common.vert_rel_to {
@@ -1705,6 +1859,12 @@ fn pack_hwpx_common_obj_attr(common: &CommonObjAttr) -> u32 {
         TextWrap::BehindText => 2,
         TextWrap::InFrontOfText => 3,
     }) << 21;
+    attr |= (match common.text_flow {
+        crate::model::shape::TextFlow::BothSides => 0,
+        crate::model::shape::TextFlow::LeftOnly => 1,
+        crate::model::shape::TextFlow::RightOnly => 2,
+        crate::model::shape::TextFlow::LargestOnly => 3,
+    }) << 24;
 
     attr
 }
@@ -1988,6 +2148,14 @@ fn parse_picture(
                     "BEHIND_TEXT" => TextWrap::BehindText,
                     "IN_FRONT_OF_TEXT" => TextWrap::InFrontOfText,
                     _ => TextWrap::Square,
+                };
+            }
+            b"textFlow" => {
+                common.text_flow = match attr_str(&attr).as_str() {
+                    "LEFT_ONLY" => crate::model::shape::TextFlow::LeftOnly,
+                    "RIGHT_ONLY" => crate::model::shape::TextFlow::RightOnly,
+                    "LARGEST_ONLY" => crate::model::shape::TextFlow::LargestOnly,
+                    _ => crate::model::shape::TextFlow::BothSides,
                 };
             }
             b"instid" => picture_instance_id = parse_u32(&attr),
@@ -2373,6 +2541,14 @@ fn parse_object_element_attrs(
                     _ => TextWrap::Square,
                 };
             }
+            b"textFlow" => {
+                common.text_flow = match attr_str(&attr).as_str() {
+                    "LEFT_ONLY" => crate::model::shape::TextFlow::LeftOnly,
+                    "RIGHT_ONLY" => crate::model::shape::TextFlow::RightOnly,
+                    "LARGEST_ONLY" => crate::model::shape::TextFlow::LargestOnly,
+                    _ => crate::model::shape::TextFlow::BothSides,
+                };
+            }
             b"instid" => ids.instid = parse_u32(&attr),
             b"groupLevel" => shape_attr.group_level = attr_str(&attr).parse().unwrap_or(0),
             b"ratio" => ids.round_rate = parse_u8(&attr).min(100),
@@ -2417,6 +2593,7 @@ fn parse_object_layout_child(
                     b"heightRelTo" => {
                         common.height_criterion = parse_size_criterion(&attr_str(&attr), false);
                     }
+                    b"protect" => common.size_protect = parse_bool(&attr),
                     _ => {}
                 }
             }
@@ -3203,6 +3380,29 @@ fn parse_shape_object(
                         }
                         polygon_points.push(crate::model::Point { x: px, y: py });
                     }
+                    // [#1200] curve 의 가변 꼭짓점이 `<hp:seg x1 y1 x2 y2>` (점-대-점 chain)
+                    // 으로 인코딩된 경우. `<hc:pt>` 미사용 curve 는 이 경로로 점을 채운다.
+                    // seg 는 제어점이 아닌 sampled 꼭짓점이므로 폴리라인(LineTo)으로 재구성:
+                    // 첫 seg 의 시작점 1회 + 각 seg 의 끝점.
+                    b"seg" => {
+                        let mut x1: i32 = 0;
+                        let mut y1: i32 = 0;
+                        let mut x2: i32 = 0;
+                        let mut y2: i32 = 0;
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"x1" => x1 = parse_i32(&attr),
+                                b"y1" => y1 = parse_i32(&attr),
+                                b"x2" => x2 = parse_i32(&attr),
+                                b"y2" => y2 = parse_i32(&attr),
+                                _ => {}
+                            }
+                        }
+                        if polygon_points.is_empty() {
+                            polygon_points.push(crate::model::Point { x: x1, y: y1 });
+                        }
+                        polygon_points.push(crate::model::Point { x: x2, y: y2 });
+                    }
                     b"startPt" => {
                         for attr in ce.attributes().flatten() {
                             match attr.key.as_ref() {
@@ -3869,6 +4069,16 @@ fn parse_ctrl_footnote(
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"number" => note.number = parse_u16(&attr),
+            // [#1199] prefixChar(코드포인트 숫자) → before_decoration_letter
+            // 누락 시 0 유지(접두 없음). 예: "47928" = 0xBB38 '문'
+            b"prefixChar" => {
+                if let Ok(v) = std::str::from_utf8(&attr.value)
+                    .unwrap_or("")
+                    .parse::<u16>()
+                {
+                    note.before_decoration_letter = v;
+                }
+            }
             b"suffixChar" => {
                 if let Ok(v) = std::str::from_utf8(&attr.value)
                     .unwrap_or("")
@@ -3903,6 +4113,16 @@ fn parse_ctrl_endnote(
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"number" => note.number = parse_u16(&attr),
+            // [#1199] prefixChar(코드포인트 숫자) → before_decoration_letter
+            // 누락 시 0 유지(접두 없음). 예: "47928" = 0xBB38 '문'
+            b"prefixChar" => {
+                if let Ok(v) = std::str::from_utf8(&attr.value)
+                    .unwrap_or("")
+                    .parse::<u16>()
+                {
+                    note.before_decoration_letter = v;
+                }
+            }
             b"suffixChar" => {
                 if let Ok(v) = std::str::from_utf8(&attr.value)
                     .unwrap_or("")
@@ -4800,10 +5020,15 @@ fn parse_hp_chart_element(
     use crate::model::shape::OleShape;
 
     let mut common = CommonObjAttr::default();
+    common.hwp5_gen_shape_attr_bit26 = true;
     let mut chart_num: u16 = 0;
+    let mut numbering_type_picture = false;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
+            b"numberingType" => {
+                numbering_type_picture = attr_str(&attr).eq_ignore_ascii_case("PICTURE");
+            }
             b"zOrder" => common.z_order = parse_i32(&attr),
             b"textWrap" => {
                 common.text_wrap = match attr_str(&attr).as_str() {
@@ -4814,6 +5039,14 @@ fn parse_hp_chart_element(
                     "BEHIND_TEXT" => TextWrap::BehindText,
                     "IN_FRONT_OF_TEXT" => TextWrap::InFrontOfText,
                     _ => TextWrap::Square,
+                };
+            }
+            b"textFlow" => {
+                common.text_flow = match attr_str(&attr).as_str() {
+                    "LEFT_ONLY" => crate::model::shape::TextFlow::LeftOnly,
+                    "RIGHT_ONLY" => crate::model::shape::TextFlow::RightOnly,
+                    "LARGEST_ONLY" => crate::model::shape::TextFlow::LargestOnly,
+                    _ => crate::model::shape::TextFlow::BothSides,
                 };
             }
             b"chartIDRef" => {
@@ -4828,6 +5061,10 @@ fn parse_hp_chart_element(
     }
 
     parse_common_shape_children(reader, &mut common, b"chart")?;
+    if numbering_type_picture {
+        common.hwp5_gen_shape_attr_bit28 = true;
+    }
+    common.attr = pack_hwpx_common_obj_attr(&common);
 
     if chart_num == 0 {
         return Ok(None);
@@ -4838,6 +5075,7 @@ fn parse_hp_chart_element(
     ole.bin_data_id = 60000u32 + chart_num as u32;
     ole.extent_x = 7200;
     ole.extent_y = 7200;
+    apply_hwpx_ole_shape_component_contract(&mut ole);
     Ok(Some(Control::Shape(Box::new(ShapeObject::Ole(Box::new(
         ole,
     ))))))
@@ -4851,10 +5089,15 @@ fn parse_hp_ole_element(
     use crate::model::shape::OleShape;
 
     let mut common = CommonObjAttr::default();
+    common.hwp5_gen_shape_attr_bit26 = true;
     let mut bin_id: u32 = 0;
+    let mut numbering_type_picture = false;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
+            b"numberingType" => {
+                numbering_type_picture = attr_str(&attr).eq_ignore_ascii_case("PICTURE");
+            }
             b"zOrder" => common.z_order = parse_i32(&attr),
             b"textWrap" => {
                 common.text_wrap = match attr_str(&attr).as_str() {
@@ -4865,6 +5108,14 @@ fn parse_hp_ole_element(
                     "BEHIND_TEXT" => TextWrap::BehindText,
                     "IN_FRONT_OF_TEXT" => TextWrap::InFrontOfText,
                     _ => TextWrap::Square,
+                };
+            }
+            b"textFlow" => {
+                common.text_flow = match attr_str(&attr).as_str() {
+                    "LEFT_ONLY" => crate::model::shape::TextFlow::LeftOnly,
+                    "RIGHT_ONLY" => crate::model::shape::TextFlow::RightOnly,
+                    "LARGEST_ONLY" => crate::model::shape::TextFlow::LargestOnly,
+                    _ => crate::model::shape::TextFlow::BothSides,
                 };
             }
             b"binaryItemIDRef" => {
@@ -4878,15 +5129,51 @@ fn parse_hp_ole_element(
     }
 
     parse_common_shape_children(reader, &mut common, b"ole")?;
+    if numbering_type_picture {
+        common.hwp5_gen_shape_attr_bit28 = true;
+    }
+    common.attr = pack_hwpx_common_obj_attr(&common);
 
     let mut ole = OleShape::default();
     ole.common = common;
     ole.bin_data_id = bin_id;
     ole.extent_x = 7200;
     ole.extent_y = 7200;
+    apply_hwpx_ole_shape_component_contract(&mut ole);
     Ok(Some(Control::Shape(Box::new(ShapeObject::Ole(Box::new(
         ole,
     ))))))
+}
+
+fn apply_hwpx_ole_shape_component_contract(ole: &mut crate::model::shape::OleShape) {
+    let extent_w = if ole.extent_x > 0 {
+        ole.extent_x as u32
+    } else {
+        7200
+    };
+    let extent_h = if ole.extent_y > 0 {
+        ole.extent_y as u32
+    } else {
+        7200
+    };
+    let shape_attr = &mut ole.drawing.shape_attr;
+    shape_attr.ctrl_id = tags::SHAPE_OLE_ID;
+    shape_attr.is_two_ctrl_id = true;
+    if shape_attr.local_file_version == 0 {
+        shape_attr.local_file_version = 1;
+    }
+    if shape_attr.original_width == 0 {
+        shape_attr.original_width = extent_w;
+    }
+    if shape_attr.original_height == 0 {
+        shape_attr.original_height = extent_h;
+    }
+    if shape_attr.current_width == 0 {
+        shape_attr.current_width = shape_attr.original_width;
+    }
+    if shape_attr.current_height == 0 {
+        shape_attr.current_height = shape_attr.original_height;
+    }
 }
 
 /// `<hp:sz>`, `<hp:pos>`, `<hp:outMargin>` 등 공통 자식 요소를 공통 속성에 반영한다.
@@ -4907,6 +5194,7 @@ fn parse_common_shape_children(
                             match attr.key.as_ref() {
                                 b"width" => common.width = parse_u32(&attr),
                                 b"height" => common.height = parse_u32(&attr),
+                                b"protect" => common.size_protect = parse_bool(&attr),
                                 _ => {}
                             }
                         }
@@ -4950,6 +5238,8 @@ fn parse_common_shape_children(
                                 b"vertOffset" => common.vertical_offset = parse_u32(&attr),
                                 b"horzOffset" => common.horizontal_offset = parse_u32(&attr),
                                 b"treatAsChar" => common.treat_as_char = parse_bool(&attr),
+                                b"flowWithText" => common.flow_with_text = parse_bool(&attr),
+                                b"allowOverlap" => common.allow_overlap = parse_bool(&attr),
                                 _ => {}
                             }
                         }
@@ -5053,6 +5343,212 @@ mod tests {
             850
         );
         assert_eq!(section.section_def.endnote_shape.note_spacing, 567);
+        assert_eq!(
+            section.section_def.endnote_shape.separator_line_width, 1,
+            "HWPX noteLine width도 공통 선 굵기 코드표를 사용해야 함"
+        );
+        assert_eq!(
+            section.section_def.endnote_shape.placement,
+            crate::model::footnote::FootnotePlacement::EachColumn
+        );
+    }
+
+    #[test]
+    fn test_parse_endnote_placement_end_of_section() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" outlineShapeIDRef="1" masterPageCnt="0">
+        <hp:endNotePr>
+          <hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>
+          <hp:noteLine length="0" type="NONE" width="0.12 mm" color="#000000"/>
+          <hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/>
+          <hp:numbering type="CONTINUOUS" newNum="1"/>
+          <hp:placement place="END_OF_SECTION" beneathText="0"/>
+        </hp:endNotePr>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+
+        let section = parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(
+            section.section_def.endnote_shape.placement,
+            crate::model::footnote::FootnotePlacement::BelowText
+        );
+        assert_eq!((section.section_def.endnote_shape.attr >> 8) & 0x03, 1);
+    }
+
+    #[test]
+    fn test_parse_endnote_numbering_restart_section() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL" spaceColumns="1134" tabStop="8000" outlineShapeIDRef="1" masterPageCnt="0">
+        <hp:endNotePr>
+          <hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>
+          <hp:noteLine length="0" type="NONE" width="0.12 mm" color="#000000"/>
+          <hp:noteSpacing betweenNotes="0" belowLine="567" aboveLine="850"/>
+          <hp:numbering type="ON_SECTION" newNum="5"/>
+        </hp:endNotePr>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+
+        let section = parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(
+            section.section_def.endnote_shape.numbering,
+            crate::model::footnote::FootnoteNumbering::RestartSection
+        );
+        assert_eq!(section.section_def.endnote_shape.start_number, 5);
+        assert_eq!((section.section_def.endnote_shape.attr >> 8) & 0x03, 1);
+    }
+
+    /// [#1199] HWPX 미주/각주 ctrl 의 prefixChar(코드포인트 숫자) 가
+    /// before_decoration_letter 로 매핑되어야 한다. 누락 시 마커 접두문자('문')가 탈락.
+    #[test]
+    fn test_parse_note_prefix_char_maps_to_before_decoration_letter() {
+        // prefixChar="47928"(0xBB38 '문'), suffixChar="65289"(0xFF09 '）')
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:ctrl>
+        <hp:endNote number="1" prefixChar="47928" suffixChar="65289" instId="100">
+          <hp:subList>
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>note body</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:endNote>
+      </hp:ctrl>
+      <hp:ctrl>
+        <hp:footNote number="1" prefixChar="47928" suffixChar="65289" instId="200">
+          <hp:subList>
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>note body</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:footNote>
+      </hp:ctrl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let controls: Vec<&Control> = section
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .collect();
+
+        let endnote = controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Endnote(n) => Some(n),
+                _ => None,
+            })
+            .expect("endnote ctrl");
+        assert_eq!(
+            endnote.before_decoration_letter, 47928,
+            "endnote prefixChar"
+        );
+        assert_eq!(endnote.after_decoration_letter, 65289, "endnote suffixChar");
+
+        let footnote = controls
+            .iter()
+            .find_map(|c| match c {
+                Control::Footnote(n) => Some(n),
+                _ => None,
+            })
+            .expect("footnote ctrl");
+        assert_eq!(
+            footnote.before_decoration_letter, 47928,
+            "footnote prefixChar"
+        );
+        assert_eq!(
+            footnote.after_decoration_letter, 65289,
+            "footnote suffixChar"
+        );
+    }
+
+    /// [#1199] prefixChar 속성이 없으면 before_decoration_letter 는 0(접두 없음) 유지 — 회귀 방지.
+    #[test]
+    fn test_parse_note_without_prefix_char_keeps_zero_before_letter() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:ctrl>
+        <hp:endNote number="1" suffixChar="41" instId="100">
+          <hp:subList>
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>x</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:endNote>
+      </hp:ctrl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let endnote = section
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Endnote(n) => Some(n),
+                _ => None,
+            })
+            .expect("endnote ctrl");
+        assert_eq!(endnote.before_decoration_letter, 0);
+        assert_eq!(endnote.after_decoration_letter, 41); // ')'
+    }
+
+    /// [#1200] curve 도형의 geometry 가 `<hp:seg x1 y1 x2 y2>` (점-대-점 chain)
+    /// 으로 인코딩된 경우 CurveShape.points 가 채워져야 한다. 누락 시 외곽선 미렌더.
+    #[test]
+    fn test_parse_curve_seg_populates_points() {
+        // seg chain: (10,10)->(90,10)->(90,90)->(10,10) (폐곡선)
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:curve id="0" zOrder="0" numberingType="NONE" textWrap="TOP_AND_BOTTOM" textFlow="BOTH_SIDES" lock="0" href="" groupLevel="0" instid="1">
+        <hp:offset x="0" y="0"/>
+        <hp:orgSz width="100" height="100"/>
+        <hp:curSz width="100" height="100"/>
+        <hp:lineShape color="#000000" width="113" style="SOLID"/>
+        <hp:seg type="LINE" x1="10" y1="10" x2="90" y2="10"/>
+        <hp:seg type="LINE" x1="90" y1="10" x2="90" y2="90"/>
+        <hp:seg type="LINE" x1="90" y1="90" x2="10" y2="10"/>
+      </hp:curve>
+    </hp:run>
+  </hp:p>
+</hs:sec>"##;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let curve = section
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Shape(s) => match s.as_ref() {
+                    crate::model::shape::ShapeObject::Curve(cv) => Some(cv),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("curve shape");
+
+        // 첫 seg 시작점 + 각 seg 끝점 = 4점 chain
+        let pts: Vec<(i32, i32)> = curve.points.iter().map(|p| (p.x, p.y)).collect();
+        assert_eq!(pts, vec![(10, 10), (90, 10), (90, 90), (10, 10)]);
     }
 
     #[test]
@@ -5078,6 +5574,66 @@ mod tests {
             BindingMethod::DuplexSided
         );
         assert_eq!(section.section_def.page_def.attr & (0x03 << 1), 0x02);
+    }
+
+    #[test]
+    fn test_parse_page_border_fill_basis_from_text_border() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL">
+        <hp:pageBorderFill type="BOTH" borderFillIDRef="1" textBorder="CONTENT" fillArea="PAPER">
+          <hp:offset left="1417" right="1417" top="1417" bottom="1417"/>
+        </hp:pageBorderFill>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        assert_eq!(section.section_def.page_border_fill.attr & 0x01, 0);
+        assert_eq!(
+            section.section_def.page_border_fill.basis,
+            PageBorderBasis::PaperBased
+        );
+        assert_eq!(
+            section.section_def.page_border_fill.ui_basis,
+            PageBorderUiBasis::Paper
+        );
+
+        let xml = xml.replace(r#"textBorder="CONTENT""#, r#"textBorder="PAPER""#);
+        let section = parse_hwpx_section(&xml).unwrap();
+        assert_eq!(section.section_def.page_border_fill.attr & 0x01, 0x01);
+        assert_eq!(
+            section.section_def.page_border_fill.basis,
+            PageBorderBasis::BodyBased
+        );
+        assert_eq!(
+            section.section_def.page_border_fill.ui_basis,
+            PageBorderUiBasis::Page
+        );
+    }
+
+    #[test]
+    fn test_parse_section_grid_preserves_line_and_char_grid() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:secPr textDirection="HORIZONTAL">
+        <hp:grid lineGrid="1200" charGrid="900" wonggojiFormat="0"/>
+      </hp:secPr>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+
+        assert_eq!(section.section_def.line_grid, 1200);
+        assert_eq!(section.section_def.char_grid, 900);
     }
 
     #[test]
@@ -5519,6 +6075,127 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_hwpx_section_master_page_refs() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:masterPage idRef="masterpage0"/>
+  <hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>body</hp:t></hp:run>
+  </hp:p>
+  <masterPage idRef="masterpage1"/>
+</hs:sec>"#;
+
+        let refs = collect_hwpx_section_master_page_refs(xml).unwrap();
+        assert_eq!(refs, vec!["masterpage0", "masterpage1"]);
+    }
+
+    #[test]
+    fn test_collect_hwpx_section_master_page_refs_ignores_root_masterpage_without_id_ref() {
+        let xml = r#"<masterPage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+            id="masterpage0" type="EVEN">
+  <hp:subList textWidth="1000" textHeight="2000"/>
+</masterPage>"#;
+
+        let refs = collect_hwpx_section_master_page_refs(xml).unwrap();
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hwpx_master_page_type_accepts_official_and_sample_spellings() {
+        assert_eq!(
+            parse_hwpx_master_page_type("BOTH"),
+            HwpxMasterPageType::Both
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("Both"),
+            HwpxMasterPageType::Both
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("both"),
+            HwpxMasterPageType::Both
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("EVEN"),
+            HwpxMasterPageType::Even
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("Even"),
+            HwpxMasterPageType::Even
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("even"),
+            HwpxMasterPageType::Even
+        );
+        assert_eq!(parse_hwpx_master_page_type("ODD"), HwpxMasterPageType::Odd);
+        assert_eq!(parse_hwpx_master_page_type("Odd"), HwpxMasterPageType::Odd);
+        assert_eq!(parse_hwpx_master_page_type("odd"), HwpxMasterPageType::Odd);
+        assert_eq!(
+            parse_hwpx_master_page_type("LAST_PAGE"),
+            HwpxMasterPageType::LastPage
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("LastPage"),
+            HwpxMasterPageType::LastPage
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("lastPage"),
+            HwpxMasterPageType::LastPage
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("OPTIONAL_PAGE"),
+            HwpxMasterPageType::OptionalPage
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("OptionalPage"),
+            HwpxMasterPageType::OptionalPage
+        );
+        assert_eq!(
+            parse_hwpx_master_page_type("optionalPage"),
+            HwpxMasterPageType::OptionalPage
+        );
+    }
+
+    #[test]
+    fn test_parse_master_page_mixed_case_type_attrs() {
+        fn parse_type(type_value: &str) -> MasterPage {
+            let xml = format!(
+                r#"<masterPage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+            type="{type_value}" pageNumber="4" pageDuplicate="0">
+  <hp:subList textWidth="1000" textHeight="2000" hasTextRef="0" hasNumRef="0"/>
+</masterPage>"#
+            );
+            parse_hwpx_master_page(&xml).unwrap()
+        }
+
+        let both = parse_type("Both");
+        assert_eq!(both.apply_to, HeaderFooterApply::Both);
+        assert!(!both.is_extension);
+
+        let even = parse_type("Even");
+        assert_eq!(even.apply_to, HeaderFooterApply::Even);
+        assert!(!even.is_extension);
+
+        let odd = parse_type("odd");
+        assert_eq!(odd.apply_to, HeaderFooterApply::Odd);
+        assert!(!odd.is_extension);
+
+        let last_page = parse_type("LastPage");
+        assert_eq!(last_page.apply_to, HeaderFooterApply::Both);
+        assert!(last_page.is_extension);
+        assert!(last_page.overlap);
+        assert!(last_page.replace_base);
+        assert_eq!(last_page.ext_flags, 0x0003);
+
+        let optional_page = parse_type("optionalPage");
+        assert_eq!(optional_page.apply_to, HeaderFooterApply::Both);
+        assert!(optional_page.is_extension);
+        assert!(optional_page.overlap);
+        assert!(!optional_page.replace_base);
+        assert_eq!(optional_page.ext_flags, 0x0007);
+    }
+
+    #[test]
     fn test_parse_master_page_last_page_extension() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <masterPage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -5597,6 +6274,43 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_rect_preserves_size_protect() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p id="0" paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:rect id="1" zOrder="0" textWrap="SQUARE" textFlow="RIGHT_ONLY">
+        <hp:drawText>
+          <hp:subList vertAlign="CENTER">
+            <hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>기</hp:t></hp:run></hp:p>
+          </hp:subList>
+        </hp:drawText>
+        <hp:sz width="2600" height="2600" protect="1"/>
+        <hp:pos treatAsChar="0" flowWithText="1" allowOverlap="1" vertRelTo="PARA" horzRelTo="PARA"/>
+      </hp:rect>
+      <hp:t/>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let Control::Shape(shape) = &section.paragraphs[0].controls[0] else {
+            panic!("expected shape control");
+        };
+        let ShapeObject::Rectangle(rect) = shape.as_ref() else {
+            panic!("expected rectangle shape");
+        };
+        assert!(rect.common.size_protect);
+        assert!(rect.common.flow_with_text);
+        assert!(rect.common.allow_overlap);
+        assert_eq!(
+            rect.common.text_flow,
+            crate::model::shape::TextFlow::RightOnly
+        );
+    }
+
+    #[test]
     fn test_task1124_col_pr_parses_col_line() {
         let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
 <hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -5642,6 +6356,7 @@ mod tests {
         assert_eq!(parse_hwpx_line_width("0.1 mm"), 0);
         assert_eq!(parse_hwpx_line_width("0.12 mm"), 1);
         assert_eq!(parse_hwpx_line_width("0.4 mm"), 6);
+        assert_eq!(parse_hwpx_line_width("0.7 mm"), 9);
         assert_eq!(parse_hwpx_line_width("5.0 mm"), 15);
     }
 

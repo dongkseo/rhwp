@@ -11,7 +11,7 @@ import {
   type NavigationAction,
   type NavigationKeyInput,
 } from './navigation-keymap';
-import type { DocumentPosition } from '@/core/types';
+import type { DocumentPosition, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 
 const RHWP_CLIPBOARD_MARKER_RE = /<!--\s*rhwp-studio-clipboard:([A-Za-z0-9._:-]+)\s*-->/;
@@ -60,6 +60,28 @@ function hasCurrentRhwpClipboardMarker(self: any, html: string): boolean {
 
 function isNestedCellPosition(pos: DocumentPosition): boolean {
   return pos.parentParaIndex !== undefined && (pos.cellPath?.length ?? 0) > 1;
+}
+
+type PictureDeleteRef = {
+  sec: number;
+  ppi: number;
+  ci: number;
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  cellPath?: CellPathLike;
+};
+
+function deleteSelectedObject(wasm: WasmBridge, ref: PictureDeleteRef): void {
+  if (ref.type === 'image') {
+    if (ref.cellPath && ref.cellPath.length > 0) {
+      wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+    } else {
+      wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+    }
+  } else if (ref.type === 'equation') {
+    wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
+  } else {
+    wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
+  }
 }
 
 function toNavigationKeyInput(e: KeyboardEvent): NavigationKeyInput {
@@ -118,6 +140,31 @@ function handleNavigationShortcut(this: any, e: KeyboardEvent): boolean {
   return false;
 }
 
+function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentPosition {
+  const newPos: DocumentPosition = {
+    sectionIndex: pos.sectionIndex,
+    paragraphIndex: parsed.paraIdx ?? pos.paragraphIndex,
+    charOffset: parsed.charOffset ?? pos.charOffset,
+  };
+
+  if (pos.parentParaIndex !== undefined) {
+    const nextCellParaIndex = parsed.cellParaIdx ?? parsed.cellParaIndex ?? pos.cellParaIndex;
+    newPos.parentParaIndex = pos.parentParaIndex;
+    newPos.controlIndex = pos.controlIndex;
+    newPos.cellIndex = pos.cellIndex;
+    newPos.cellParaIndex = nextCellParaIndex;
+    if (pos.cellPath) {
+      newPos.cellPath = pos.cellPath.map((entry, index) =>
+        index === pos.cellPath!.length - 1
+          ? { ...entry, cellParaIndex: nextCellParaIndex ?? entry.cellParaIndex }
+          : entry,
+      );
+    }
+  }
+
+  return newPos;
+}
+
 function pastePlainText(this: any, text: string, hasSelection: boolean): void {
   if (hasSelection) {
     this.deleteSelection();
@@ -174,13 +221,21 @@ async function convertToPngBlob(data: Uint8Array, mime: string): Promise<Blob> {
   }
 }
 
+/** [Task #1161] 선택된 picture ref 의 cellPath 를 native cellPathJson 인자로 변환.
+ * 셀/글상자 밖 picture(본문)는 빈 문자열 → native 가 본문 경로로 처리. */
+export function pictureCellPathJson(
+  ref: { cellPath?: Array<{ controlIndex: number; cellIndex: number; cellParaIndex: number }> } | null,
+): string {
+  return ref && ref.cellPath && ref.cellPath.length > 0 ? JSON.stringify(ref.cellPath) : '';
+}
+
 /** 이미지 컨트롤의 바이너리를 포함하여 시스템 클립보드에 기록한다. */
 export async function writeImageToClipboard(
   wasm: WasmBridge, sec: number, ppi: number, ci: number,
-  text: string, html: string,
+  text: string, html: string, cellPathJson = '',
 ): Promise<void> {
-  const imageData = wasm.getControlImageData(sec, ppi, ci);
-  const mime = wasm.getControlImageMime(sec, ppi, ci);
+  const imageData = wasm.getControlImageData(sec, ppi, ci, cellPathJson);
+  const mime = wasm.getControlImageMime(sec, ppi, ci, cellPathJson);
   const pngBlob = await convertToPngBlob(imageData, mime);
   const item = new ClipboardItem({
     'text/plain': new Blob([text], { type: 'text/plain' }),
@@ -464,7 +519,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // ─── 각주 편집 모드 키보드 처리 ──────────────────────────
   if (this.cursor.isInFootnote()) {
-    // Escape → 각주 편집 모드 탈출
+    // Shift+Esc 또는 Escape → 주석 편집 모드 탈출
     if (e.key === 'Escape') {
       e.preventDefault();
       this.cursor.exitFootnoteMode();
@@ -607,13 +662,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'deleteObject', operation: (wasm: WasmBridge) => {
-          if (ref.type === 'image') {
-            wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-          } else if (ref.type === 'equation') {
-            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-          } else {
-            wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-          }
+          deleteSelectedObject(wasm, ref);
           return this.cursor.getPosition();
         }});
       }
@@ -625,13 +674,14 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const ref = this.cursor.getSelectedPictureRef();
       if (ref) {
         try {
-          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci);
+          const cellPathJson = pictureCellPathJson(ref);
+          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
           const text = this.wasm.getClipboardText() || '[그림]';
           let html = '';
-          try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci) || ''; } catch { /* 무시 */ }
+          try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci, cellPathJson) || ''; } catch { /* 무시 */ }
           const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
           if (ref.type === 'image') {
-            writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml)
+            writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml, cellPathJson)
               .catch(() => navigator.clipboard.writeText(text).catch(() => {}));
           } else {
             writeTextHtmlToClipboard(text, markedHtml)
@@ -649,13 +699,14 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       const ref = this.cursor.getSelectedPictureRef();
       if (ref) {
         try {
-          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci);
+          const cellPathJson = pictureCellPathJson(ref);
+          this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
           const text = this.wasm.getClipboardText() || '[그림]';
           let html = '';
-          try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci) || ''; } catch { /* 무시 */ }
+          try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci, cellPathJson) || ''; } catch { /* 무시 */ }
           const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
           if (ref.type === 'image') {
-            writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml)
+            writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml, cellPathJson)
               .catch(() => navigator.clipboard.writeText(text).catch(() => {}));
           } else {
             writeTextHtmlToClipboard(text, markedHtml)
@@ -668,13 +719,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.pictureObjectRenderer?.clear();
         this.eventBus.emit('picture-object-selection-changed', false);
         this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
-          if (ref.type === 'image') {
-            wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-          } else if (ref.type === 'equation') {
-            wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-          } else {
-            wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-          }
+          deleteSelectedObject(wasm, ref);
           return this.cursor.getPosition();
         }});
       }
@@ -1271,10 +1316,11 @@ export function onCopy(this: any, e: ClipboardEvent): void {
     if (ref) {
       e.preventDefault();
       try {
-        this.wasm.copyControl(ref.sec, ref.ppi, ref.ci);
+        const cellPathJson = pictureCellPathJson(ref);
+        this.wasm.copyControl(ref.sec, ref.ppi, ref.ci, cellPathJson);
         const text = this.wasm.getClipboardText() || '[그림]';
         let html = '';
-        try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci) || ''; } catch { /* HTML 내보내기 실패는 fallback */ }
+        try { html = this.wasm.exportControlHtml(ref.sec, ref.ppi, ref.ci, cellPathJson) || ''; } catch { /* HTML 내보내기 실패는 fallback */ }
         const markedHtml = prepareRhwpInternalClipboardHtml(this, html, text);
         if (e.clipboardData) {
           if (text) e.clipboardData.setData('text/plain', text);
@@ -1282,7 +1328,7 @@ export function onCopy(this: any, e: ClipboardEvent): void {
         }
         // 이미지 컨트롤이면 image/png Blob 포함 클립보드 기록
         if (ref.type === 'image') {
-          writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml)
+          writeImageToClipboard(this.wasm, ref.sec, ref.ppi, ref.ci, text, markedHtml, cellPathJson)
             .catch(() => {});
         }
       } catch (err) {
@@ -1356,13 +1402,7 @@ export function onCut(this: any, e: ClipboardEvent): void {
       this.pictureObjectRenderer?.clear();
       this.eventBus.emit('picture-object-selection-changed', false);
       this.executeOperation({ kind: 'snapshot', operationType: 'cutObject', operation: (wasm: WasmBridge) => {
-        if (ref.type === 'image') {
-          wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-        } else if (ref.type === 'equation') {
-          wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-        } else {
-          wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-        }
+        deleteSelectedObject(wasm, ref);
         return this.cursor.getPosition();
       }});
     }
@@ -1427,7 +1467,11 @@ export function onPaste(this: any, e: ClipboardEvent): void {
       if (hasSelection) this.deleteSelection();
       const p = this.cursor.getPosition();
       let result: string;
-      if (p.parentParaIndex !== undefined) {
+      if (isNestedCellPosition(p)) {
+        result = wasm.pasteInternalInCellByPath(
+          p.sectionIndex, p.parentParaIndex!, JSON.stringify(p.cellPath), p.charOffset,
+        );
+      } else if (p.parentParaIndex !== undefined) {
         result = wasm.pasteInternalInCell(
           p.sectionIndex, p.parentParaIndex, p.controlIndex!,
           p.cellIndex!, p.cellParaIndex!, p.charOffset,
@@ -1437,18 +1481,7 @@ export function onPaste(this: any, e: ClipboardEvent): void {
       }
       const parsed = JSON.parse(result);
       if (parsed.ok) {
-        const newPos: DocumentPosition = {
-          sectionIndex: p.sectionIndex,
-          paragraphIndex: parsed.paraIdx ?? p.paragraphIndex,
-          charOffset: parsed.charOffset ?? p.charOffset,
-        };
-        if (p.parentParaIndex !== undefined) {
-          newPos.parentParaIndex = p.parentParaIndex;
-          newPos.controlIndex = p.controlIndex;
-          newPos.cellIndex = p.cellIndex;
-          newPos.cellParaIndex = parsed.paraIdx ?? p.cellParaIndex;
-        }
-        return newPos;
+        return positionAfterPasteResult(p, parsed);
       }
       return p;
     }});
@@ -1472,16 +1505,15 @@ export function onPaste(this: any, e: ClipboardEvent): void {
 
   // 외부 클립보드: HTML이 있으면 pasteHtml로 표/서식 보존 붙여넣기
   if (html) {
-    if (isNestedCellPosition(this.cursor.getPosition()) && text) {
-      pastePlainText.call(this, text, hasSelection);
-      return;
-    }
-
     this.executeOperation({ kind: 'snapshot', operationType: 'pasteHtml', operation: (wasm: WasmBridge) => {
       if (hasSelection) this.deleteSelection();
       const p = this.cursor.getPosition();
       let result: string;
-      if (p.parentParaIndex !== undefined) {
+      if (isNestedCellPosition(p)) {
+        result = wasm.pasteHtmlInCellByPath(
+          p.sectionIndex, p.parentParaIndex!, JSON.stringify(p.cellPath), p.charOffset, html,
+        );
+      } else if (p.parentParaIndex !== undefined) {
         result = wasm.pasteHtmlInCell(
           p.sectionIndex, p.parentParaIndex, p.controlIndex!,
           p.cellIndex!, p.cellParaIndex!, p.charOffset, html,
@@ -1491,18 +1523,7 @@ export function onPaste(this: any, e: ClipboardEvent): void {
       }
       const parsed = JSON.parse(result);
       if (parsed.ok) {
-        const newPos: DocumentPosition = {
-          sectionIndex: p.sectionIndex,
-          paragraphIndex: parsed.paraIdx ?? p.paragraphIndex,
-          charOffset: parsed.charOffset ?? p.charOffset,
-        };
-        if (p.parentParaIndex !== undefined) {
-          newPos.parentParaIndex = p.parentParaIndex;
-          newPos.controlIndex = p.controlIndex;
-          newPos.cellIndex = p.cellIndex;
-          newPos.cellParaIndex = parsed.paraIdx ?? p.cellParaIndex;
-        }
-        return newPos;
+        return positionAfterPasteResult(p, parsed);
       }
       return p;
     }});
@@ -1552,9 +1573,13 @@ async function pasteImageFile(this: any, file: File, hasSelection: boolean): Pro
     this.executeOperation({ kind: 'snapshot', operationType: 'pasteImage', operation: (wasm: WasmBridge) => {
       if (hasSelection) this.deleteSelection();
       const p = this.cursor.getPosition();
+      // 표 셀 안 paste (#1151): floating picture 분기 — parentParaIndex + cellPath 전달.
+      const inCell = (p.cellPath?.length ?? 0) > 0 && p.parentParaIndex !== undefined;
+      const paraForCall = inCell ? p.parentParaIndex! : p.paragraphIndex;
+      const cellPathJson = inCell ? JSON.stringify(p.cellPath) : '';
       const result = wasm.insertPicture(
-        p.sectionIndex, p.paragraphIndex, p.charOffset,
-        data, wHwp, hHwp, natW, natH, ext, '',
+        p.sectionIndex, paraForCall, p.charOffset,
+        cellPathJson, data, wHwp, hHwp, natW, natH, ext, '',
       );
       if (result.ok) {
         return {

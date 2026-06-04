@@ -418,7 +418,12 @@ fn task888_expense_report_normalizes_transparent_paragraph_border_fill() {
     let mut doc = core.document().clone();
 
     let report = convert_hwpx_to_hwp_ir(&mut doc);
-    assert_eq!(report.border_fills_no_fill_normalized, 1);
+    // [Issue #1172] winBrush faceColor="none" 은 이제 HWPX parser 단계에서
+    // FillType::None 으로 정합된다 (header.rs). 따라서 어댑터의 후처리 정규화
+    // (transparent → no-fill) 가 잡을 대상이 없어 카운트는 0 이다. 어댑터 정규화는
+    // 다른 경로(예: 색상은 흰색이지만 alpha=0 인 변형)를 위한 방어선으로 유지된다.
+    // 본 테스트의 본질(최종 BorderFill 이 no-fill 로 정합됨)은 아래 단언으로 보장.
+    assert_eq!(report.border_fills_no_fill_normalized, 0);
 
     let mut refs = std::collections::HashSet::new();
     for para_shape in &doc.doc_info.para_shapes {
@@ -1223,16 +1228,16 @@ fn task903_para29_shape_pair_mut<'a>(
         .expect("target section0 para29 필요");
     let positive_shape = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
-        .and_then(|para| para.controls.get(0))
+        .and_then(|para| para.controls.first())
         .and_then(|ctrl| match ctrl {
             Control::Shape(shape) => Some(shape.as_ref()),
             _ => None,
         })
         .expect("positive section0 para29 ctrl0 shape 필요");
 
-    let is_target_shape = matches!(target_para.controls.get(0), Some(Control::Shape(_)));
+    let is_target_shape = matches!(target_para.controls.first(), Some(Control::Shape(_)));
     assert!(is_target_shape, "target section0 para29 ctrl0 shape 필요");
     (target_para, positive_shape)
 }
@@ -1247,12 +1252,12 @@ fn task903_target_shape_mut(para: &mut Paragraph) -> &mut ShapeObject {
 fn task903_copy_para29_ctrl_data_record(target_para: &mut Paragraph, positive: &Document) {
     let positive_para = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
         .expect("positive section0 para29 필요");
     let positive_ctrl_data = positive_para
         .ctrl_data_records
-        .get(0)
+        .first()
         .cloned()
         .unwrap_or(None);
 
@@ -1265,12 +1270,12 @@ fn task903_copy_para29_ctrl_data_record(target_para: &mut Paragraph, positive: &
 fn task903_copy_para29_shape_control(target_para: &mut Paragraph, positive: &Document) {
     let positive_para = positive
         .sections
-        .get(0)
+        .first()
         .and_then(|section| section.paragraphs.get(29))
         .expect("positive section0 para29 필요");
     target_para.controls[0] = positive_para
         .controls
-        .get(0)
+        .first()
         .expect("positive para29 ctrl0 필요")
         .clone();
     task903_copy_para29_ctrl_data_record(target_para, positive);
@@ -3839,7 +3844,7 @@ fn task903_shape_picture_extra(data: &[u8]) -> &[u8] {
 
 fn task903_decode_shape_picture_extra(data: &[u8]) -> String {
     let extra = task903_shape_picture_extra(data);
-    let border_opacity = extra.get(0).copied().unwrap_or(0);
+    let border_opacity = extra.first().copied().unwrap_or(0);
     let instance_id = task903_read_u32_at(data, 74).unwrap_or(0);
     let image_effect_extra = task903_read_u32_at(data, 78).unwrap_or(0);
     let original_width = task903_read_u32_at(data, 82).unwrap_or(0);

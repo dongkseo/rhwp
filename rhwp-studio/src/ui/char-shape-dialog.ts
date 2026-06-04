@@ -30,6 +30,7 @@ import type { EventBus } from '@/core/event-bus';
 import type { CharProperties } from '@/core/types';
 import { REGISTERED_FONTS } from '@/core/font-loader';
 import { getLocalFonts } from '@/core/local-fonts';
+import { enableDialogDrag } from './dialog-drag';
 
 const LANG_NAMES = ['대표', '한글', '영문', '한자', '일어', '외국어', '기호', '사용자'];
 
@@ -259,7 +260,7 @@ export class CharShapeDialog {
       if (e.target === this.overlay) this.hide();
     });
 
-    this.enableDrag(titleBar);
+    enableDialogDrag(this.dialog, titleBar);
   }
 
   private switchTab(idx: number): void {
@@ -1060,29 +1061,6 @@ export class CharShapeDialog {
     }
     if (this.onApply) this.onApply(mods);
     this.hide();
-  }
-
-  // ════════════════════════════════════════════════════════
-  //  드래그
-  // ════════════════════════════════════════════════════════
-
-  private enableDrag(titleEl: HTMLElement): void {
-    let offsetX = 0, offsetY = 0, isDragging = false;
-    titleEl.addEventListener('mousedown', (e) => {
-      if ((e.target as HTMLElement).closest('.dialog-close')) return;
-      isDragging = true;
-      const rect = this.dialog.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      this.dialog.style.left = `${e.clientX - offsetX}px`;
-      this.dialog.style.top = `${e.clientY - offsetY}px`;
-      this.dialog.style.margin = '0';
-    });
-    document.addEventListener('mouseup', () => { isDragging = false; });
   }
 
   // ════════════════════════════════════════════════════════

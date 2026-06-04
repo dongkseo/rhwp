@@ -131,6 +131,18 @@ const FRAC_LINE_THICK: f64 = 0.04; // 분수선 두께 (font_size 비율)
 const SQRT_PAD: f64 = 0.1; // 제곱근 내부 상단 여백
 const PAREN_PAD: f64 = 0.08; // 괄호 내부 좌우 여백
 pub(crate) const BIG_OP_SCALE: f64 = 1.5; // 큰 연산자 크기 비율
+/// 큰 연산자(Σ/∏/∫) 뒤 피연산자와의 trailing 간격 (font_size 비율) — Task #1233.
+/// layout_row 는 형제를 간격 0으로 붙이므로, 큰 연산자 box width 에 이 trailing 공백을
+/// 더해 피연산자가 연산자에 붙지 않게 한다(TeX thin/med space 관례, 한컴 PDF 정합).
+///
+/// 인라인 수식은 svg.rs 에서 컨트롤 advance(tac_w)로 가로 스케일(scale_x = tac_w/자연폭)
+/// 되므로, 자연폭에 더한 pad 는 scale_x 만큼 줄어 렌더된다. 분수·괄호를 포함한 큰 수식은
+/// scale_x 가 작아(0.6~0.9) pad 가 약화되므로, 압축 후에도 충분한 간격이 남도록 0.45 로
+/// 둔다(작업지시자 시각 판정 — 0.25 는 부족, 0.45 가 적정).
+///
+/// 렌더러(svg_render/canvas_render)는 limits 연산자를 `max_w = lb.width - fs*PAD` 에
+/// 중앙정렬하므로(이 const 참조), pad 전체가 **순수 trailing** 이 되고 연산자는 첨자와 정렬된다.
+pub(crate) const BIG_OP_TRAIL_PAD: f64 = 0.45;
 const MATRIX_COL_GAP: f64 = 0.8; // 행렬 열 간격 (font_size 비율)
 const MATRIX_ROW_GAP: f64 = 0.3; // 행렬 행 간격 (font_size 비율)
 /// 수식 축 높이 (TeX axis_height = 0.25em) — 분수선이 배치되는 기준 위치
@@ -304,7 +316,8 @@ impl EqLayout {
             return LayoutBox {
                 x: 0.0,
                 y: 0.0,
-                width: w,
+                // Task #1233: 첨자 없는 bare 적분도 뒤 피연산자와 trailing 간격 유지.
+                width: w + fs * BIG_OP_TRAIL_PAD,
                 height: op_fs,
                 baseline: op_fs * 0.7, // 적분 기호 baseline: 기호 높이의 70%
                 kind: LayoutKind::MathSymbol(text.to_string()),
@@ -668,7 +681,9 @@ impl EqLayout {
         LayoutBox {
             x: 0.0,
             y: 0.0,
-            width: max_w,
+            // Task #1233: 피연산자가 연산자에 붙지 않도록 trailing 간격 추가.
+            // sup/sub 중앙정렬은 max_w 기준 유지 → 연산자는 좌측, 우측에 순수 공백.
+            width: max_w + fs * BIG_OP_TRAIL_PAD,
             height: total_h,
             baseline,
             kind: LayoutKind::BigOp {
@@ -725,7 +740,8 @@ impl EqLayout {
         LayoutBox {
             x: 0.0,
             y: 0.0,
-            width: total_w,
+            // Task #1233: 적분 뒤 피연산자(예: f(x)dx)가 첨자에 붙지 않도록 trailing 간격.
+            width: total_w + fs * BIG_OP_TRAIL_PAD,
             height: total_h,
             baseline: op_baseline,
             kind: LayoutKind::BigOp {
@@ -1031,9 +1047,19 @@ impl EqLayout {
 
     fn layout_paren(&self, left: &str, right: &str, body: &EqNode, fs: f64) -> LayoutBox {
         let b = self.layout_node(body, fs);
-        let pad = fs * PAREN_PAD;
-        // Times New Roman '(' advance (em 기준) = 0.333. 글리프/path 공통 폭. (Task #283)
-        let paren_w = fs * 0.333;
+        let use_stretch_round = b.height > fs * 1.2 && matches!((left, right), ("(", ")"));
+        let pad = if use_stretch_round {
+            fs * 0.03
+        } else {
+            fs * PAREN_PAD
+        };
+        // Times New Roman '(' advance (em 기준) = 0.333. 텍스트 높이 glyph는 이 폭을 유지하고,
+        // 큰 둥근 괄호 path는 한컴 HyhwpEQ 출력에 가깝게 더 좁게 잡는다. (Task #283, #1139)
+        let paren_w = if use_stretch_round {
+            fs * 0.27
+        } else {
+            fs * 0.333
+        };
 
         let left_w = if left.is_empty() { 0.0 } else { paren_w };
         let right_w = if right.is_empty() { 0.0 } else { paren_w };
@@ -1218,6 +1244,44 @@ mod tests {
         let lb = parse_and_layout("a over b", 20.0);
         assert!(lb.width > 0.0);
         assert!(lb.height > 20.0); // 분수는 기본 높이보다 높아야 함
+    }
+
+    /// Task #1233: 큰 연산자(Σ)는 box width 에 trailing 간격(fs×BIG_OP_TRAIL_PAD)을 포함해야
+    /// 피연산자가 붙지 않는다.
+    #[test]
+    fn test_big_op_trailing_pad() {
+        // 트리 어디서든 첫 BigOp LayoutBox 를 찾는다 (top-level Row/단독 모두 대응)
+        fn find_big_op(b: &LayoutBox) -> Option<&LayoutBox> {
+            if matches!(b.kind, LayoutKind::BigOp { .. }) {
+                return Some(b);
+            }
+            if let LayoutKind::Row(children) = &b.kind {
+                for c in children {
+                    if let Some(f) = find_big_op(c) {
+                        return Some(f);
+                    }
+                }
+            }
+            None
+        }
+        let fs = 20.0;
+        let lb = parse_and_layout("sum_{n=1}^{N} b", fs);
+        let big = find_big_op(&lb).expect("BigOp 노드가 있어야 함");
+        // 내부(중앙정렬된 sub/sup)의 우측 끝
+        let inner = match &big.kind {
+            LayoutKind::BigOp { sub, sup, .. } => {
+                let s = sub.as_ref().map(|b| b.x + b.width).unwrap_or(0.0);
+                let p = sup.as_ref().map(|b| b.x + b.width).unwrap_or(0.0);
+                s.max(p)
+            }
+            _ => unreachable!(),
+        };
+        assert!(
+            big.width - inner >= fs * BIG_OP_TRAIL_PAD * 0.9,
+            "BigOp trailing 간격 부재: width={} inner={}",
+            big.width,
+            inner
+        );
     }
 
     #[test]

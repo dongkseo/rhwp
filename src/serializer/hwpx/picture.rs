@@ -28,7 +28,9 @@ use std::io::Write;
 use quick_xml::Writer;
 
 use crate::model::image::{ImageEffect, Picture};
-use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertAlign, VertRelTo};
+use crate::model::shape::{
+    CommonObjAttr, HorzAlign, HorzRelTo, TextFlow, TextWrap, VertAlign, VertRelTo,
+};
 
 use super::context::SerializeContext;
 use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
@@ -47,7 +49,7 @@ pub fn write_picture<W: Write>(
     let id_str = pic.common.instance_id.to_string();
     let z_order = pic.common.z_order.to_string();
     let tw = text_wrap_str(pic.common.text_wrap);
-    let tf = text_flow_str(pic.common.text_wrap);
+    let tf = text_flow_str(pic.common.text_flow);
     let instid = pic.instance_id.to_string();
     let href = pic.href.as_deref().unwrap_or("");
 
@@ -313,8 +315,13 @@ fn text_wrap_str(w: TextWrap) -> &'static str {
     }
 }
 
-fn text_flow_str(_: TextWrap) -> &'static str {
-    "BOTH_SIDES"
+fn text_flow_str(f: TextFlow) -> &'static str {
+    match f {
+        TextFlow::BothSides => "BOTH_SIDES",
+        TextFlow::LeftOnly => "LEFT_ONLY",
+        TextFlow::RightOnly => "RIGHT_ONLY",
+        TextFlow::LargestOnly => "LARGEST_ONLY",
+    }
 }
 
 fn vert_rel_to_str(v: VertRelTo) -> &'static str {

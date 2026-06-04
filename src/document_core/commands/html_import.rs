@@ -183,60 +183,13 @@ impl DocumentCore {
         ))
     }
 
-    /// HTML 문자열을 파싱하여 셀 내부 캐럿 위치에 삽입한다.
-    pub fn paste_html_in_cell_native(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        control_idx: usize,
-        cell_idx: usize,
-        cell_para_idx: usize,
-        char_offset: usize,
-        html: &str,
-    ) -> Result<String, HwpError> {
-        // 셀 접근 검증
-        let cell_para_count = {
-            let section =
-                self.document.sections.get(section_idx).ok_or_else(|| {
-                    HwpError::RenderError(format!("구역 {} 범위 초과", section_idx))
-                })?;
-            let para = section.paragraphs.get(parent_para_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx))
-            })?;
-            let table = match para.controls.get(control_idx) {
-                Some(Control::Table(t)) => t,
-                _ => return Err(HwpError::RenderError("표가 아님".to_string())),
-            };
-            let cell = table
-                .cells
-                .get(cell_idx)
-                .ok_or_else(|| HwpError::RenderError(format!("셀 {} 범위 초과", cell_idx)))?;
-            cell.paragraphs.len()
-        };
-        if cell_para_idx >= cell_para_count {
-            return Err(HwpError::RenderError(format!(
-                "셀 문단 {} 범위 초과",
-                cell_para_idx
-            )));
-        }
-
-        let parsed_paras = self.parse_html_to_paragraphs(html);
-        if parsed_paras.is_empty() {
-            return Ok("{\"ok\":false,\"error\":\"empty html\"}".to_string());
-        }
-
-        self.document.sections[section_idx].raw_stream = None;
-
-        let clip_count = parsed_paras.len();
-
+    fn normalize_html_paragraphs_for_cell_paste(parsed_paras: Vec<Paragraph>) -> Vec<Paragraph> {
         // 셀 내부에는 Table Control 중첩 불가 → 컨트롤 포함 문단은 텍스트만 추출
-        let parsed_paras: Vec<Paragraph> = parsed_paras
+        parsed_paras
             .into_iter()
             .map(|mut p| {
                 if !p.controls.is_empty() {
-                    // 컨트롤 문단은 텍스트로 대체
                     let text = if p.text.is_empty() || p.text == "\u{0002}" {
-                        // Table/Picture 등 컨트롤 → 셀 텍스트 추출
                         match p.controls.first() {
                             Some(Control::Table(tbl)) => tbl
                                 .cells
@@ -270,19 +223,23 @@ impl DocumentCore {
                 }
                 p
             })
-            .collect();
+            .collect()
+    }
+
+    fn paste_html_paragraphs_into_cell_paragraphs(
+        cell_paras: &mut Vec<Paragraph>,
+        cell_para_idx: usize,
+        char_offset: usize,
+        parsed_paras: &[Paragraph],
+    ) -> Result<(usize, usize), HwpError> {
+        if cell_para_idx >= cell_paras.len() {
+            return Err(HwpError::RenderError(format!(
+                "셀 문단 {} 범위 초과",
+                cell_para_idx
+            )));
+        }
+
         let clip_count = parsed_paras.len();
-
-        let cell_paras = {
-            let section = &mut self.document.sections[section_idx];
-            let para = &mut section.paragraphs[parent_para_idx];
-            let table = match &mut para.controls[control_idx] {
-                Control::Table(t) => t,
-                _ => unreachable!(),
-            };
-            &mut table.cells[cell_idx].paragraphs
-        };
-
         if clip_count == 1 && parsed_paras[0].controls.is_empty() {
             let clip_text = parsed_paras[0].text.clone();
             let new_chars = clip_text.chars().count();
@@ -299,54 +256,72 @@ impl DocumentCore {
                 new_chars,
             );
 
-            let _ = cell_paras;
-            self.reflow_cell_paragraph(
-                section_idx,
-                parent_para_idx,
-                control_idx,
-                cell_idx,
-                cell_para_idx,
-            );
-            // 부모 표 dirty 마킹 + 재페이지네이션 (셀 편집 → composed 불변)
-            if let Some(Control::Table(t)) = self.document.sections[section_idx].paragraphs
-                [parent_para_idx]
-                .controls
-                .get_mut(control_idx)
-            {
-                t.dirty = true;
-            }
-            self.mark_section_dirty(section_idx);
-            self.paginate_if_needed();
-
-            let new_offset = char_offset + new_chars;
-            self.event_log.push(DocumentEvent::HtmlImported {
-                section: section_idx,
-                para: parent_para_idx,
-            });
-            return Ok(format!(
-                "{{\"ok\":true,\"cellParaIdx\":{},\"charOffset\":{}}}",
-                cell_para_idx, new_offset
-            ));
+            return Ok((cell_para_idx, char_offset + new_chars));
         }
 
-        // 다중 문단
         let right_half = cell_paras[cell_para_idx].split_at(char_offset);
         cell_paras[cell_para_idx].merge_from(&parsed_paras[0]);
 
         let mut insert_idx = cell_para_idx + 1;
-        for i in 1..clip_count {
-            cell_paras.insert(insert_idx, parsed_paras[i].clone());
+        for parsed_para in parsed_paras.iter().skip(1) {
+            cell_paras.insert(insert_idx, parsed_para.clone());
             insert_idx += 1;
         }
 
         let last_para_idx = insert_idx - 1;
         let merge_point = cell_paras[last_para_idx].merge_from(&right_half);
+        Ok((last_para_idx, merge_point))
+    }
 
-        let _ = cell_paras;
+    /// HTML 문자열을 파싱하여 셀 내부 캐럿 위치에 삽입한다.
+    pub fn paste_html_in_cell_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        char_offset: usize,
+        html: &str,
+    ) -> Result<String, HwpError> {
+        let parsed_paras = self.parse_html_to_paragraphs(html);
+        if parsed_paras.is_empty() {
+            return Ok("{\"ok\":false,\"error\":\"empty html\"}".to_string());
+        }
+        let parsed_paras = Self::normalize_html_paragraphs_for_cell_paste(parsed_paras);
+
+        let (last_para_idx, merge_point) = {
+            let section =
+                self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("구역 {} 범위 초과", section_idx))
+                })?;
+            section.raw_stream = None;
+            let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx))
+            })?;
+            let control = para.controls.get_mut(control_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("컨트롤 {} 범위 초과", control_idx))
+            })?;
+            let table = match control {
+                Control::Table(t) => t,
+                _ => return Err(HwpError::RenderError("표가 아님".to_string())),
+            };
+            let cell_paras = &mut table
+                .cells
+                .get_mut(cell_idx)
+                .ok_or_else(|| HwpError::RenderError(format!("셀 {} 범위 초과", cell_idx)))?
+                .paragraphs;
+            Self::paste_html_paragraphs_into_cell_paragraphs(
+                cell_paras,
+                cell_para_idx,
+                char_offset,
+                &parsed_paras,
+            )?
+        };
+
         for i in cell_para_idx..=last_para_idx {
             self.reflow_cell_paragraph(section_idx, parent_para_idx, control_idx, cell_idx, i);
         }
-        // 부모 표 dirty 마킹 + 재페이지네이션 (셀 편집 → composed 불변)
         if let Some(Control::Table(t)) = self.document.sections[section_idx].paragraphs
             [parent_para_idx]
             .controls
@@ -354,6 +329,53 @@ impl DocumentCore {
         {
             t.dirty = true;
         }
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::HtmlImported {
+            section: section_idx,
+            para: parent_para_idx,
+        });
+        Ok(format!(
+            "{{\"ok\":true,\"cellParaIdx\":{},\"charOffset\":{}}}",
+            last_para_idx, merge_point
+        ))
+    }
+
+    /// HTML 문자열을 파싱하여 cellPath가 가리키는 중첩 표 셀에 삽입한다.
+    pub fn paste_html_in_cell_by_path_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+        html: &str,
+    ) -> Result<String, HwpError> {
+        if path.is_empty() {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        }
+
+        let parsed_paras = self.parse_html_to_paragraphs(html);
+        if parsed_paras.is_empty() {
+            return Ok("{\"ok\":false,\"error\":\"empty html\"}".to_string());
+        }
+        let parsed_paras = Self::normalize_html_paragraphs_for_cell_paste(parsed_paras);
+
+        let cell_para_idx = path[path.len() - 1].2;
+        let (last_para_idx, merge_point) = {
+            let cell_paras =
+                self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, path)?;
+            Self::paste_html_paragraphs_into_cell_paragraphs(
+                cell_paras,
+                cell_para_idx,
+                char_offset,
+                &parsed_paras,
+            )?
+        };
+
+        let outer_ctrl = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
+        self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
         self.paginate_if_needed();
 

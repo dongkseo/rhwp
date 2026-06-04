@@ -15,7 +15,10 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlImageElement};
 use super::layer_renderer::{LayerRenderResult, LayerRenderer};
 use super::pua_oldhangul::map_pua_old_hangul;
 use super::render_tree::{
-    BoundingBox, FormObjectNode, PageRenderTree, RenderNode, RenderNodeType, ShapeTransform,
+    BoundingBox, FormObjectNode, PageRenderTree, RenderLayerInfo, RenderNode, RenderNodeType,
+    ShapeTransform, LEGACY_IMAGE_WATERMARK_OPACITY, REAL_PICTURE_WATERMARK_BRIGHTNESS,
+    REAL_PICTURE_WATERMARK_CONTRAST, REAL_PICTURE_WATERMARK_FILL_OPACITY,
+    REAL_PICTURE_WATERMARK_PAGE_OPACITY, REAL_PICTURE_WATERMARK_SATURATION,
 };
 use super::{
     clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
@@ -23,7 +26,10 @@ use super::{
 };
 use crate::model::style::ImageFillMode;
 use crate::model::style::UnderlineType;
-use crate::paint::{ClipKind, GroupKind, LayerNode, LayerNodeKind, PageLayerTree, PaintOp};
+use crate::paint::{
+    paint_op_replay_plane_with_layer, ClipKind, GroupKind, LayerNode, LayerNodeKind, PageLayerTree,
+    PaintOp, PaintReplayPlane,
+};
 
 /// Hanyang-PUA 옛한글 코드포인트를 KS X 1026-1:2007 자모 시퀀스로 확장 (Task #528).
 fn expand_pua_old_hangul_canvas(text: &str) -> String {
@@ -137,6 +143,16 @@ fn compose_image_filter(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn real_picture_watermark_tone_filter() -> String {
+    format!(
+        "saturate({:.6}%) contrast({:.6}%) brightness({:.6}%)",
+        REAL_PICTURE_WATERMARK_SATURATION * 100.0,
+        REAL_PICTURE_WATERMARK_CONTRAST * 100.0,
+        REAL_PICTURE_WATERMARK_BRIGHTNESS * 100.0
+    )
+}
+
 /// 이미지 데이터에서 픽셀 크기(width, height)를 파싱한다.
 fn parse_image_dimensions_canvas(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 {
@@ -197,16 +213,18 @@ fn parse_image_dimensions_canvas(data: &[u8]) -> Option<(u32, u32)> {
 ///
 /// 다층 레이어 렌더링 필터 (Task #516, Stage 5.2 옵션 A).
 ///
-/// 페이지를 다중 layer 로 분리할 때 어떤 wrap 모드의 그림을 렌더링할지 결정.
-/// `All` 은 기존 단일 평면 동작 (모든 그림 포함). `FlowOnly` 는 본문 layer 용
-/// (BehindText/InFrontOfText 제외). `WrapOnly` 는 overlay layer 용 (해당 wrap 만).
+/// 페이지를 다중 layer 로 분리할 때 어떤 replay plane 을 렌더링할지 결정.
+/// `All` 은 기존 단일 평면 동작이다. `FlowOnly` 는 본문 layer 용
+/// (BehindText/InFrontOfText 제외). `WrapOnly` 는 overlay layer 용 (해당 plane 만).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerFilter {
-    /// 모든 그림 (기본 — 기존 동작 보존)
+    /// 모든 PaintOp (기본 — 기존 동작 보존)
     All,
-    /// 본문 layer — BehindText / InFrontOfText 그림 제외
+    /// Page background layer
+    BackgroundOnly,
+    /// 본문 layer — BehindText / InFrontOfText plane 제외
     FlowOnly,
-    /// Overlay layer — 특정 wrap 모드 그림만 (BehindText 또는 InFrontOfText)
+    /// Overlay layer — 특정 wrap plane 만 (BehindText 또는 InFrontOfText)
     WrapOnly(crate::model::shape::TextWrap),
 }
 
@@ -217,15 +235,37 @@ impl Default for LayerFilter {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn layer_tree_contains_image_wrap(node: &LayerNode, target: crate::model::shape::TextWrap) -> bool {
+fn replay_plane_for_wrap(target: crate::model::shape::TextWrap) -> PaintReplayPlane {
+    use crate::model::shape::TextWrap;
+    match target {
+        TextWrap::BehindText => PaintReplayPlane::BehindText,
+        TextWrap::InFrontOfText => PaintReplayPlane::InFrontOfText,
+        _ => PaintReplayPlane::Flow,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn layer_tree_contains_replay_plane(node: &LayerNode, target: PaintReplayPlane) -> bool {
+    layer_tree_contains_replay_plane_with_layer(node, target, None)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn layer_tree_contains_replay_plane_with_layer(
+    node: &LayerNode,
+    target: PaintReplayPlane,
+    inherited_layer: Option<RenderLayerInfo>,
+) -> bool {
+    let active_layer = node.layer.or(inherited_layer);
     match &node.kind {
         LayerNodeKind::Group { children, .. } => children
             .iter()
-            .any(|child| layer_tree_contains_image_wrap(child, target)),
-        LayerNodeKind::ClipRect { child, .. } => layer_tree_contains_image_wrap(child, target),
-        LayerNodeKind::Leaf { ops } => ops.iter().any(
-            |op| matches!(op, PaintOp::Image { image, .. } if image.text_wrap == Some(target)),
-        ),
+            .any(|child| layer_tree_contains_replay_plane_with_layer(child, target, active_layer)),
+        LayerNodeKind::ClipRect { child, .. } => {
+            layer_tree_contains_replay_plane_with_layer(child, target, active_layer)
+        }
+        LayerNodeKind::Leaf { ops } => ops
+            .iter()
+            .any(|op| paint_op_replay_plane_with_layer(op, active_layer) == target),
     }
 }
 
@@ -247,7 +287,7 @@ pub struct WebCanvasRenderer {
     scale: f64,
     /// 다층 레이어 필터 (Task #516, 기본 All 은 기존 동작 보존)
     pub layer_filter: LayerFilter,
-    /// BehindText overlay 를 DOM layer 로 합성할 때 flow Canvas 의 페이지 배경을
+    /// BehindText plane 을 별도 canvas layer 로 합성할 때 flow Canvas 의 페이지 배경을
     /// 투명하게 둘지 여부.
     transparent_page_background: bool,
 }
@@ -283,20 +323,29 @@ impl WebCanvasRenderer {
         self.layer_filter = filter;
     }
 
-    /// 그림의 wrap 모드가 현재 layer_filter 와 일치하는지 판정 (Task #516).
+    /// PaintOp replay plane 이 현재 layer_filter 와 일치하는지 판정.
     ///
-    /// - `LayerFilter::All`: 모든 그림 렌더 (기본)
-    /// - `LayerFilter::FlowOnly`: BehindText / InFrontOfText 제외 (본문 layer)
-    /// - `LayerFilter::WrapOnly(w)`: 해당 wrap 만 (overlay layer)
-    fn should_render_image(&self, image_wrap: Option<crate::model::shape::TextWrap>) -> bool {
+    /// - `LayerFilter::All`: 모든 op 렌더 (기본)
+    /// - `LayerFilter::BackgroundOnly`: page background plane 만
+    /// - `LayerFilter::FlowOnly`: BehindText / InFrontOfText plane 제외 (본문 layer)
+    /// - `LayerFilter::WrapOnly(w)`: 해당 wrap plane 만 (overlay layer)
+    fn should_render_op(&self, op: &PaintOp, layer: Option<RenderLayerInfo>) -> bool {
         use crate::model::shape::TextWrap;
+        let replay_plane = paint_op_replay_plane_with_layer(op, layer);
         match self.layer_filter {
             LayerFilter::All => true,
-            LayerFilter::FlowOnly => match image_wrap {
-                Some(TextWrap::BehindText) | Some(TextWrap::InFrontOfText) => false,
-                _ => true,
-            },
-            LayerFilter::WrapOnly(target) => image_wrap == Some(target),
+            LayerFilter::BackgroundOnly => replay_plane == PaintReplayPlane::Background,
+            LayerFilter::FlowOnly => !matches!(
+                replay_plane,
+                PaintReplayPlane::BehindText | PaintReplayPlane::InFrontOfText
+            ),
+            LayerFilter::WrapOnly(TextWrap::BehindText) => {
+                replay_plane == PaintReplayPlane::BehindText
+            }
+            LayerFilter::WrapOnly(TextWrap::InFrontOfText) => {
+                replay_plane == PaintReplayPlane::InFrontOfText
+            }
+            LayerFilter::WrapOnly(target) => replay_plane == replay_plane_for_wrap(target),
         }
     }
 
@@ -313,13 +362,16 @@ impl WebCanvasRenderer {
     pub fn render_layer_tree(&mut self, tree: &PageLayerTree) {
         self.show_paragraph_marks = tree.output_options.show_paragraph_marks;
         self.show_control_codes = tree.output_options.show_control_codes;
-        self.transparent_page_background = matches!(self.layer_filter, LayerFilter::FlowOnly)
-            && layer_tree_contains_image_wrap(
-                &tree.root,
-                crate::model::shape::TextWrap::BehindText,
-            );
+        self.transparent_page_background = match self.layer_filter {
+            LayerFilter::All => false,
+            LayerFilter::BackgroundOnly => false,
+            LayerFilter::FlowOnly => {
+                layer_tree_contains_replay_plane(&tree.root, PaintReplayPlane::BehindText)
+            }
+            LayerFilter::WrapOnly(_) => true,
+        };
         self.begin_page(tree.page_width, tree.page_height);
-        self.render_layer_node(&tree.root);
+        self.render_layer_node(&tree.root, None);
         self.transparent_page_background = false;
     }
 
@@ -359,13 +411,60 @@ impl WebCanvasRenderer {
                 }
                 // 이미지 배경
                 if let Some(img) = &bg.image {
-                    self.draw_image(
-                        &img.data,
-                        node.bbox.x,
-                        node.bbox.y,
-                        node.bbox.width,
-                        node.bbox.height,
+                    // PageBackground RealPic 워터마크 프리셋은 한컴의 색상 있는 배경 워터마크에 맞춰
+                    // 색감을 살린 뒤 반투명으로 합성한다.
+                    let preserve_color_watermark = img.is_real_picture_watermark_tone_preset();
+                    // [Issue #1156] 워터마크 판정 = 밝기·대비가 둘 다 0 이 아님 (effect 무관).
+                    let is_watermark_image = img.is_watermark();
+                    let mut baked_color_watermark = false;
+                    let render_data: std::borrow::Cow<[u8]> = if preserve_color_watermark {
+                        match crate::renderer::image_resolver::real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+                            &img.data,
+                        ) {
+                            Some(png) => {
+                                baked_color_watermark = true;
+                                std::borrow::Cow::Owned(png)
+                            }
+                            None => std::borrow::Cow::Borrowed(img.data.as_slice()),
+                        }
+                    } else {
+                        std::borrow::Cow::Borrowed(img.data.as_slice())
+                    };
+                    let filter_str = if preserve_color_watermark {
+                        if baked_color_watermark {
+                            None
+                        } else {
+                            Some(real_picture_watermark_tone_filter())
+                        }
+                    } else {
+                        compose_image_filter(img.effect, img.brightness, img.contrast)
+                    };
+                    if let Some(ref f) = filter_str {
+                        self.ctx.set_filter(f);
+                    }
+                    let needs_watermark_opacity = preserve_color_watermark || is_watermark_image;
+                    if needs_watermark_opacity {
+                        let opacity = if preserve_color_watermark {
+                            REAL_PICTURE_WATERMARK_PAGE_OPACITY
+                        } else {
+                            LEGACY_IMAGE_WATERMARK_OPACITY
+                        };
+                        self.ctx.set_global_alpha(opacity);
+                    }
+                    self.draw_image_with_fill_mode(
+                        render_data.as_ref(),
+                        &node.bbox,
+                        Some(img.fill_mode),
+                        None,
+                        None,
+                        None,
                     );
+                    if needs_watermark_opacity {
+                        self.ctx.set_global_alpha(1.0);
+                    }
+                    if filter_str.is_some() {
+                        self.ctx.set_filter("none");
+                    }
                 }
             }
             RenderNodeType::TextRun(run) => {
@@ -556,17 +655,28 @@ impl WebCanvasRenderer {
                 if let Some(ref data) = img.data {
                     // Task #516: 그림 효과 / 밝기 / 대비 / 워터마크를 CSS filter 로 적용
                     // [Issue #677] 한컴 워터마크 모드 (effect != RealPic + brightness/contrast 비-zero) 는
-                    // 저장값 그대로 brightness/contrast 적용 + opacity 0.5 반투명 영역.
+                    // 저장값 그대로 brightness/contrast 적용 + legacy opacity 반투명 영역.
                     // PDF 정답지 영역의 시각 — 진한 회색 워터마크 + 본문 텍스트가 워터마크
                     // 위로 가독 정합. SVG 영역과 동기.
-                    let is_watermark_image =
-                        !matches!(img.effect, crate::model::image::ImageEffect::RealPic)
-                            && (img.brightness != 0 || img.contrast != 0);
+                    let preserve_color_watermark = img.is_real_picture_watermark_tone_preset();
+                    // [Issue #1156] 워터마크 판정 = 밝기·대비가 둘 다 0 이 아님 (effect 무관).
+                    let is_watermark_image = img.is_watermark();
                     let mut baked_watermark = false;
-                    let render_data: std::borrow::Cow<[u8]> = if is_watermark_image
-                        && crate::renderer::svg::detect_image_mime_type(data) == "image/jpeg"
+                    let render_data: std::borrow::Cow<[u8]> = if preserve_color_watermark {
+                        match crate::renderer::image_resolver::real_picture_watermark_fill_bytes_to_hancom_tone_png_bytes(
+                            data,
+                        ) {
+                            Some(png) => {
+                                baked_watermark = true;
+                                std::borrow::Cow::Owned(png)
+                            }
+                            None => std::borrow::Cow::Borrowed(data.as_slice()),
+                        }
+                    } else if is_watermark_image
+                        && crate::renderer::image_resolver::detect_image_mime_type(data)
+                            == "image/jpeg"
                     {
-                        match crate::renderer::svg::watermark_jpeg_bytes_to_hancom_baked_png_bytes(
+                        match crate::renderer::image_resolver::watermark_jpeg_bytes_to_hancom_baked_png_bytes(
                             data,
                         ) {
                             Some(png) => {
@@ -580,14 +690,23 @@ impl WebCanvasRenderer {
                     };
                     let filter_str = if baked_watermark {
                         None
+                    } else if preserve_color_watermark {
+                        Some(real_picture_watermark_tone_filter())
                     } else {
                         compose_image_filter(img.effect, img.brightness, img.contrast)
                     };
                     if let Some(ref f) = filter_str {
                         self.ctx.set_filter(f);
                     }
-                    if is_watermark_image && !baked_watermark {
-                        self.ctx.set_global_alpha(0.17);
+                    let needs_watermark_opacity =
+                        preserve_color_watermark || (is_watermark_image && !baked_watermark);
+                    if needs_watermark_opacity {
+                        let opacity = if preserve_color_watermark {
+                            REAL_PICTURE_WATERMARK_FILL_OPACITY
+                        } else {
+                            LEGACY_IMAGE_WATERMARK_OPACITY
+                        };
+                        self.ctx.set_global_alpha(opacity);
                     }
                     self.draw_image_with_fill_mode(
                         render_data.as_ref(),
@@ -598,7 +717,7 @@ impl WebCanvasRenderer {
                         img.original_size_hu,
                     );
                     // 다음 그리기 작업에 영향 없도록 reset
-                    if is_watermark_image && !baked_watermark {
+                    if needs_watermark_opacity {
                         self.ctx.set_global_alpha(1.0);
                     }
                     if filter_str.is_some() {
@@ -719,19 +838,14 @@ impl WebCanvasRenderer {
                 self.ctx.clip();
             }
             RenderNodeType::Equation(eq) => {
-                // SVG 경로 (svg.rs 의 Equation 분기) 와 동일하게 bbox 크기에 맞춰
-                // X/Y 스케일링 적용. HWP 저장 영역(bbox)과 레이아웃 산출 크기(layout_box)
-                // 가 다를 때 수식이 정확한 영역에 그려지도록 한다.
+                // SVG/Skia 경로와 동일하게 bbox 너비만 맞춘다. bbox 높이는 줄 높이와
+                // 여백을 포함한 배치 영역이라 세로 스케일을 걸면 식 글자가 찌그러진다.
                 let scale_x = if eq.layout_box.width > 0.0 && node.bbox.width > 0.0 {
                     node.bbox.width / eq.layout_box.width
                 } else {
                     1.0
                 };
-                let scale_y = if eq.layout_box.height > 0.0 && node.bbox.height > 0.0 {
-                    node.bbox.height / eq.layout_box.height
-                } else {
-                    1.0
-                };
+                let scale_y = 1.0_f64;
                 self.ctx.save();
                 let _ = self.ctx.translate(node.bbox.x, node.bbox.y);
                 let needs_scale = (scale_x - 1.0).abs() > 0.01 || (scale_y - 1.0).abs() > 0.01;
@@ -881,7 +995,8 @@ impl WebCanvasRenderer {
         }
     }
 
-    fn render_layer_node(&mut self, node: &LayerNode) {
+    fn render_layer_node(&mut self, node: &LayerNode, inherited_layer: Option<RenderLayerInfo>) {
+        let active_layer = node.layer.or(inherited_layer);
         match &node.kind {
             LayerNodeKind::Group {
                 children,
@@ -889,7 +1004,7 @@ impl WebCanvasRenderer {
                 ..
             } => {
                 for child in children {
-                    self.render_layer_node(child);
+                    self.render_layer_node(child, active_layer);
                 }
                 if self.show_control_codes {
                     let label = match group_kind {
@@ -918,7 +1033,7 @@ impl WebCanvasRenderer {
                     self.ctx.begin_path();
                     self.ctx.rect(clip.x, clip.y, clip.width + 4.0, clip.height);
                     self.ctx.clip();
-                    self.render_layer_node(child);
+                    self.render_layer_node(child, active_layer);
                     self.ctx.restore();
 
                     let body_left = clip.x;
@@ -977,12 +1092,12 @@ impl WebCanvasRenderer {
                                 LayerNodeKind::Group { children, .. } => {
                                     for child in children {
                                         if is_overflow_control(child) {
-                                            self.render_layer_node(child);
+                                            self.render_layer_node(child, active_layer);
                                         }
                                     }
                                 }
                                 _ if is_overflow_control(column) => {
-                                    self.render_layer_node(column);
+                                    self.render_layer_node(column, active_layer);
                                 }
                                 _ => {}
                             }
@@ -1000,7 +1115,15 @@ impl WebCanvasRenderer {
                         node.bounds.height,
                     );
                     self.ctx.clip();
-                    self.render_layer_node(child);
+                    self.render_layer_node(child, active_layer);
+                    self.ctx.restore();
+                }
+                ClipKind::TextBox => {
+                    self.ctx.save();
+                    self.ctx.begin_path();
+                    self.ctx.rect(clip.x, clip.y, clip.width, clip.height);
+                    self.ctx.clip();
+                    self.render_layer_node(child, active_layer);
                     self.ctx.restore();
                 }
                 ClipKind::Generic => {
@@ -1008,17 +1131,16 @@ impl WebCanvasRenderer {
                     self.ctx.begin_path();
                     self.ctx.rect(clip.x, clip.y, clip.width, clip.height);
                     self.ctx.clip();
-                    self.render_layer_node(child);
+                    self.render_layer_node(child, active_layer);
                     self.ctx.restore();
                 }
             },
             LayerNodeKind::Leaf { ops } => {
                 for op in ops {
-                    // Task #516 Stage 5.2: 다층 레이어 필터 — 그림의 wrap 모드에 따라 skip
-                    if let PaintOp::Image { image, .. } = op {
-                        if !self.should_render_image(image.text_wrap) {
-                            continue;
-                        }
+                    // Task #1197: 다층 레이어 필터 — RenderNode.layer 또는 이미지 wrap 기반
+                    // replay plane 에 따라 skip.
+                    if !self.should_render_op(op, active_layer) {
+                        continue;
                     }
                     let render_node = match op {
                         PaintOp::PageBackground { .. } if !self.should_render_page_background() => {
@@ -1882,8 +2004,8 @@ impl Renderer for WebCanvasRenderer {
             let _ = self.ctx.scale(self.scale, self.scale);
         }
         self.ctx.clear_rect(0.0, 0.0, width, height);
-        // 캔버스 초기화 (흰색 배경). BehindText DOM overlay 를 쓰는 flow layer 는
-        // 페이지 배경을 별도 HTML layer 로 두어야 하므로 투명하게 유지한다.
+        // 캔버스 초기화 (흰색 배경). 분리된 flow/behind/front layer 는
+        // HTML 합성 순서가 페이지 배경을 담당하므로 투명하게 유지한다.
         if self.should_render_page_background() {
             self.ctx.set_fill_style_str("#ffffff");
             self.ctx.fill_rect(0.0, 0.0, width, height);
@@ -2453,7 +2575,7 @@ impl Renderer for WebCanvasRenderer {
                     None => (std::borrow::Cow::Borrowed(data), mime_type),
                 }
             } else if mime_type == "image/x-pcx" {
-                match crate::renderer::svg::pcx_bytes_to_png_bytes(data) {
+                match crate::renderer::image_resolver::pcx_bytes_to_png_bytes(data) {
                     Some(png_bytes) => (std::borrow::Cow::Owned(png_bytes), "image/png"),
                     None => (std::borrow::Cow::Borrowed(data), mime_type),
                 }
@@ -2673,12 +2795,10 @@ impl WebCanvasRenderer {
         // Canvas 상태 보존
         self.ctx.save();
 
+        // 일반 CharOverlap 처리. 디코딩되지 않는 다중 PUA 조합도 한 컨트롤 안에서
+        // 같은 중심에 겹쳐 그린다. table-vpos-01의 10/11/12 마커는
+        // U+F02BA + U+F02C3/C4/C5 조합으로 저장된다.
         let box_size = font_size;
-        let char_advance = if chars.len() > 1 {
-            bbox_w / chars.len() as f64
-        } else {
-            box_size
-        };
 
         let is_reversed = overlap.border_type == 2 || overlap.border_type == 4;
         let is_circle = overlap.border_type == 1 || overlap.border_type == 2;
@@ -2720,6 +2840,59 @@ impl WebCanvasRenderer {
             font_style_str, font_weight, inner_font_size, font_family
         );
 
+        if chars.len() > 1 {
+            let cx = bbox_x + bbox_w / 2.0;
+            let cy = bbox_y + bbox_h - box_size / 2.0;
+
+            if is_circle {
+                let ry = box_size / 2.0;
+                let rx = ry * 0.85;
+                self.ctx.begin_path();
+                let _ = self
+                    .ctx
+                    .ellipse(cx, cy, rx, ry, 0.0, 0.0, std::f64::consts::TAU);
+                if is_reversed {
+                    self.ctx.set_fill_style_str(fill_color);
+                    self.ctx.fill();
+                }
+                self.ctx.set_stroke_style_str(stroke_color);
+                self.ctx.set_line_width(0.8);
+                self.ctx.stroke();
+            } else if is_rect {
+                let rx = cx - box_size / 2.0;
+                let ry = cy - box_size / 2.0;
+                if is_reversed {
+                    self.ctx.set_fill_style_str(fill_color);
+                    self.ctx.fill_rect(rx, ry, box_size, box_size);
+                }
+                self.ctx.set_stroke_style_str(stroke_color);
+                self.ctx.set_line_width(0.8);
+                self.ctx.stroke_rect(rx, ry, box_size, box_size);
+            }
+
+            self.ctx.set_font(&font);
+            self.ctx.set_fill_style_str(&text_color);
+            self.ctx.set_text_align("center");
+            self.ctx.set_text_baseline("middle");
+
+            for ch in chars.iter() {
+                let display_str = {
+                    let cp = *ch as u32;
+                    if (0x2460..=0x2473).contains(&cp) {
+                        format!("{}", cp - 0x2460 + 1)
+                    } else if let Some(s) = pua_to_display_text(*ch) {
+                        s
+                    } else {
+                        ch.to_string()
+                    }
+                };
+                let _ = self.ctx.fill_text(&display_str, cx, cy);
+            }
+
+            self.ctx.restore();
+            return;
+        }
+
         for (i, ch) in chars.iter().enumerate() {
             let display_str = {
                 let cp = *ch as u32;
@@ -2732,7 +2905,7 @@ impl WebCanvasRenderer {
                 }
             };
 
-            let cx = bbox_x + i as f64 * char_advance + box_size / 2.0;
+            let cx = bbox_x + i as f64 * box_size + box_size / 2.0;
             let cy = bbox_y + bbox_h - box_size / 2.0;
 
             if is_circle {

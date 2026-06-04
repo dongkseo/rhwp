@@ -6,6 +6,17 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # 버전 결합 크레이트는 한 PR 로 동반 bump (단독 bump 시 타입 충돌 — #1217).
+    # svg2pdf 가 만든 pdf_writer::Chunk 를 src/renderer/pdf.rs 가 재배치하므로
+    # svg2pdf/pdf-writer/usvg/resvg/ttf-parser 는 동일 버전 그래프를 공유해야 한다.
+    groups:
+      resvg-stack:
+        patterns:
+          - "svg2pdf"
+          - "pdf-writer"
+          - "usvg"
+          - "resvg"
+          - "ttf-parser"
 
   - package-ecosystem: "npm"
     directory: "/rhwp-studio"
@@ -13,3 +24,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    # vite-plugin-pwa 1.x 는 vite 8 peer 결합 — 함께 bump (#1217).
+    groups:
+      vite-stack:
+        patterns:
+          - "vite"
+          - "vite-plugin-pwa"

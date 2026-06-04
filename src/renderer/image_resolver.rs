@@ -2,7 +2,13 @@ use std::io::Cursor;
 
 use crate::model::image::ImageEffect;
 use crate::paint::{ResolvedImageKind, ResolvedImagePayload};
-use crate::renderer::render_tree::ImageNode;
+use crate::renderer::render_tree::{
+    ImageNode, REAL_PICTURE_WATERMARK_BRIGHTNESS, REAL_PICTURE_WATERMARK_CHROMA_GAIN,
+    REAL_PICTURE_WATERMARK_CONTRAST, REAL_PICTURE_WATERMARK_CORRECTION_BIAS,
+    REAL_PICTURE_WATERMARK_CORRECTION_MATRIX, REAL_PICTURE_WATERMARK_FILL_CHROMA_GAIN,
+    REAL_PICTURE_WATERMARK_FILL_WHITE_BLEND, REAL_PICTURE_WATERMARK_SATURATION,
+    REAL_PICTURE_WATERMARK_WHITE_BLEND,
+};
 
 pub(crate) fn resolve_image_payload(image: &ImageNode) -> Option<ResolvedImagePayload> {
     let data = image.data.as_deref()?;
@@ -131,6 +137,105 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         }
     }
     let img = RgbaImage::from_raw(width, height, rgba)?;
+    let mut out = Vec::new();
+    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
+        .ok()?;
+    Some(out)
+}
+
+fn apply_real_picture_watermark_tone_rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
+    let mut rgb = [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0];
+
+    let saturation = REAL_PICTURE_WATERMARK_SATURATION;
+    rgb = [
+        (0.213 + 0.787 * saturation) * rgb[0]
+            + (0.715 - 0.715 * saturation) * rgb[1]
+            + (0.072 - 0.072 * saturation) * rgb[2],
+        (0.213 - 0.213 * saturation) * rgb[0]
+            + (0.715 + 0.285 * saturation) * rgb[1]
+            + (0.072 - 0.072 * saturation) * rgb[2],
+        (0.213 - 0.213 * saturation) * rgb[0]
+            + (0.715 - 0.715 * saturation) * rgb[1]
+            + (0.072 + 0.928 * saturation) * rgb[2],
+    ];
+
+    let contrast = REAL_PICTURE_WATERMARK_CONTRAST;
+    let contrast_intercept = 0.5 - 0.5 * contrast;
+    let brightness = REAL_PICTURE_WATERMARK_BRIGHTNESS;
+    for channel in &mut rgb {
+        *channel = (*channel * contrast + contrast_intercept) * brightness;
+    }
+
+    let corrected = [
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[0][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[0],
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[1][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[1],
+        REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][0] * rgb[0]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][1] * rgb[1]
+            + REAL_PICTURE_WATERMARK_CORRECTION_MATRIX[2][2] * rgb[2]
+            + REAL_PICTURE_WATERMARK_CORRECTION_BIAS[2],
+    ];
+
+    let luma = 0.2126 * corrected[0] + 0.7152 * corrected[1] + 0.0722 * corrected[2];
+    let chroma_corrected =
+        corrected.map(|channel| luma + (channel - luma) * REAL_PICTURE_WATERMARK_CHROMA_GAIN);
+
+    chroma_corrected.map(|channel| {
+        let channel = channel.clamp(0.0, 1.0);
+        let channel = channel + (1.0 - channel) * REAL_PICTURE_WATERMARK_WHITE_BLEND;
+        (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+    })
+}
+
+fn apply_real_picture_watermark_fill_tone_rgb(r: u8, g: u8, b: u8) -> [u8; 3] {
+    let [r, g, b] = apply_real_picture_watermark_tone_rgb(r, g, b);
+    let rgb = [r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0];
+    let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    let adjusted =
+        rgb.map(|channel| luma + (channel - luma) * REAL_PICTURE_WATERMARK_FILL_CHROMA_GAIN);
+
+    adjusted.map(|channel| {
+        let channel = 0.78 + (channel - 0.78) * 1.89;
+        let highlight = ((luma - 0.68) / 0.32).clamp(0.0, 1.0);
+        let highlight_desat = highlight.powf(1.2) * 0.38;
+        let channel = channel + (luma - channel) * highlight_desat;
+        let white_blend = REAL_PICTURE_WATERMARK_FILL_WHITE_BLEND
+            * (luma.powf(1.25) * 2.45 + highlight.powf(1.25) * 0.75);
+        let channel = channel + (1.0 - channel) * white_blend;
+        (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+    })
+}
+
+/// RealPic 색상 워터마크 preset을 한컴 뷰어에 가까운 색상 PNG로 변환한다.
+pub(crate) fn real_picture_watermark_bytes_to_hancom_tone_png_bytes(
+    data: &[u8],
+) -> Option<Vec<u8>> {
+    real_picture_watermark_bytes_to_tone_png_bytes(data, apply_real_picture_watermark_tone_rgb)
+}
+
+pub(crate) fn real_picture_watermark_fill_bytes_to_hancom_tone_png_bytes(
+    data: &[u8],
+) -> Option<Vec<u8>> {
+    real_picture_watermark_bytes_to_tone_png_bytes(data, apply_real_picture_watermark_fill_tone_rgb)
+}
+
+fn real_picture_watermark_bytes_to_tone_png_bytes(
+    data: &[u8],
+    tone: fn(u8, u8, u8) -> [u8; 3],
+) -> Option<Vec<u8>> {
+    use image::{load_from_memory, ImageFormat};
+
+    let mut img = load_from_memory(data).ok()?.to_rgba8();
+    for px in img.pixels_mut() {
+        let [r, g, b] = tone(px.0[0], px.0[1], px.0[2]);
+        px.0 = [r, g, b, px.0[3]];
+    }
+
     let mut out = Vec::new();
     img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .ok()?;

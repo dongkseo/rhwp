@@ -91,6 +91,7 @@ impl LayoutEngine {
         control_index: usize,
         section_index: usize,
         styles: &ResolvedStyleSet,
+        outline_numbering_id: u16,
         col_area: &LayoutRect,
         y_start: f64,
         bin_data_content: &[BinDataContent],
@@ -228,12 +229,15 @@ impl LayoutEngine {
                         row_heights[r] = h;
                     }
                 } else {
-                    // 기존 per-row 경로: rowspan 행은 atomic(resolve_row_heights) 유지.
-                    if rowspan_touched {
-                        continue;
-                    }
                     let su: &[usize] = if r == start_row { start_cut } else { &[] };
                     let eu: &[usize] = if r == split_last_row { end_cut } else { &[] };
+                    // 기존 per-row 경로에서 rowspan 행은 기본적으로 atomic
+                    // (resolve_row_heights) 유지. 단 RowBreak 의 큰 rowspan 블록 내부
+                    // 행을 typeset 이 per-row cut 으로 분할한 split boundary 에서는
+                    // 렌더러도 같은 cut 높이를 적용해야 한다.
+                    if rowspan_touched && su.is_empty() && eu.is_empty() {
+                        continue;
+                    }
                     let h = self.row_cut_content_height(table, r, su, eu, styles);
                     if h > 0.0 {
                         row_heights[r] = h;
@@ -852,10 +856,21 @@ impl LayoutEngine {
                 // 표 컨트롤이 있는 문단: 문단 앞 간격 적용 → 표 먼저 배치 → 텍스트(엔터 등) 나중
                 if !has_table_ctrl {
                     let is_last_para = cp_idx == last_rendered_para_idx;
+                    let numbered_comp = if start_line == 0 {
+                        self.apply_paragraph_numbering(
+                            Some(composed),
+                            para,
+                            styles,
+                            outline_numbering_id,
+                        )
+                    } else {
+                        None
+                    };
+                    let composed_for_layout = numbered_comp.as_ref().unwrap_or(composed);
                     para_y = self.layout_composed_paragraph(
                         tree,
                         &mut cell_node,
-                        composed,
+                        composed_for_layout,
                         styles,
                         &inner_area,
                         para_y,
@@ -864,6 +879,7 @@ impl LayoutEngine {
                         section_index,
                         cp_idx,
                         Some(cell_context.clone()),
+                        false,
                         is_last_para,
                         0.0,
                         None,
@@ -942,6 +958,7 @@ impl LayoutEngine {
                                             width: clamped_w,
                                             height: clamped_h,
                                         };
+                                        // [Task #1151 v4] 셀 안 inline picture (partial 표 path).
                                         self.layout_picture(
                                             tree,
                                             &mut cell_node,
@@ -949,9 +966,10 @@ impl LayoutEngine {
                                             &pic_area,
                                             bin_data_content,
                                             Alignment::Left,
-                                            None,
-                                            None,
-                                            None,
+                                            Some(section_index),
+                                            Some(cell_context.parent_para_index),
+                                            Some(ctrl_idx),
+                                            Some(&cell_context),
                                         );
                                         inline_x += clamped_w;
                                         continue;
@@ -965,6 +983,7 @@ impl LayoutEngine {
                                             .max(0.0),
                                         ..inner_area
                                     };
+                                    // [Task #1151 v4] 셀 안 non-inline picture (partial 표 path).
                                     self.layout_picture(
                                         tree,
                                         &mut cell_node,
@@ -972,9 +991,10 @@ impl LayoutEngine {
                                         &pic_area,
                                         bin_data_content,
                                         para_alignment,
-                                        None,
-                                        None,
-                                        None,
+                                        Some(section_index),
+                                        Some(cell_context.parent_para_index),
+                                        Some(ctrl_idx),
+                                        Some(&cell_context),
                                     );
                                     let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
                                     para_y += pic_h;
@@ -992,6 +1012,15 @@ impl LayoutEngine {
                                         width: shape_w,
                                         height: inner_area.height,
                                     };
+                                    // [Task #1138] 분할 표 셀 컨텍스트
+                                    let table_cell_ctx = Some((
+                                        section_index,
+                                        para_index,
+                                        control_index,
+                                        cell_idx,
+                                        cp_idx,
+                                        ctrl_idx,
+                                    ));
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
@@ -1002,6 +1031,7 @@ impl LayoutEngine {
                                         styles,
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
+                                        table_cell_ctx,
                                     );
                                     inline_x += shape_w;
                                 } else {
@@ -1014,6 +1044,15 @@ impl LayoutEngine {
                                     } else {
                                         para_y
                                     };
+                                    // [Task #1138] 분할 표 셀 컨텍스트
+                                    let table_cell_ctx = Some((
+                                        section_index,
+                                        para_index,
+                                        control_index,
+                                        cell_idx,
+                                        cp_idx,
+                                        ctrl_idx,
+                                    ));
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
@@ -1024,6 +1063,7 @@ impl LayoutEngine {
                                         styles,
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
+                                        table_cell_ctx,
                                     );
                                 }
                             }
@@ -1085,6 +1125,7 @@ impl LayoutEngine {
                                         control_index: Some(ctrl_idx),
                                         cell_index: Some(cell_idx),
                                         cell_para_index: Some(cp_idx),
+                                        note_ref: None,
                                     }),
                                     BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                                 );
@@ -1209,6 +1250,7 @@ impl LayoutEngine {
                                         nested_table,
                                         section_index,
                                         styles,
+                                        outline_numbering_id,
                                         &ctrl_area,
                                         nested_y,
                                         bin_data_content,

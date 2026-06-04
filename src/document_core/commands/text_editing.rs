@@ -463,7 +463,7 @@ impl DocumentCore {
     }
 
     /// 부모 컨트롤(표 또는 글상자)의 dirty를 마킹한다.
-    fn mark_cell_control_dirty(
+    pub(crate) fn mark_cell_control_dirty(
         &mut self,
         section_idx: usize,
         parent_para_idx: usize,
@@ -2129,6 +2129,9 @@ impl DocumentCore {
                                 crate::renderer::pagination::PageItem::Shape {
                                     para_index, ..
                                 } => Some(*para_index),
+                                crate::renderer::pagination::PageItem::EndnoteSeparator {
+                                    ..
+                                } => None,
                             };
                             if pi == Some(para_idx) {
                                 if result.last() != Some(&global_page) {
@@ -2174,6 +2177,316 @@ impl DocumentCore {
             "구역 인덱스 {} 범위 초과",
             section_idx
         )))
+    }
+}
+
+fn find_text_y(node: &crate::renderer::render_tree::RenderNode, text: &str) -> Option<f64> {
+    use crate::renderer::render_tree::RenderNodeType;
+    if let RenderNodeType::TextRun(run) = &node.node_type {
+        if run.text.contains(text) {
+            return Some(node.bbox.y);
+        }
+    }
+    for child in &node.children {
+        if let Some(y) = find_text_y(child, text) {
+            return Some(y);
+        }
+    }
+    None
+}
+
+// ─── 중첩 표 path 기반 편집 API ──────────────────────────────────
+
+impl DocumentCore {
+    /// cellPath를 따라가서 최종 셀의 문단 목록에 대한 가변 참조를 얻는다.
+    /// path: [(control_index, cell_index, cell_para_index), ...]
+    pub(crate) fn get_cell_paragraphs_mut_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<&mut Vec<Paragraph>, HwpError> {
+        if path.is_empty() {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        }
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?;
+        let mut para: &mut Paragraph = section
+            .paragraphs
+            .get_mut(parent_para_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx)))?;
+
+        for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
+            let table = match para.controls.get_mut(ctrl_idx) {
+                Some(Control::Table(t)) => t.as_mut(),
+                _ => {
+                    return Err(HwpError::RenderError(format!(
+                        "경로[{}]: controls[{}]가 표가 아닙니다",
+                        i, ctrl_idx
+                    )))
+                }
+            };
+            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("경로[{}]: 셀 {} 범위 초과", i, cell_idx))
+            })?;
+            if i == path.len() - 1 {
+                return Ok(&mut cell.paragraphs);
+            }
+            para = cell.paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("경로[{}]: 셀문단 {} 범위 초과", i, cell_para_idx))
+            })?;
+        }
+        unreachable!()
+    }
+
+    /// cellPath를 따라가서 최종 셀의 문단에 대한 가변 참조를 얻는다.
+    /// path: [(control_index, cell_index, cell_para_index), ...]
+    pub(crate) fn get_cell_paragraph_mut_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<&mut Paragraph, HwpError> {
+        if path.is_empty() {
+            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
+        }
+        let last_path_index = path.len() - 1;
+        let cell_para_idx = path[last_path_index].2;
+        let cell_paragraphs =
+            self.get_cell_paragraphs_mut_by_path(section_idx, parent_para_idx, path)?;
+        cell_paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!(
+                "경로[{}]: 셀문단 {} 범위 초과",
+                last_path_index, cell_para_idx
+            ))
+        })
+    }
+
+    /// path 기반 셀 텍스트 삽입 (중첩 표 지원)
+    pub fn insert_text_in_cell_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+        text: &str,
+    ) -> Result<String, HwpError> {
+        let new_chars_count = text.chars().count();
+        let cell_para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
+        cell_para.insert_text_at(char_offset, text);
+
+        // 최외곽 표 dirty 마킹
+        let outer_ctrl = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
+
+        // 리플로우 (최외곽 표 기준 — 중첩 표 셀 폭은 별도 계산이 필요하나 우선 section dirty로 처리)
+        self.document.sections[section_idx].raw_stream = None;
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        let new_offset = char_offset + new_chars_count;
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_ctrl,
+            cell: path[0].1,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"charOffset\":{}",
+            new_offset
+        )))
+    }
+
+    /// path 기반 셀 텍스트 삭제 (중첩 표 지원)
+    pub fn delete_text_in_cell_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+        count: usize,
+    ) -> Result<String, HwpError> {
+        let cell_para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
+        cell_para.delete_text_at(char_offset, count);
+
+        let outer_ctrl = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
+        self.document.sections[section_idx].raw_stream = None;
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_ctrl,
+            cell: path[0].1,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"charOffset\":{}",
+            char_offset
+        )))
+    }
+
+    /// path 기반 셀 문단 분할 (중첩 표 지원)
+    pub fn split_paragraph_in_cell_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        // 마지막 path 엔트리의 cell_para_idx가 분할 대상
+        let last = path.last().unwrap();
+        let cell_para_idx = last.2;
+
+        // 셀에 접근하여 문단 분할
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError("구역 범위 초과".to_string()))?;
+        let mut para: &mut Paragraph = section
+            .paragraphs
+            .get_mut(parent_para_idx)
+            .ok_or_else(|| HwpError::RenderError("문단 범위 초과".to_string()))?;
+
+        // path를 따라 마지막 셀까지 진입
+        for (i, &(ctrl_idx, cell_idx, _cpi)) in path.iter().enumerate() {
+            let table = match para.controls.get_mut(ctrl_idx) {
+                Some(Control::Table(t)) => t.as_mut(),
+                _ => return Err(HwpError::RenderError("경로: 표가 아닙니다".to_string())),
+            };
+            let cell = table
+                .cells
+                .get_mut(cell_idx)
+                .ok_or_else(|| HwpError::RenderError("셀 범위 초과".to_string()))?;
+            if i == path.len() - 1 {
+                // 이 셀에서 문단 분할
+                if cell_para_idx >= cell.paragraphs.len() {
+                    return Err(HwpError::RenderError("셀문단 범위 초과".to_string()));
+                }
+                let new_para = cell.paragraphs[cell_para_idx].split_at(char_offset);
+                cell.paragraphs.insert(cell_para_idx + 1, new_para);
+                break;
+            }
+            para = cell
+                .paragraphs
+                .get_mut(_cpi)
+                .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
+        }
+
+        let outer_ctrl = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
+        self.document.sections[section_idx].raw_stream = None;
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_ctrl,
+            cell: path[0].1,
+        });
+        let new_cpi = cell_para_idx + 1;
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"cellParaIndex\":{},\"charOffset\":0",
+            new_cpi
+        )))
+    }
+
+    /// path 기반 셀 문단 병합 (중첩 표 지원)
+    pub fn merge_paragraph_in_cell_by_path(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+    ) -> Result<String, HwpError> {
+        let last = path.last().unwrap();
+        let cell_para_idx = last.2;
+        if cell_para_idx == 0 {
+            return Err(HwpError::RenderError(
+                "첫 문단은 병합할 수 없습니다".to_string(),
+            ));
+        }
+
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError("구역 범위 초과".to_string()))?;
+        let mut para: &mut Paragraph = section
+            .paragraphs
+            .get_mut(parent_para_idx)
+            .ok_or_else(|| HwpError::RenderError("문단 범위 초과".to_string()))?;
+
+        let mut merge_point = 0usize;
+        for (i, &(ctrl_idx, cell_idx, _cpi)) in path.iter().enumerate() {
+            let table = match para.controls.get_mut(ctrl_idx) {
+                Some(Control::Table(t)) => t.as_mut(),
+                _ => return Err(HwpError::RenderError("경로: 표가 아닙니다".to_string())),
+            };
+            let cell = table
+                .cells
+                .get_mut(cell_idx)
+                .ok_or_else(|| HwpError::RenderError("셀 범위 초과".to_string()))?;
+            if i == path.len() - 1 {
+                if cell_para_idx >= cell.paragraphs.len() {
+                    return Err(HwpError::RenderError("셀문단 범위 초과".to_string()));
+                }
+                let removed = cell.paragraphs.remove(cell_para_idx);
+                let prev = &mut cell.paragraphs[cell_para_idx - 1];
+                merge_point = prev.text.chars().count();
+                prev.merge_from(&removed);
+                break;
+            }
+            para = cell
+                .paragraphs
+                .get_mut(_cpi)
+                .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
+        }
+
+        let outer_ctrl = path[0].0;
+        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
+        self.document.sections[section_idx].raw_stream = None;
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellTextChanged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: outer_ctrl,
+            cell: path[0].1,
+        });
+        let prev_cpi = cell_para_idx - 1;
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"cellParaIndex\":{},\"charOffset\":{}",
+            prev_cpi, merge_point
+        )))
+    }
+
+    /// path 기반 셀 텍스트 조회 (중첩 표 지원)
+    pub fn get_text_in_cell_by_path(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        char_offset: usize,
+        count: usize,
+    ) -> Result<String, HwpError> {
+        let para = self.resolve_paragraph_by_path(section_idx, parent_para_idx, path)?;
+        let text_chars: Vec<char> = para.text.chars().collect();
+        let total = text_chars.len();
+        if char_offset > total {
+            return Err(HwpError::RenderError(format!(
+                "char_offset {} 범위 초과 (셀 문단 길이 {})",
+                char_offset, total
+            )));
+        }
+        let end = (char_offset + count).min(total);
+        Ok(text_chars[char_offset..end].iter().collect())
     }
 }
 
@@ -2585,299 +2898,5 @@ mod tests {
                 tree.err()
             );
         }
-    }
-}
-
-fn find_text_y(node: &crate::renderer::render_tree::RenderNode, text: &str) -> Option<f64> {
-    use crate::renderer::render_tree::RenderNodeType;
-    if let RenderNodeType::TextRun(run) = &node.node_type {
-        if run.text.contains(text) {
-            return Some(node.bbox.y);
-        }
-    }
-    for child in &node.children {
-        if let Some(y) = find_text_y(child, text) {
-            return Some(y);
-        }
-    }
-    None
-}
-
-// ─── 중첩 표 path 기반 편집 API ──────────────────────────────────
-
-impl DocumentCore {
-    /// cellPath를 따라가서 최종 셀의 문단에 대한 가변 참조를 얻는다.
-    /// path: [(control_index, cell_index, cell_para_index), ...]
-    pub(crate) fn get_cell_paragraph_mut_by_path(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-    ) -> Result<&mut Paragraph, HwpError> {
-        if path.is_empty() {
-            return Err(HwpError::RenderError("경로가 비어있습니다".to_string()));
-        }
-        let section = self
-            .document
-            .sections
-            .get_mut(section_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?;
-        let mut para: &mut Paragraph = section
-            .paragraphs
-            .get_mut(parent_para_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", parent_para_idx)))?;
-
-        for (i, &(ctrl_idx, cell_idx, cell_para_idx)) in path.iter().enumerate() {
-            let table = match para.controls.get_mut(ctrl_idx) {
-                Some(Control::Table(t)) => t.as_mut(),
-                _ => {
-                    return Err(HwpError::RenderError(format!(
-                        "경로[{}]: controls[{}]가 표가 아닙니다",
-                        i, ctrl_idx
-                    )))
-                }
-            };
-            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("경로[{}]: 셀 {} 범위 초과", i, cell_idx))
-            })?;
-            if i == path.len() - 1 {
-                // 마지막 레벨: 이 셀의 문단 반환
-                return cell.paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
-                    HwpError::RenderError(format!(
-                        "경로[{}]: 셀문단 {} 범위 초과",
-                        i, cell_para_idx
-                    ))
-                });
-            }
-            // 중간 레벨: 이 셀의 문단으로 진입 후 다음 표 탐색
-            para = cell.paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("경로[{}]: 셀문단 {} 범위 초과", i, cell_para_idx))
-            })?;
-        }
-        unreachable!()
-    }
-
-    /// path 기반 셀 텍스트 삽입 (중첩 표 지원)
-    pub fn insert_text_in_cell_by_path(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-        char_offset: usize,
-        text: &str,
-    ) -> Result<String, HwpError> {
-        let new_chars_count = text.chars().count();
-        let cell_para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
-        cell_para.insert_text_at(char_offset, text);
-
-        // 최외곽 표 dirty 마킹
-        let outer_ctrl = path[0].0;
-        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
-
-        // 리플로우 (최외곽 표 기준 — 중첩 표 셀 폭은 별도 계산이 필요하나 우선 section dirty로 처리)
-        self.document.sections[section_idx].raw_stream = None;
-        self.mark_section_dirty(section_idx);
-        self.paginate_if_needed();
-
-        let new_offset = char_offset + new_chars_count;
-        self.event_log.push(DocumentEvent::CellTextChanged {
-            section: section_idx,
-            para: parent_para_idx,
-            ctrl: outer_ctrl,
-            cell: path[0].1,
-        });
-        Ok(super::super::helpers::json_ok_with(&format!(
-            "\"charOffset\":{}",
-            new_offset
-        )))
-    }
-
-    /// path 기반 셀 텍스트 삭제 (중첩 표 지원)
-    pub fn delete_text_in_cell_by_path(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-        char_offset: usize,
-        count: usize,
-    ) -> Result<String, HwpError> {
-        let cell_para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
-        cell_para.delete_text_at(char_offset, count);
-
-        let outer_ctrl = path[0].0;
-        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
-        self.document.sections[section_idx].raw_stream = None;
-        self.mark_section_dirty(section_idx);
-        self.paginate_if_needed();
-
-        self.event_log.push(DocumentEvent::CellTextChanged {
-            section: section_idx,
-            para: parent_para_idx,
-            ctrl: outer_ctrl,
-            cell: path[0].1,
-        });
-        Ok(super::super::helpers::json_ok_with(&format!(
-            "\"charOffset\":{}",
-            char_offset
-        )))
-    }
-
-    /// path 기반 셀 문단 분할 (중첩 표 지원)
-    pub fn split_paragraph_in_cell_by_path(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-        char_offset: usize,
-    ) -> Result<String, HwpError> {
-        // 마지막 path 엔트리의 cell_para_idx가 분할 대상
-        let last = path.last().unwrap();
-        let cell_para_idx = last.2;
-
-        // 셀에 접근하여 문단 분할
-        let section = self
-            .document
-            .sections
-            .get_mut(section_idx)
-            .ok_or_else(|| HwpError::RenderError("구역 범위 초과".to_string()))?;
-        let mut para: &mut Paragraph = section
-            .paragraphs
-            .get_mut(parent_para_idx)
-            .ok_or_else(|| HwpError::RenderError("문단 범위 초과".to_string()))?;
-
-        // path를 따라 마지막 셀까지 진입
-        for (i, &(ctrl_idx, cell_idx, _cpi)) in path.iter().enumerate() {
-            let table = match para.controls.get_mut(ctrl_idx) {
-                Some(Control::Table(t)) => t.as_mut(),
-                _ => return Err(HwpError::RenderError("경로: 표가 아닙니다".to_string())),
-            };
-            let cell = table
-                .cells
-                .get_mut(cell_idx)
-                .ok_or_else(|| HwpError::RenderError("셀 범위 초과".to_string()))?;
-            if i == path.len() - 1 {
-                // 이 셀에서 문단 분할
-                if cell_para_idx >= cell.paragraphs.len() {
-                    return Err(HwpError::RenderError("셀문단 범위 초과".to_string()));
-                }
-                let new_para = cell.paragraphs[cell_para_idx].split_at(char_offset);
-                cell.paragraphs.insert(cell_para_idx + 1, new_para);
-                break;
-            }
-            para = cell
-                .paragraphs
-                .get_mut(_cpi)
-                .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
-        }
-
-        let outer_ctrl = path[0].0;
-        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
-        self.document.sections[section_idx].raw_stream = None;
-        self.mark_section_dirty(section_idx);
-        self.paginate_if_needed();
-
-        self.event_log.push(DocumentEvent::CellTextChanged {
-            section: section_idx,
-            para: parent_para_idx,
-            ctrl: outer_ctrl,
-            cell: path[0].1,
-        });
-        let new_cpi = cell_para_idx + 1;
-        Ok(super::super::helpers::json_ok_with(&format!(
-            "\"cellParaIndex\":{},\"charOffset\":0",
-            new_cpi
-        )))
-    }
-
-    /// path 기반 셀 문단 병합 (중첩 표 지원)
-    pub fn merge_paragraph_in_cell_by_path(
-        &mut self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-    ) -> Result<String, HwpError> {
-        let last = path.last().unwrap();
-        let cell_para_idx = last.2;
-        if cell_para_idx == 0 {
-            return Err(HwpError::RenderError(
-                "첫 문단은 병합할 수 없습니다".to_string(),
-            ));
-        }
-
-        let section = self
-            .document
-            .sections
-            .get_mut(section_idx)
-            .ok_or_else(|| HwpError::RenderError("구역 범위 초과".to_string()))?;
-        let mut para: &mut Paragraph = section
-            .paragraphs
-            .get_mut(parent_para_idx)
-            .ok_or_else(|| HwpError::RenderError("문단 범위 초과".to_string()))?;
-
-        let mut merge_point = 0usize;
-        for (i, &(ctrl_idx, cell_idx, _cpi)) in path.iter().enumerate() {
-            let table = match para.controls.get_mut(ctrl_idx) {
-                Some(Control::Table(t)) => t.as_mut(),
-                _ => return Err(HwpError::RenderError("경로: 표가 아닙니다".to_string())),
-            };
-            let cell = table
-                .cells
-                .get_mut(cell_idx)
-                .ok_or_else(|| HwpError::RenderError("셀 범위 초과".to_string()))?;
-            if i == path.len() - 1 {
-                if cell_para_idx >= cell.paragraphs.len() {
-                    return Err(HwpError::RenderError("셀문단 범위 초과".to_string()));
-                }
-                let removed = cell.paragraphs.remove(cell_para_idx);
-                let prev = &mut cell.paragraphs[cell_para_idx - 1];
-                merge_point = prev.text.chars().count();
-                prev.merge_from(&removed);
-                break;
-            }
-            para = cell
-                .paragraphs
-                .get_mut(_cpi)
-                .ok_or_else(|| HwpError::RenderError("셀문단 범위 초과".to_string()))?;
-        }
-
-        let outer_ctrl = path[0].0;
-        self.mark_cell_control_dirty(section_idx, parent_para_idx, outer_ctrl);
-        self.document.sections[section_idx].raw_stream = None;
-        self.mark_section_dirty(section_idx);
-        self.paginate_if_needed();
-
-        self.event_log.push(DocumentEvent::CellTextChanged {
-            section: section_idx,
-            para: parent_para_idx,
-            ctrl: outer_ctrl,
-            cell: path[0].1,
-        });
-        let prev_cpi = cell_para_idx - 1;
-        Ok(super::super::helpers::json_ok_with(&format!(
-            "\"cellParaIndex\":{},\"charOffset\":{}",
-            prev_cpi, merge_point
-        )))
-    }
-
-    /// path 기반 셀 텍스트 조회 (중첩 표 지원)
-    pub fn get_text_in_cell_by_path(
-        &self,
-        section_idx: usize,
-        parent_para_idx: usize,
-        path: &[(usize, usize, usize)],
-        char_offset: usize,
-        count: usize,
-    ) -> Result<String, HwpError> {
-        let para = self.resolve_paragraph_by_path(section_idx, parent_para_idx, path)?;
-        let text_chars: Vec<char> = para.text.chars().collect();
-        let total = text_chars.len();
-        if char_offset > total {
-            return Err(HwpError::RenderError(format!(
-                "char_offset {} 범위 초과 (셀 문단 길이 {})",
-                char_offset, total
-            )));
-        }
-        let end = (char_offset + count).min(total);
-        Ok(text_chars[char_offset..end].iter().collect())
     }
 }

@@ -453,6 +453,23 @@ id=4 level=1 → counter[1]=2 → "2."    (앞 번호 이어: 같은 id)
 
 InFrontOfText(글앞으로, text_wrap=3) / BehindText(글뒤로, text_wrap=2) 표는 **공간을 차지하지 않는 플로팅 개체**이다.
 
+### CommonObjAttr text wrap 비트 실측 정정
+
+`CTRL_HEADER`의 CommonObjAttr `bit 21..23`은 한컴/HWP5 실측과 PR #1015 `samples/test-image.hwp`/`samples/test-image.hwpx` fixture 기준으로 다음처럼 파싱한다.
+
+| bits | rhwp IR | 한컴 UI 진단 라벨 |
+|------|----|--------------|
+| 0 | `Square` | 어울림 |
+| 1 | `TopAndBottom` | 자리차지 |
+| 2 | `BehindText` | 글뒤로 |
+| 3 | `InFrontOfText` | 글앞으로 |
+
+기존 스펙 표처럼 `1=Tight`, `2=Through`, `3=TopAndBottom`, `4=BehindText`, `5=InFrontOfText`로 읽으면 HWP5 원본의 저장값과 맞지 않는다. `test-image.hwp`는 각 배치 방식을 별도 페이지/문단의 단일 그림으로 저장한 fixture이며, control record 순서와 문단 라벨 순서는 `TopAndBottom(자리차지) → Square(어울림) → InFrontOfText(글앞으로) → BehindText(글뒤로)`이다.
+
+같은 fixture의 `글자처럼 취급` 그림은 `treat_as_char=true`이고, wrap bits/HWPX `textWrap` 값은 `BehindText`로 남아 있다. 이 경우 사용자 UI의 핵심 속성은 wrap 라벨이 아니라 **글자처럼 취급** 플래그이므로, 진단기는 `배치: 글뒤로, 글자처럼=true`처럼 raw wrap과 TAC 플래그를 함께 표시해야 한다. HWPX의 `TIGHT`/`THROUGH`는 별도 XML 값으로 보존될 수 있으나, HWP5 CommonObjAttr 저장/파싱에서는 현재 `Square` 계열로 축약한다.
+
+한컴 도움말의 “본문과의 배치” 설명 기준으로 `어울림`은 개체와 본문이 같은 줄을 나누어 쓰되 서로 자리를 침범하지 않도록 배치하는 의미이며, `자리 차지`와 별도 의미다. 따라서 HWP5 `Square/어울림` 그림은 `LINE_SEG`가 저장한 좁은 줄폭과 첫 wrap 줄의 `vertical_pos`를 함께 따라야 하고, `TopAndBottom/자리차지`로 강제 변환하지 않는다.
+
 - **Pagination**: Shape처럼 `PageItem::Shape`로 수집 (높이 차지 없음)
 - **Layout**: shapes pass에서 `layout_table` 호출하여 paper 기준 절대 좌표에 렌더링
 

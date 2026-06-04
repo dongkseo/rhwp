@@ -59,6 +59,9 @@ pub struct DocumentCore {
     pub(crate) layout_engine: LayoutEngine,
     /// 내부 클립보드
     pub(crate) clipboard: Option<ClipboardData>,
+    /// [Task #1161] 떠 있는 개체(treat_as_char=false) 반복 붙여넣기 cascade 카운터.
+    /// 새 컨트롤 복사 시 0 으로 리셋, 붙여넣기마다 +1 하여 위치 오프셋 누적(한컴 정합).
+    pub(crate) paste_cascade_count: u32,
     /// 문단부호(¶) 표시 여부
     pub(crate) show_paragraph_marks: bool,
     /// 조판부호 표시 여부 (개체 마커 [표]/[그림] 등, 문단부호 포함)
@@ -180,7 +183,7 @@ impl DocumentCore {
             })
             .collect();
         format!(
-            "{{\"version\":\"{}.{}.{}.{}\",\"sectionCount\":{},\"pageCount\":{},\"encrypted\":{},\"fallbackFont\":\"{}\",\"fontsUsed\":[{}]}}",
+            "{{\"version\":\"{}.{}.{}.{}\",\"sectionCount\":{},\"pageCount\":{},\"encrypted\":{},\"hwp3Variant\":{},\"fallbackFont\":\"{}\",\"fontsUsed\":[{}]}}",
             self.document.header.version.major,
             self.document.header.version.minor,
             self.document.header.version.build,
@@ -188,6 +191,7 @@ impl DocumentCore {
             self.document.sections.len(),
             self.page_count(),
             self.document.header.encrypted,
+            self.document.is_hwp3_variant,
             escaped_fallback,
             fonts_json.join(","),
         )
@@ -221,6 +225,7 @@ impl DocumentCore {
             fallback_font: DEFAULT_FALLBACK_FONT.to_string(),
             layout_engine: LayoutEngine::new(DEFAULT_DPI),
             clipboard: None,
+            paste_cascade_count: 0,
             show_paragraph_marks: false,
             show_control_codes: false,
             show_transparent_borders: false,

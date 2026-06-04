@@ -13,6 +13,15 @@ use crate::renderer::composer::reflow_line_segs;
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::resolve_styles;
 
+fn char_shape_mods_affect_text_flow(mods: &crate::model::style::CharShapeMods) -> bool {
+    mods.base_size.is_some()
+        || mods.font_ids.is_some()
+        || mods.ratios.is_some()
+        || mods.spacings.is_some()
+        || mods.relative_sizes.is_some()
+        || mods.char_offsets.is_some()
+}
+
 impl DocumentCore {
     pub fn get_char_properties_at_native(
         &self,
@@ -67,10 +76,20 @@ impl DocumentCore {
             .sections
             .get(sec_idx)
             .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", sec_idx)))?;
-        let para = section
-            .paragraphs
-            .get(para_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", para_idx)))?;
+        let Some(para) = section.paragraphs.get(para_idx) else {
+            if let Some(src) = self.virtual_endnote_para_source(sec_idx, para_idx) {
+                return self.get_para_properties_in_footnote_native(
+                    src.section_index,
+                    src.para_index,
+                    src.control_index,
+                    src.note_para_index,
+                );
+            }
+            return Err(HwpError::RenderError(format!(
+                "문단 {} 범위 초과",
+                para_idx
+            )));
+        };
         let mut json = self.build_para_properties_json(para.para_shape_id, sec_idx);
 
         // 번호 시작 방식 판별: numbering_id 패턴 기반
@@ -122,6 +141,20 @@ impl DocumentCore {
         }
 
         Ok(json)
+    }
+
+    fn virtual_endnote_para_source(
+        &self,
+        sec_idx: usize,
+        para_idx: usize,
+    ) -> Option<crate::renderer::pagination::EndnoteParaSource> {
+        let body_len = self.document.sections.get(sec_idx)?.paragraphs.len();
+        let local_idx = para_idx.checked_sub(body_len)?;
+        self.pagination
+            .get(sec_idx)?
+            .endnote_para_sources
+            .get(local_idx)
+            .cloned()
     }
 
     /// 셀 내부 문단의 문단 속성 조회 (네이티브)
@@ -693,9 +726,14 @@ impl DocumentCore {
         } else {
             raw_left_hu + raw_indent_hu.min(0)
         };
-        let dialog_margin_left_px = crate::renderer::hwpunit_to_px(effective_left_hu, self.dpi);
-        let dialog_margin_right_px = crate::renderer::hwpunit_to_px(raw_right_hu, self.dpi);
-        let dialog_indent_px = crate::renderer::hwpunit_to_px(raw_indent_hu, self.dpi);
+        // [Issue #1172] ParaShape margin/indent 의 IR 값은 2× 스케일이다
+        // (HWP5 바이너리 원본 스케일, HWPX 도 parser 의 val2x 로 통일 — header.rs).
+        // 즉 1pt = 200 HWPUNIT. 한컴 편집기 정답: para-001 margin 2000 → 10.0pt.
+        // dialog 표시(px→pt by frontend pxToPt)와 정합하려면 표준 hwpunit_to_px(7200/inch,
+        // 1× 가정) 적용 전에 2× 스케일을 1× 로 환산(÷2)해야 한다. (종전: ÷2 누락 → 2배 표시)
+        let dialog_margin_left_px = crate::renderer::hwpunit_to_px(effective_left_hu / 2, self.dpi);
+        let dialog_margin_right_px = crate::renderer::hwpunit_to_px(raw_right_hu / 2, self.dpi);
+        let dialog_indent_px = crate::renderer::hwpunit_to_px(raw_indent_hu / 2, self.dpi);
 
         match ps {
             Some(ps) => {
@@ -915,8 +953,9 @@ impl DocumentCore {
         }
         self.apply_char_mods_to_paragraph(sec_idx, para_idx, start_offset, end_offset, &mods);
 
-        // 글꼴 크기 변경 시 LineSeg 재계산 (line_height, baseline_distance 갱신)
-        if mods.base_size.is_some() {
+        // 텍스트 폭/높이에 영향을 주는 글자 모양 변경 시 LineSeg 재계산.
+        // 장평/자간은 글꼴 크기처럼 줄나눔과 페이지네이션을 바꾼다.
+        if char_shape_mods_affect_text_flow(&mods) {
             let styles = resolve_styles(&self.document.doc_info, self.dpi);
             let section = &self.document.sections[sec_idx];
             let page_def = &section.section_def.page_def;
@@ -998,8 +1037,8 @@ impl DocumentCore {
             cell_para.apply_char_shape_range(start_offset, end_offset, new_id);
         }
 
-        // 글꼴 크기 변경 시 셀 내 LineSeg 재계산
-        if mods.base_size.is_some() {
+        // 텍스트 폭/높이에 영향을 주는 글자 모양 변경 시 셀 내 LineSeg 재계산.
+        if char_shape_mods_affect_text_flow(&mods) {
             let dpi = self.dpi;
             let styles = resolve_styles(&self.document.doc_info, dpi);
             let section = &self.document.sections[sec_idx];
@@ -1056,6 +1095,15 @@ impl DocumentCore {
             return Err(HwpError::RenderError(format!("구역 {} 범위 초과", sec_idx)));
         }
         if para_idx >= self.document.sections[sec_idx].paragraphs.len() {
+            if let Some(src) = self.virtual_endnote_para_source(sec_idx, para_idx) {
+                return self.apply_para_format_in_footnote_native(
+                    src.section_index,
+                    src.para_index,
+                    src.control_index,
+                    src.note_para_index,
+                    props_json,
+                );
+            }
             return Err(HwpError::RenderError(format!(
                 "문단 {} 범위 초과",
                 para_idx
@@ -1665,5 +1713,35 @@ impl DocumentCore {
             }
         }
         Ok("{\"ok\":true,\"exists\":false}".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::char_shape_mods_affect_text_flow;
+    use crate::model::style::CharShapeMods;
+
+    #[test]
+    fn char_ratio_and_spacing_changes_require_text_reflow() {
+        let mods = CharShapeMods {
+            ratios: Some([99; 7]),
+            ..Default::default()
+        };
+        assert!(char_shape_mods_affect_text_flow(&mods));
+
+        let mods = CharShapeMods {
+            spacings: Some([-1; 7]),
+            ..Default::default()
+        };
+        assert!(char_shape_mods_affect_text_flow(&mods));
+    }
+
+    #[test]
+    fn paint_only_char_shape_changes_do_not_require_text_reflow() {
+        let mods = CharShapeMods {
+            underline: Some(true),
+            ..Default::default()
+        };
+        assert!(!char_shape_mods_affect_text_flow(&mods));
     }
 }

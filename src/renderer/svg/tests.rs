@@ -248,6 +248,230 @@ fn test_bmp_to_png_invalid_returns_none() {
     assert!(bmp_bytes_to_png_bytes(&junk).is_none());
 }
 
+/// 최소 2x1 8-bit paletted PCX를 생성한다 (테스트용).
+fn make_minimal_pcx_2x1() -> Vec<u8> {
+    let mut header = [0u8; 128];
+    header[0] = 0x0A; // PCX manufacturer
+    header[1] = 0x05; // version 3.0+
+    header[2] = 0x01; // RLE
+    header[3] = 0x08; // bits per pixel per plane
+    header[4..6].copy_from_slice(&0u16.to_le_bytes()); // xmin
+    header[6..8].copy_from_slice(&0u16.to_le_bytes()); // ymin
+    header[8..10].copy_from_slice(&1u16.to_le_bytes()); // xmax = width - 1
+    header[10..12].copy_from_slice(&0u16.to_le_bytes()); // ymax = height - 1
+    header[65] = 1; // color planes
+    header[66..68].copy_from_slice(&2u16.to_le_bytes()); // bytes per line
+    header[68..70].copy_from_slice(&1u16.to_le_bytes()); // color palette type
+
+    let mut pcx = Vec::from(header);
+    pcx.extend_from_slice(&[0, 1]); // white pixel, black pixel
+    pcx.push(0x0C); // 256-color palette marker
+    let mut palette = vec![0u8; 256 * 3];
+    palette[0..3].copy_from_slice(&[255, 255, 255]);
+    palette[3..6].copy_from_slice(&[0, 0, 0]);
+    pcx.extend_from_slice(&palette);
+    pcx
+}
+
+#[test]
+fn test_pcx_to_png_maps_white_to_transparent() {
+    let pcx = make_minimal_pcx_2x1();
+    let png = pcx_bytes_to_png_bytes(&pcx).expect("PCX->PNG 변환 실패");
+    let img = image::load_from_memory(&png)
+        .expect("PNG decode")
+        .to_rgba8();
+
+    assert_eq!(img.dimensions(), (2, 1));
+    assert_eq!(img.get_pixel(0, 0).0, [255, 255, 255, 0]);
+    assert_eq!(img.get_pixel(1, 0).0, [0, 0, 0, 255]);
+}
+
+#[test]
+fn test_page_background_image_pcx_converts_to_png() {
+    let image = PageBackgroundImage {
+        data: make_minimal_pcx_2x1(),
+        fill_mode: ImageFillMode::FitToSize,
+        brightness: 0,
+        contrast: 0,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(output.contains("data:image/png;base64,iVBORw0KGgo"));
+    assert!(!output.contains("data:image/x-pcx"));
+}
+
+#[test]
+fn test_page_background_image_fit_to_size_preserves_bbox_output() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::FitToSize,
+        brightness: 0,
+        contrast: 0,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        output.contains(
+            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"none\""
+        ),
+        "FitToSize PageBackground image should keep bbox output: {output}"
+    );
+}
+
+#[test]
+fn test_page_background_image_center_uses_original_image_size() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::Center,
+        brightness: 0,
+        contrast: 0,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        output.contains(
+            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+        ),
+        "Center PageBackground image should render at original size in bbox center: {output}"
+    );
+    assert!(
+        !output.contains(
+            "<image x=\"10\" y=\"20\" width=\"100\" height=\"50\" preserveAspectRatio=\"none\""
+        ),
+        "Center PageBackground image must not stretch to the full bbox: {output}"
+    );
+}
+
+#[test]
+fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::Center,
+        brightness: -50,
+        contrast: 70,
+        effect: crate::model::image::ImageEffect::RealPic,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        !output.contains("rhwp-img-bc-b-50c70"),
+        "RealPic PageBackground watermark should preserve source color without brightness/contrast filter: {output}"
+    );
+    assert!(
+        !output.contains("rhwp-realpic-watermark-tone"),
+        "RealPic PageBackground watermark should bake the shared tone transform into image pixels: {output}"
+    );
+    assert!(
+        output.contains("data:image/png;base64,"),
+        "RealPic PageBackground watermark should render as a tone-baked PNG: {output}"
+    );
+    assert!(
+        output.contains(&format!(
+            "<g opacity=\"{}\">",
+            REAL_PICTURE_WATERMARK_PAGE_OPACITY
+        )),
+        "PageBackground watermark preset should apply page watermark opacity: {output}"
+    );
+    assert!(
+        output.contains(
+            "<g clip-path=\"url(#fill-clip-1)\"><image x=\"59\" y=\"44\" width=\"2\" height=\"2\" preserveAspectRatio=\"none\""
+        ),
+        "PageBackground watermark should still preserve Center placement: {output}"
+    );
+}
+
+#[test]
+fn test_page_background_image_non_realpic_watermark_uses_legacy_opacity() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let image = PageBackgroundImage {
+        data: png,
+        fill_mode: ImageFillMode::FitToSize,
+        brightness: -50,
+        contrast: 70,
+        effect: crate::model::image::ImageEffect::GrayScale,
+    };
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_page_background_image(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        output.contains(&format!(
+            "<g opacity=\"{}\">",
+            LEGACY_IMAGE_WATERMARK_OPACITY
+        )),
+        "non-RealPic PageBackground watermark should apply legacy watermark opacity: {output}"
+    );
+    assert!(
+        output.contains("rhwp-img-grayscale"),
+        "non-RealPic PageBackground watermark should keep the image effect filter: {output}"
+    );
+    assert!(
+        output.contains("rhwp-img-bc-b-50c70"),
+        "non-RealPic PageBackground watermark should keep the brightness/contrast filter: {output}"
+    );
+}
+
+#[test]
+fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
+    let png = bmp_bytes_to_png_bytes(&make_minimal_bmp_2x2()).expect("BMP->PNG 변환 실패");
+    let mut image = ImageNode::new(1, Some(png));
+    image.fill_mode = Some(ImageFillMode::FitToSize);
+    image.brightness = -50;
+    image.contrast = 70;
+    image.effect = crate::model::image::ImageEffect::RealPic;
+    let bbox = BoundingBox::new(10.0, 20.0, 100.0, 50.0);
+    let mut renderer = SvgRenderer::new();
+    renderer.begin_page(200.0, 100.0);
+
+    renderer.render_image_node(&image, &bbox);
+
+    let output = renderer.output();
+    assert!(
+        !output.contains("rhwp-img-bc-b-50c70"),
+        "RealPic background watermark fill should preserve source color without brightness/contrast filter: {output}"
+    );
+    assert!(
+        !output.contains("rhwp-realpic-watermark-tone"),
+        "RealPic background watermark fill should bake the shared tone transform into image pixels: {output}"
+    );
+    assert!(
+        output.contains(&format!(
+            "<g opacity=\"{}\">",
+            REAL_PICTURE_WATERMARK_FILL_OPACITY
+        )),
+        "RealPic background watermark fill should apply fill watermark opacity: {output}"
+    );
+}
+
 #[test]
 fn test_brightness_contrast_filter_zero_returns_none() {
     let mut renderer = SvgRenderer::new();

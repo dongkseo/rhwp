@@ -919,6 +919,8 @@ impl Paginator {
             hidden_empty_paras,
             endnotes: Vec::new(),
             endnote_paragraphs: Vec::new(),
+            endnote_para_sources: Vec::new(),
+            endnote_between_notes_hu: 0,
         }
     }
 
@@ -2651,13 +2653,15 @@ impl Paginator {
                 pages
                     .get(i + 1)
                     .and_then(|p| p.column_contents.first())
-                    .and_then(|cc| cc.items.first())
-                    .map(|item| match item {
-                        PageItem::FullParagraph { para_index } => *para_index,
-                        PageItem::PartialParagraph { para_index, .. } => *para_index,
-                        PageItem::Table { para_index, .. } => *para_index,
-                        PageItem::PartialTable { para_index, .. } => *para_index,
-                        PageItem::Shape { para_index, .. } => *para_index,
+                    .and_then(|cc| {
+                        cc.items.iter().find_map(|item| match item {
+                            PageItem::FullParagraph { para_index } => Some(*para_index),
+                            PageItem::PartialParagraph { para_index, .. } => Some(*para_index),
+                            PageItem::Table { para_index, .. } => Some(*para_index),
+                            PageItem::PartialTable { para_index, .. } => Some(*para_index),
+                            PageItem::Shape { para_index, .. } => Some(*para_index),
+                            PageItem::EndnoteSeparator { .. } => None,
+                        })
                     })
                     .unwrap_or(usize::MAX)
             })
@@ -2675,6 +2679,7 @@ impl Paginator {
                     PageItem::Table { para_index, .. } => Some(*para_index),
                     PageItem::PartialTable { para_index, .. } => Some(*para_index),
                     PageItem::Shape { para_index, .. } => Some(*para_index),
+                    PageItem::EndnoteSeparator { .. } => None,
                 })
                 .max()
                 .unwrap_or(0);
@@ -2767,6 +2772,7 @@ impl Paginator {
                     PageItem::Table { para_index, .. } => *para_index,
                     PageItem::PartialTable { para_index, .. } => *para_index,
                     PageItem::Shape { para_index, .. } => *para_index,
+                    PageItem::EndnoteSeparator { .. } => continue,
                 };
                 if pi == para_idx {
                     return true;

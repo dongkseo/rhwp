@@ -18,6 +18,7 @@
  */
 
 import type { ValidationReport } from '../core/wasm-bridge';
+import { enableDialogDrag } from './dialog-drag';
 
 /** 모달이 반환하는 사용자 선택. */
 export type ValidationChoice = 'auto-fix' | 'as-is' | 'cancel';
@@ -66,6 +67,7 @@ export class ValidationModal {
     closeBtn.addEventListener('click', () => this.resolve('cancel'));
     title.appendChild(closeBtn);
     dialog.appendChild(title);
+    enableDialogDrag(dialog, title);
 
     // 본문
     const body = document.createElement('div');

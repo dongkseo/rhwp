@@ -48,11 +48,17 @@ const FONT_LIST: FontEntry[] = [
   // === 한글 시스템 폰트 → 오픈소스 대체 (OS 폰트 없을 때 폴백) ===
   { name: 'Malgun Gothic', file: 'fonts/Pretendard-Regular.woff2' },
   { name: '맑은 고딕', file: 'fonts/Pretendard-Regular.woff2' },
-  { name: '돋움', file: 'fonts/NotoSansKR-Regular.woff2' },
-  { name: '돋움체', file: 'fonts/NotoSansKR-Regular.woff2' },
-  { name: '굴림', file: 'fonts/NotoSansKR-Regular.woff2' },
+  // Task #1224: 한컴 돋움/MS 돋움·굴림 계열은 한컴 돋움(획 두께 페이지밀도 0.265)에
+  // 근접한 Noto Sans KR ExtraLight 로 대체. 기존 NotoSansKR-Regular(밀도 0.378)는
+  // 획이 +43% 두꺼워 PDF 대비 과도하게 굵게 보였다(네이티브 generic_fallback 와 정합).
+  { name: '돋움', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
+  { name: '돋움체', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
+  { name: '굴림', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
   { name: '굴림체', file: 'fonts/D2Coding-Regular.woff2' },
-  { name: '새굴림', file: 'fonts/NotoSansKR-Regular.woff2' },
+  { name: '새굴림', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
+  // Haansoft Dotum: HWP 문서가 직접 지정하는 한컴 돋움 영문명(예: 수능 모의고사 본문).
+  // 기존 미등록 → 체인의 'Malgun Gothic'(Pretendard) 가 먼저 매칭되어 굵게 렌더됐다.
+  { name: 'Haansoft Dotum', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
   { name: '바탕', file: 'fonts/NotoSerifKR-Regular.woff2' },
   { name: '바탕체', file: 'fonts/D2Coding-Regular.woff2' },
   { name: '궁서', file: 'fonts/GowunBatang-Regular.woff2' },
@@ -66,6 +72,9 @@ const FONT_LIST: FontEntry[] = [
   { name: 'Palatino Linotype', file: 'fonts/NotoSerifKR-Regular.woff2' },
   // === Noto (OFL, 로컬) ===
   { name: 'Noto Sans KR', file: 'fonts/NotoSansKR-Regular.woff2' },
+  // Task #1224: generic_fallback sans 체인 말단의 'Noto Sans KR ExtraLight' 해석용.
+  // 미등록 고딕 문서폰트가 체인을 따라 내려올 때 무거운 Noto 직전에 ExtraLight 매칭.
+  { name: 'Noto Sans KR ExtraLight', file: 'fonts/NotoSansKR-ExtraLight.woff2' },
   { name: 'Noto Serif KR', file: 'fonts/NotoSerifKR-Regular.woff2' },
   // === Pretendard ===
   { name: 'Pretendard', file: 'fonts/Pretendard-Regular.woff2' },

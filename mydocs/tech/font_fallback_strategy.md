@@ -790,3 +790,67 @@ KTUG HanyangPuaTableProject (Public Domain) — 5,660 매핑 (BMP PUA U+E0BC ~ U
 |------|------|
 | Supplementary PUA-A (U+F0854/F0855 책괄호 등) | 본 task 외 — 별도 issue 권장 |
 | 한컴 자체 PUA 기호 | Task #509 패턴 정합 (별도 매핑 필요) |
+
+
+---
+
+## 11. 메트릭(advance) ↔ 렌더 글리프(대체폰트) 시각 정합 (Task #1224)
+
+### 11.1 본질 — 위치·폭은 제어, **획 두께(weight)는 폴백 폰트가 결정**
+
+SVG 텍스트(`svg.rs::draw_text`)는 클러스터별 `<text>`를 메트릭-DB advance 위치(`char_x`)에
+방출하고 `textLength`/`lengthAdjust`로 **가로폭까지 제약**한다. 따라서 위치·자간·가로폭은
+전부 메트릭 DB가 결정하고, **유일하게 폴백 폰트가 좌우하는 차원은 글리프의 세로 잉크/획
+두께(weight)** 이다.
+
+### 11.2 사례 — 한컴 돋움 본문이 PDF보다 두껍게
+
+`samples/3-09월_교육_통합_2023.hwp`(본문 `Haansoft Dotum`)을 PDF 정답지와 **동일 페이지
+픽셀폭(1240px)** 으로 렌더해 같은 본문 줄을 측정:
+
+| | 잉크 높이 | 획 밀도(잉크 픽셀/면적) |
+|--|--|--|
+| rhwp (Noto Sans CJK KR Regular) | 17px | 0.378 |
+| PDF (한컴 돋움) | 17px | 0.265 |
+
+- **잉크 높이 동일** → em-fill(크기) 차이는 없다. 차이는 **획 두께**(rhwp +43%).
+- 원인: 폴백 `Noto Sans KR`(= Noto Sans CJK KR) **Regular 의 획이 한컴 돋움보다 두껍다.**
+
+### 11.3 해결 — 한컴 돋움 weight 에 근접한 대체폰트
+
+오픈소스 한글 고딕은 대부분 0.83~0.89 의 큰 글자면이라 크기로는 차이가 없고, **weight 만
+조절**하면 된다. 실제 rsvg 페이지 밀도(목표 한컴 돋움 0.265):
+
+| 대체 후보 | 페이지 밀도 |
+|----------|-----------|
+| Noto Sans CJK KR Regular(기존) | 0.378 |
+| Noto Sans KR Light (300) | 0.302 |
+| **Noto Sans KR ExtraLight (200)** | **0.277** ← 채택 |
+
+**채택: Noto Sans KR ExtraLight (wght 200)**. 한컴 돋움 형태(중립 고딕)와 동일 Noto 계열,
+OFL, 한글 11,172 완비. `ttfs/opensource/NotoSansKR-ExtraLight.ttf`(네이티브) +
+`web/fonts/NotoSansKR-ExtraLight.woff2`(웹) 번들.
+
+### 11.4 적용 경로와 한계 (중요)
+
+| 경로 | 동작 | 충실도 |
+|------|------|--------|
+| **웹(rhwp-studio)** | `font-loader.ts` `@font-face` 로 ExtraLight 로드. `Haansoft Dotum`·돋움·굴림 → ExtraLight 매핑 | 자동·결정적 |
+| **네이티브 CLI(rsvg)** | SVG 의 `font-family` 체인을 fontconfig 가 해석 → ExtraLight 가 **설치돼 있어야** 적용 (`cp ttfs/opensource/*.ttf ~/.fonts && fc-cache`) | 설치 시 적용 |
+| **`--embed-fonts` @font-face** | typst `subsetter` 가 **cmap 제거** → 브라우저 `<text>` 문자 매핑 불가 | **현재 무효** |
+
+- **임베딩 한계**: PDF 임베딩용 `subsetter`(cmap 불요)를 SVG @font-face 에 재사용하므로
+  cmap 부재로 브라우저가 글리프를 못 찾는다. 실효 충실도 경로는 **폴백 체인 + 폰트시스템
+  설치**다. cmap 보존 서브셋 전환은 별도 이슈 권장.
+- **대체폰트 family 명명 주의**: 번들 폰트는 family/typographic family 모두
+  `"Noto Sans KR ExtraLight"`(weight 400)로 **독립 등록**한다. typographic family 를
+  `"Noto Sans KR"` 로 두면 fontconfig 가 일반 `"Noto Sans KR"` 요청까지 ExtraLight 로
+  가로채는 전역 부작용이 발생한다(Task #1224 Stage 4).
+
+### 11.5 유지보수 체크리스트 — 새 고딕 대체 추가 시
+
+- [ ] `renderer/mod.rs::generic_fallback` sans 체인의 무거운 폰트 직전에 경량 대체 삽입.
+- [ ] `svg.rs::korean_gothic_substitute` 에 대체 파일명 등록(임베딩 후보).
+- [ ] 번들 폰트는 **독립 family 명명**(타 family 의 weight-variant 금지).
+- [ ] 웹은 `font-loader.ts FONT_LIST` + `web/fonts/*.woff2` 동반.
+- [ ] **레이아웃 불변 확인**: 렌더 폰트만 교체, 메트릭 DB 무변경 → `dump-pages` 전후 동일.

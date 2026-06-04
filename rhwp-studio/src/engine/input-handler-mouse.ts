@@ -304,7 +304,7 @@ export function onClick(this: any, e: MouseEvent): void {
                 const startAngle = Math.atan2(cy - objCy, cx - objCx);
                 this.isPictureRotateDragging = true;
                 this.pictureRotateState = {
-                  ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type },
+                  ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type, cellPath: ref.cellPath, headerFooter: ref.headerFooter },
                   origAngle,
                   centerX: objCx,
                   centerY: objCy,
@@ -320,7 +320,7 @@ export function onClick(this: any, e: MouseEvent): void {
               this.isPictureResizeDragging = true;
               this.pictureResizeState = {
                 dir,
-                ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type },
+                ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type, cellPath: ref.cellPath, headerFooter: ref.headerFooter },
                 origWidth: props.width,
                 origHeight: props.height,
                 origHorzOffset: props.horzOffset,
@@ -366,7 +366,7 @@ export function onClick(this: any, e: MouseEvent): void {
                   e.preventDefault();
                   this.isPictureMoveDragging = true;
                   this.pictureMoveState = {
-                    ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type },
+                    ref: { sec: ref.sec, ppi: ref.ppi, ci: ref.ci, type: ref.type, cellPath: ref.cellPath, headerFooter: ref.headerFooter },
                     origHorzOffset: props.horzOffset,
                     origVertOffset: props.vertOffset,
                     startPageX: px, startPageY: py,
@@ -511,6 +511,8 @@ export function onClick(this: any, e: MouseEvent): void {
             picHit.sec, picHit.ppi, picHit.ci, picHit.type as any,
             picHit.cellIdx, picHit.cellParaIdx,
             (picHit as any).headerFooter,
+            (picHit as any).outerTableControlIdx,
+            (picHit as any).cellPath,
           );
           this.active = true;
           this.caret.hide();
@@ -549,8 +551,13 @@ export function onClick(this: any, e: MouseEvent): void {
         try {
           const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
           if (inFnHit.hit && inFnHit.fnParaIndex !== undefined && inFnHit.charOffset !== undefined) {
+            this.cursor.clearSelection();
             this.cursor.setFnCursorPosition(inFnHit.fnParaIndex, inFnHit.charOffset);
+            this.cursor.setFnAnchor();
+            this.active = true;
+            this.startTextSelectionDrag(e);
             this.updateCaret();
+            document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
           }
         } catch { /* 무시 */ }
         this.textarea.focus();
@@ -603,7 +610,12 @@ export function onClick(this: any, e: MouseEvent): void {
             );
             this.eventBus.emit('footnoteModeChanged', true);
             if (inFnHit.fnParaIndex !== undefined && inFnHit.charOffset !== undefined) {
+              this.cursor.clearSelection();
               this.cursor.setFnCursorPosition(inFnHit.fnParaIndex, inFnHit.charOffset);
+              this.cursor.setFnAnchor();
+              this.active = true;
+              this.startTextSelectionDrag(e);
+              document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
             }
             this.updateCaret();
             this.textarea.focus();
@@ -727,6 +739,33 @@ export function onClick(this: any, e: MouseEvent): void {
       }
     }
 
+    // [Task #1171] 글상자(Shape text_box) 내부 클릭이 아래 텍스트 편집 진입으로 단락되기
+    // 전에 글상자 안 picture 를 선제 hit-test 한다. picture 우선(작업지시자 확정): 글상자
+    // 안 picture 위 클릭은 항상 picture 객체선택 (표 셀 안 picture 와 동작 일관).
+    // cellPath 동반(글상자/셀 중첩) image/equation 만 가로채고, picture 없는 글상자 영역
+    // 클릭은 아래 텍스트 편집으로 fall-through.
+    if (hit.isTextBox) {
+      const tbPic = this.findPictureAtClick(pageIdx, pageX, pageY);
+      if (tbPic && (tbPic.type === 'image' || tbPic.type === 'equation') && (tbPic as any).cellPath) {
+        this.cursor.clearSelection();
+        this.exitPictureObjectSelectionIfNeeded();
+        this.cursor.enterPictureObjectSelectionDirect(
+          tbPic.sec, tbPic.ppi, tbPic.ci, tbPic.type,
+          tbPic.cellIdx, tbPic.cellParaIdx, (tbPic as any).headerFooter,
+          (tbPic as any).outerTableControlIdx,
+          (tbPic as any).cellPath,
+          (tbPic as any).noteRef,
+        );
+        this.active = true;
+        this.caret.hide();
+        this.selectionRenderer.clear();
+        this.renderPictureObjectSelection();
+        this.eventBus.emit('picture-object-selection-changed', true);
+        this.textarea.focus();
+        return;
+      }
+    }
+
     // 글상자 내부 텍스트/빈 영역 직접 히트 → 바로 캐럿 진입 (한컴 UX).
     // [Task #919] hit_test_native 가 글상자 안 빈 영역에서도 isTextBox=true 반환.
     if (hit.isTextBox) {
@@ -753,7 +792,7 @@ export function onClick(this: any, e: MouseEvent): void {
         if (e.shiftKey && this.cursor.isInPictureObjectSelection()) {
           bringShapeToFront.call(this, picHit);
           const selType = picHit.type === 'shape' ? 'shape' as const : picHit.type as any;
-          this.cursor.togglePictureObjectSelection(picHit.sec, picHit.ppi, picHit.ci, selType);
+          this.cursor.togglePictureObjectSelection({ ...picHit, type: selType });
           this.caret.hide();
           this.selectionRenderer.clear();
           this.renderPictureObjectSelection();
@@ -830,6 +869,9 @@ export function onClick(this: any, e: MouseEvent): void {
         this.cursor.enterPictureObjectSelectionDirect(
           picHit.sec, picHit.ppi, picHit.ci, picHit.type,
           picHit.cellIdx, picHit.cellParaIdx, (picHit as any).headerFooter,
+          (picHit as any).outerTableControlIdx,
+          (picHit as any).cellPath,
+          (picHit as any).noteRef,
         );
         this.active = true;
         this.caret.hide();

@@ -5,9 +5,9 @@
 //! (IR에 대응 필드가 더 담길 때까지 점진적으로 동적화 예정).
 //!
 //! Stage #177 (2026-04-18): `<hp:lineseg>` 직렬화를 IR 기반으로 전환.
-//! `Paragraph.line_segs` 의 6개 필드(line_height, text_height, baseline_distance,
-//! line_spacing, column_start/segment_width, tag)를 그대로 출력하여 **원본 lineseg 값
-//! 보존**. rhwp 는 자신의 문서에서 새로 부정확한 값을 생산하지 않는다.
+//! `Paragraph.line_segs` 의 9개 필드(textpos, vertpos, vertsize, textheight, baseline,
+//! spacing, horzpos, horzsize, flags)를 그대로 출력하여 **원본 lineseg 값 보존**.
+//! rhwp 는 자신의 문서에서 새로 부정확한 값을 생산하지 않는다.
 //!
 //! IR 매핑 관행:
 //!   - `section.paragraphs` 여러 개 = 하드 문단 경계 (`<hp:p>` 여러 개)
@@ -17,7 +17,7 @@
 //!   - `paragraph.style_id` → `<hp:p styleIDRef>`
 //!   - `paragraph.column_type` → `<hp:p pageBreak/columnBreak>`
 //!   - `paragraph.char_shapes[0].char_shape_id` → 첫 `<hp:run charPrIDRef>`
-//!   - `paragraph.line_segs[i]` → 각 `<hp:lineseg>` 속성 (6개 필드 그대로 출력)
+//!   - `paragraph.line_segs[i]` → 각 `<hp:lineseg>` 속성 (9개 필드 그대로 출력)
 
 use quick_xml::Writer;
 
@@ -30,6 +30,7 @@ use crate::model::shape::{
 };
 
 use super::context::SerializeContext;
+use super::field::{write_bookmark, write_field_begin, write_field_end};
 use super::utils::xml_escape;
 use super::SerializeError;
 use super::{picture, table};
@@ -48,7 +49,7 @@ const TEMPLATE_RUN_BEFORE_TEXT: &str = r#"<hp:run charPrIDRef="0"><hp:t/>"#;
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
-const LINE_FLAGS: u32 = 393216;
+const LINE_FLAGS: u32 = LineSeg::TAG_SINGLE_SEGMENT_LINE;
 const HORZ_SIZE: u32 = 42520;
 /// 탭 기본 폭 (한컴이 열면서 재계산하지만 초기값으로 필요).
 const TAB_DEFAULT_WIDTH: u32 = 4000;
@@ -71,10 +72,11 @@ pub fn write_section(
 
     let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_t, 1);
     out = replace_first_linesegs(&out, &first_linesegs);
+    out = replace_page_pr(&out, &section.section_def.page_def);
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
     if let Some(p) = first_para {
-        let new_p_tag = render_hp_p_open(p, 0);
+        let new_p_tag = render_hp_p_open(p, ctx.next_para_id());
         out = out.replacen(TEMPLATE_FIRST_P_TAG, &new_p_tag, 1);
 
         // 첫 문단의 텍스트용 <hp:run> 의 charPrIDRef 를 IR 기반으로 교체
@@ -92,11 +94,11 @@ pub fn write_section(
     // 추가 문단: `</hp:p></hs:sec>` 직전에 `<hp:p>` 요소를 삽입.
     if section.paragraphs.len() > 1 {
         let mut extra = String::new();
-        for (idx, p) in section.paragraphs.iter().enumerate().skip(1) {
+        for p in section.paragraphs.iter().skip(1) {
             let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
             vert_cursor = advance;
             let cs = first_run_char_shape_id(p);
-            extra.push_str(&render_hp_p_open(p, idx as u32));
+            extra.push_str(&render_hp_p_open(p, ctx.next_para_id()));
             extra.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
             extra.push_str(&t);
             extra.push_str(r#"</hp:run><hp:linesegarray>"#);
@@ -163,22 +165,31 @@ fn render_paragraph_parts(
 /// IR 없이 텍스트만 있을 때 `<hp:t>` 와 fallback lineseg 생성.
 /// `write_section` 이 `first_para == None` 인 경우를 위해 유지.
 fn render_paragraph_parts_for_text(text: &str, vert_start: u32) -> (String, String, u32) {
-    let t_xml = render_hp_t_content(text);
+    let t_xml = render_hp_t_content(text, &[], &mut 0);
     let (linesegs, vert_end) = render_lineseg_array_fallback(text, vert_start);
     (t_xml, linesegs, vert_end)
 }
 
 /// `<hp:t>...</hp:t>` 본문 생성 — 탭/소프트브레이크/XML escape 포함.
-fn render_hp_t_content(text: &str) -> String {
+///
+/// `tab_extended`: IR의 탭 확장 정보 목록. `tab_idx`를 통해 탭 문자마다 순서대로 참조.
+/// 항목이 없으면 폴백(width=TAB_DEFAULT_WIDTH, leader=0, type=1)을 사용.
+fn render_hp_t_content(text: &str, tab_extended: &[[u16; 7]], tab_idx: &mut usize) -> String {
     let mut t_xml = String::from("<hp:t>");
     let mut buf = String::new();
     for c in text.chars() {
         match c {
             '\t' => {
                 flush_buf(&mut t_xml, &mut buf);
+                let (width, leader, tab_type) = if let Some(ext) = tab_extended.get(*tab_idx) {
+                    *tab_idx += 1;
+                    (ext[0] as u32, ext[2] & 0x00ff, (ext[2] >> 8) & 0x00ff)
+                } else {
+                    (TAB_DEFAULT_WIDTH, 0u16, 1u16)
+                };
                 t_xml.push_str(&format!(
-                    r#"<hp:tab width="{}" leader="0" type="1"/>"#,
-                    TAB_DEFAULT_WIDTH
+                    r#"<hp:tab width="{}" leader="{}" type="{}"/>"#,
+                    width, leader, tab_type
                 ));
             }
             '\n' => {
@@ -196,6 +207,19 @@ fn render_hp_t_content(text: &str) -> String {
 
 /// Paragraph의 본문 run 콘텐츠를 `<hp:t>`와 인라인 컨트롤 XML로 직렬화한다.
 fn render_run_content(para: &Paragraph, ctx: &mut SerializeContext) -> String {
+    // Bookmark는 IR에 위치 정보가 없어 문단 시작에 배치한다.
+    // (HWPX 파서가 char_count에 포함하지 않아 slot 시스템이 위치를 추적할 수 없음)
+    let mut prefix = String::new();
+    for ctrl in &para.controls {
+        if let Control::Bookmark(bm) = ctrl {
+            if let Ok(xml) = writer_to_string(|w| write_bookmark(w, bm)) {
+                prefix.push_str("<hp:ctrl>");
+                prefix.push_str(&xml);
+                prefix.push_str("</hp:ctrl>");
+            }
+        }
+    }
+
     let slot_count = inferred_control_slot_count(para);
     let slots: Vec<&Control> = if slot_count == para.controls.len() {
         para.controls.iter().collect()
@@ -206,22 +230,36 @@ fn render_run_content(para: &Paragraph, ctx: &mut SerializeContext) -> String {
             .collect()
     };
 
-    if slots.is_empty() {
-        return render_hp_t_content(&para.text);
+    let mut tab_idx = 0usize;
+
+    if slots.is_empty() && para.field_ranges.is_empty() {
+        let mut out = prefix;
+        out.push_str(&render_hp_t_content(
+            &para.text,
+            &para.tab_extended,
+            &mut tab_idx,
+        ));
+        return out;
     }
 
     if slot_count != slots.len() {
-        let mut out = render_hp_t_content(&para.text);
-        for slot in slots {
+        let mut out = prefix;
+        out.push_str(&render_hp_t_content(
+            &para.text,
+            &para.tab_extended,
+            &mut tab_idx,
+        ));
+        for slot in &slots {
             render_control_slot(&mut out, slot, ctx);
         }
         return out;
     }
 
-    let mut out = String::new();
+    let mut out = prefix;
     let mut text_buf = String::new();
     let mut slot_idx = 0usize;
     let mut expected_utf16_pos = 0u32;
+    let mut field_end_emitted = vec![false; para.field_ranges.len()];
 
     for (idx, c) in para.text.chars().enumerate() {
         let char_pos = para
@@ -230,7 +268,7 @@ fn render_run_content(para: &Paragraph, ctx: &mut SerializeContext) -> String {
             .copied()
             .unwrap_or(expected_utf16_pos);
         while slot_idx < slots.len() && char_pos >= expected_utf16_pos.saturating_add(8) {
-            flush_text_fragment(&mut out, &mut text_buf);
+            flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, &mut tab_idx);
             render_control_slot(&mut out, slots[slot_idx], ctx);
             slot_idx += 1;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
@@ -243,16 +281,46 @@ fn render_run_content(para: &Paragraph, ctx: &mut SerializeContext) -> String {
         } else {
             expected_utf16_pos = expected_utf16_pos.saturating_add(width);
         }
+
+        // end_char_idx는 미포함(exclusive): 현재 문자가 필드 범위의 마지막이면 fieldEnd 삽입
+        let next_idx = idx + 1;
+        for (i, fr) in para.field_ranges.iter().enumerate() {
+            if fr.end_char_idx == next_idx && !field_end_emitted[i] {
+                flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, &mut tab_idx);
+                if let Some(Control::Field(f)) = para.controls.get(fr.control_idx) {
+                    if let Ok(xml) = writer_to_string(|w| write_field_end(w, f.field_id)) {
+                        out.push_str("<hp:ctrl>");
+                        out.push_str(&xml);
+                        out.push_str("</hp:ctrl>");
+                    }
+                }
+                field_end_emitted[i] = true;
+            }
+        }
     }
 
-    flush_text_fragment(&mut out, &mut text_buf);
+    flush_text_fragment(&mut out, &mut text_buf, &para.tab_extended, &mut tab_idx);
+
+    // end_char_idx >= text.len() 인 경우 루프에서 감지되지 않으므로 루프 후에 처리
+    for (i, fr) in para.field_ranges.iter().enumerate() {
+        if !field_end_emitted[i] {
+            if let Some(Control::Field(f)) = para.controls.get(fr.control_idx) {
+                if let Ok(xml) = writer_to_string(|w| write_field_end(w, f.field_id)) {
+                    out.push_str("<hp:ctrl>");
+                    out.push_str(&xml);
+                    out.push_str("</hp:ctrl>");
+                }
+            }
+        }
+    }
+
     while slot_idx < slots.len() {
         render_control_slot(&mut out, slots[slot_idx], ctx);
         slot_idx += 1;
     }
 
     if out.is_empty() {
-        render_hp_t_content("")
+        render_hp_t_content("", &para.tab_extended, &mut tab_idx)
     } else {
         out
     }
@@ -272,7 +340,11 @@ fn inferred_control_slot_count(para: &Paragraph) -> usize {
         expected = pos.max(expected).saturating_add(char_utf16_width(c));
     }
 
-    from_char_count.max(from_offsets) as usize
+    // fieldEnd는 8 code unit 슬롯이지만 para.controls[]에 대응 컨트롤이 없다.
+    // field_ranges.len()이 fieldEnd 수와 정확히 일치하므로 빼서 보정한다.
+    from_char_count
+        .max(from_offsets)
+        .saturating_sub(para.field_ranges.len() as u32) as usize
 }
 
 fn is_hwpx_inline_slot(control: &Control) -> bool {
@@ -291,9 +363,14 @@ fn is_hwpx_inline_slot(control: &Control) -> bool {
     )
 }
 
-fn flush_text_fragment(out: &mut String, text_buf: &mut String) {
+fn flush_text_fragment(
+    out: &mut String,
+    text_buf: &mut String,
+    tab_extended: &[[u16; 7]],
+    tab_idx: &mut usize,
+) {
     if !text_buf.is_empty() {
-        out.push_str(&render_hp_t_content(text_buf));
+        out.push_str(&render_hp_t_content(text_buf, tab_extended, tab_idx));
         text_buf.clear();
     }
 }
@@ -319,6 +396,17 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         }
         Control::Endnote(note) => {
             out.push_str(&render_endnote(note, ctx));
+        }
+        Control::Field(f) => {
+            // fieldBegin은 <hp:ctrl>...</hp:ctrl>로 감싸야 함 (Table/Picture와 달리)
+            match writer_to_string(|w| write_field_begin(w, f)) {
+                Ok(xml) => {
+                    out.push_str("<hp:ctrl>");
+                    out.push_str(&xml);
+                    out.push_str("</hp:ctrl>");
+                }
+                Err(e) => eprintln!("[hwpx] Field 직렬화 실패: {e}"),
+            }
         }
         _ => {}
     }
@@ -419,11 +507,11 @@ fn render_note_sublist(
         num = number,
     );
     let mut vert_cursor: u32 = 0;
-    for (idx, p) in paragraphs.iter().enumerate() {
+    for p in paragraphs.iter() {
         let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
         let cs = first_run_char_shape_id(p);
-        out.push_str(&render_hp_p_open(p, idx as u32));
+        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
         out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
         out.push_str(&t);
         out.push_str(r#"</hp:run><hp:linesegarray>"#);
@@ -546,7 +634,7 @@ fn horz_align_to_hwpx(align: HorzAlign) -> &'static str {
     }
 }
 
-/// IR의 `line_segs` 를 그대로 XML로 직렬화 (6개 필드 전부 IR 값 사용).
+/// IR의 `line_segs` 를 그대로 XML로 직렬화 (9개 필드 전부 IR 값 사용).
 ///
 /// rhwp 는 자신의 문서에서 비표준 lineseg 를 **새로 생산하지 않는다**.
 /// 원본 한컴 파일의 lineseg 값이 파서에 의해 `Paragraph.line_segs` 에 담겼다면,
@@ -647,6 +735,33 @@ fn replace_first_linesegs(xml: &str, new_inner: &str) -> String {
     out.push_str(new_inner);
     out.push_str(&xml[inner_end..]);
     out
+}
+
+/// [#1166] 템플릿 pagePr 의 고정 용지 속성(landscape/width/height)을 IR page_def
+/// 값으로 치환한다. 종전엔 템플릿 하드코딩값(landscape="WIDELY" width=59528
+/// height=84186)이 그대로 출력되어 HWPX 저장 시 가로/세로 + 용지 크기가 손실됐다.
+///
+/// OWPML landscape: WIDELY=세로(landscape=false), NARROWLY=가로(landscape=true).
+/// width/height 는 짧은변/긴변 그대로 (HWP 바이너리 동일 규약).
+fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String {
+    // 템플릿의 pagePr 여는 태그(고정 문자열) → IR 기반으로 교체.
+    const TEMPLATE_PAGE_PR: &str =
+        r#"<hp:pagePr landscape="WIDELY" width="59528" height="84186" gutterType="LEFT_ONLY">"#;
+    let landscape = if page_def.landscape {
+        "NARROWLY"
+    } else {
+        "WIDELY"
+    };
+    let new_page_pr = format!(
+        r#"<hp:pagePr landscape="{}" width="{}" height="{}" gutterType="LEFT_ONLY">"#,
+        landscape, page_def.width, page_def.height,
+    );
+    if xml.contains(TEMPLATE_PAGE_PR) {
+        xml.replacen(TEMPLATE_PAGE_PR, &new_page_pr, 1)
+    } else {
+        // 템플릿이 변경됐거나 이미 치환된 경우 — 원본 유지(회귀 방지).
+        xml.to_string()
+    }
 }
 
 // `TEMPLATE_RUN_BEFORE_TEXT` 는 패턴 인식용 상수로만 쓰이므로 명시 참조.
@@ -815,7 +930,7 @@ mod tests {
                 line_spacing: 600,
                 column_start: 0,
                 segment_width: 42520,
-                tag: 393216,
+                tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
             });
         }
         let (doc, section) = make_doc_with_paragraph(para);
@@ -866,6 +981,104 @@ mod tests {
         assert!(
             xml.contains(r#"vertsize="2000""#),
             "IR value 2000 must be used, not fallback 1000"
+        );
+    }
+
+    // ---------- #1289: Bookmark / Field dispatcher 연결 ----------
+
+    use crate::model::control::{Bookmark, Control, Field, FieldType};
+    use crate::model::paragraph::FieldRange;
+
+    #[test]
+    fn task1289_bookmark_emits_ctrl_wrapper() {
+        // Bookmark는 슬롯 시스템이 위치를 추적할 수 없으므로 문단 시작에 배치한다.
+        let mut para = Paragraph::default();
+        para.text = "hello".to_string();
+        para.char_count = 6; // "hello"(5) + para_end(1)
+        para.controls.push(Control::Bookmark(Bookmark {
+            name: "test_bm".to_string(),
+        }));
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains(r#"<hp:ctrl><hp:bookmark name="test_bm"/></hp:ctrl>"#),
+            "bookmark must be wrapped in <hp:ctrl>: {}",
+            &xml[..300.min(xml.len())]
+        );
+        assert!(xml.contains("hello"), "text must still be present");
+    }
+
+    #[test]
+    fn task1289_field_begin_end_roundtrip() {
+        // HWPX 파서가 생성하는 구조 시뮬레이션:
+        // fieldBegin(8 cu) + "hello"(5 cu) + fieldEnd(8 cu) + para_end(1 cu) = 22
+        // para.text 에는 "hello"만 있고 char_offsets 가 +8 오프셋으로 시작한다.
+        let mut f = Field::default();
+        f.field_type = FieldType::ClickHere;
+        f.field_id = 99;
+
+        let mut para = Paragraph::default();
+        para.text = "hello".to_string();
+        para.char_count = 22;
+        para.char_offsets = vec![8, 9, 10, 11, 12];
+        para.controls.push(Control::Field(f));
+        para.field_ranges.push(FieldRange {
+            start_char_idx: 0,
+            end_char_idx: 5,
+            control_idx: 0,
+        });
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:ctrl><hp:fieldBegin id="99" type="CLICKHERE""#),
+            "fieldBegin must be emitted: {}",
+            &xml[..500.min(xml.len())]
+        );
+        assert!(
+            xml.contains(r#"<hp:ctrl><hp:fieldEnd beginIDRef="99"/></hp:ctrl>"#),
+            "fieldEnd must be emitted: {}",
+            &xml[..500.min(xml.len())]
+        );
+        assert!(xml.contains("hello"), "field text must be present");
+
+        // 순서 검증: fieldBegin < "hello" < fieldEnd
+        let begin_pos = xml.find("fieldBegin").expect("fieldBegin");
+        let hello_pos = xml.find("hello").expect("hello");
+        let end_pos = xml.find("fieldEnd").expect("fieldEnd");
+        assert!(begin_pos < hello_pos, "fieldBegin must precede text");
+        assert!(hello_pos < end_pos, "text must precede fieldEnd");
+    }
+
+    #[test]
+    fn task1289_field_end_at_para_boundary() {
+        // end_char_idx == text.len() 인 경우: 루프 내 감지 불가 → 루프 후 처리
+        let mut f = Field::default();
+        f.field_type = FieldType::Date;
+        f.field_id = 7;
+
+        let mut para = Paragraph::default();
+        para.text = "abc".to_string();
+        para.char_count = 20; // fieldBegin(8) + "abc"(3) + fieldEnd(8) + para_end(1)
+        para.char_offsets = vec![8, 9, 10];
+        para.controls.push(Control::Field(f));
+        para.field_ranges.push(FieldRange {
+            start_char_idx: 0,
+            end_char_idx: 3, // == text.len() → 루프 후 처리 경로
+            control_idx: 0,
+        });
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:fieldEnd beginIDRef="7"/>"#),
+            "fieldEnd must be emitted even when end_char_idx == text.len(): {}",
+            &xml[..400.min(xml.len())]
         );
     }
 }

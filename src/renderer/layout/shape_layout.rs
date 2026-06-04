@@ -22,6 +22,46 @@ use crate::model::shape::CommonObjAttr;
 use crate::model::shape::{HorzAlign, HorzRelTo, VertAlign, VertRelTo};
 use crate::model::style::Alignment;
 
+fn push_placeholder_render_node(
+    tree: &mut PageRenderTree,
+    parent: &mut RenderNode,
+    bbox: BoundingBox,
+    fill_color: u32,
+    stroke_color: u32,
+    label: String,
+) {
+    let node_id = tree.next_id();
+    let node = RenderNode::new(
+        node_id,
+        RenderNodeType::Placeholder(crate::renderer::render_tree::PlaceholderNode {
+            fill_color,
+            stroke_color,
+            label,
+        }),
+        bbox,
+    );
+    parent.children.push(node);
+}
+
+fn push_raw_svg_render_node(
+    tree: &mut PageRenderTree,
+    parent: &mut RenderNode,
+    bbox: BoundingBox,
+    svg: String,
+) {
+    let node_id = tree.next_id();
+    let node = RenderNode::new(
+        node_id,
+        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode { svg }),
+        bbox,
+    );
+    parent.children.push(node);
+}
+
+fn ole_chart_fallback_label(message: impl AsRef<str>, bin_data_id: u32) -> String {
+    format!("{} (BinData #{bin_data_id})", message.as_ref())
+}
+
 fn measure_composed_text_range_width(
     composed: &ComposedParagraph,
     styles: &ResolvedStyleSet,
@@ -305,6 +345,7 @@ impl LayoutEngine {
                     control_index: Some(control_index),
                     cell_index: None,
                     cell_para_index: None,
+                    note_ref: None,
                 }),
                 BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
             );
@@ -458,6 +499,7 @@ impl LayoutEngine {
             bin_data_content,
             overflow_map,
             &[],
+            None, // [Task #1138] 본문 도형 — 셀 정보 없음
         );
 
         // 캡션 렌더링
@@ -699,6 +741,7 @@ impl LayoutEngine {
                     bin_data_content,
                     &empty_map,
                     parent_cell_path,
+                    None, // [Task #1138] TODO: layout_group_child_affine 에 cell ctx propagate (별도 후속)
                 );
             }
         }
@@ -724,11 +767,18 @@ impl LayoutEngine {
         bin_data_content: &[BinDataContent],
         overflow_map: &std::collections::HashMap<(usize, usize), Vec<Paragraph>>,
         parent_cell_path: &[CellPathEntry],
+        // [Task #1138] 표 셀 내 도형인 경우: (cell_idx, cell_para_idx, outer_table_ctrl_idx)
+        table_cell_ref: Option<(usize, usize, usize)>,
     ) {
         use crate::model::shape::ShapeObject;
 
         // 공통: 회전/대칭 정보 추출
         let transform = extract_shape_transform(shape.shape_attr());
+
+        // [Task #1138] 표 셀 내 도형 식별을 위한 cell 정보 추출 (helper)
+        let cell_index = table_cell_ref.map(|(ci, _, _)| ci);
+        let cell_para_index = table_cell_ref.map(|(_, cpi, _)| cpi);
+        let outer_table_control_index = table_cell_ref.map(|(_, _, otci)| otci);
 
         // 회전/대칭이 있으면 current 크기로 중앙 배치
         // 그렇지 않으면 호출자가 전달한 w, h를 그대로 사용
@@ -764,6 +814,9 @@ impl LayoutEngine {
                         para_index: Some(para_index),
                         control_index: Some(control_index),
                         transform,
+                        cell_index,
+                        cell_para_index,
+                        outer_table_control_index,
                         ..RectangleNode::new(round_px, style, gradient)
                     }),
                     BoundingBox::new(render_x, render_y, render_w, render_h),
@@ -931,6 +984,9 @@ impl LayoutEngine {
                         path_node.para_index = Some(para_index);
                         path_node.control_index = Some(control_index);
                         path_node.transform = transform;
+                        path_node.cell_index = cell_index;
+                        path_node.cell_para_index = cell_para_index;
+                        path_node.outer_table_control_index = outer_table_control_index;
                         // 연결선: 시작/끝 좌표 (선 선택 방식용) + 화살표
                         path_node.connector_endpoints = Some((conn_x1, conn_y1, conn_x2, conn_y2));
                         if line_style.start_arrow != super::super::ArrowStyle::None
@@ -975,6 +1031,9 @@ impl LayoutEngine {
                         line_node.para_index = Some(para_index);
                         line_node.control_index = Some(control_index);
                         line_node.transform = transform;
+                        line_node.cell_index = cell_index;
+                        line_node.cell_para_index = cell_para_index;
+                        line_node.outer_table_control_index = outer_table_control_index;
                         let node = RenderNode::new(
                             node_id,
                             RenderNodeType::Line(line_node),
@@ -995,6 +1054,9 @@ impl LayoutEngine {
                     line_node.para_index = Some(para_index);
                     line_node.control_index = Some(control_index);
                     line_node.transform = transform;
+                    line_node.cell_index = cell_index;
+                    line_node.cell_para_index = cell_para_index;
+                    line_node.outer_table_control_index = outer_table_control_index;
                     let node = RenderNode::new(
                         node_id,
                         RenderNodeType::Line(line_node),
@@ -1011,6 +1073,9 @@ impl LayoutEngine {
                 ell_node.para_index = Some(para_index);
                 ell_node.control_index = Some(control_index);
                 ell_node.transform = transform;
+                ell_node.cell_index = cell_index;
+                ell_node.cell_para_index = cell_para_index;
+                ell_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Ellipse(ell_node),
@@ -1138,6 +1203,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1183,6 +1251,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1239,6 +1310,9 @@ impl LayoutEngine {
                 path_node.para_index = Some(para_index);
                 path_node.control_index = Some(control_index);
                 path_node.transform = transform;
+                path_node.cell_index = cell_index;
+                path_node.cell_para_index = cell_para_index;
+                path_node.outer_table_control_index = outer_table_control_index;
                 let mut node = RenderNode::new(
                     node_id,
                     RenderNodeType::Path(path_node),
@@ -1347,6 +1421,7 @@ impl LayoutEngine {
                             bin_data_content,
                             &empty_map,
                             parent_cell_path,
+                            table_cell_ref, // [Task #1138] 그룹 자식 — 부모와 같은 셀 컨텍스트
                         );
                     }
                 }
@@ -1366,6 +1441,7 @@ impl LayoutEngine {
                         brightness: pic.image_attr.brightness,
                         contrast: pic.image_attr.contrast,
                         text_wrap: Some(pic.common.text_wrap),
+                        external_path: pic.image_attr.external_path.clone(),
                         ..ImageNode::new(bin_data_id, image_data)
                     }),
                     BoundingBox::new(render_x, render_y, render_w, render_h),
@@ -1418,18 +1494,57 @@ impl LayoutEngine {
                                 {
                                     let svg_fragment =
                                         chart.render_svg(render_x, render_y, render_w, render_h);
-                                    let node_id = tree.next_id();
-                                    let node = RenderNode::new(
-                                        node_id,
-                                        RenderNodeType::RawSvg(
-                                            crate::renderer::render_tree::RawSvgNode {
-                                                svg: svg_fragment,
-                                            },
-                                        ),
+                                    push_raw_svg_render_node(
+                                        tree,
+                                        parent,
                                         BoundingBox::new(render_x, render_y, render_w, render_h),
+                                        svg_fragment,
                                     );
-                                    parent.children.push(node);
                                     rendered = true;
+                                }
+                            }
+
+                            // Issue #1251: legacy HWP chart `Contents` stream.
+                            if !rendered {
+                                if let Some(raw_contents) = container.raw_contents.as_ref() {
+                                    match crate::ole_chart::parse_ole_chart_contents(raw_contents) {
+                                        Ok(ole_chart) => {
+                                            let svg_fragment =
+                                                crate::ole_chart::render_ole_chart_svg_fragment(
+                                                    &ole_chart,
+                                                    render_x,
+                                                    render_y,
+                                                    render_w,
+                                                    render_h,
+                                                    ole.bin_data_id,
+                                                );
+                                            push_raw_svg_render_node(
+                                                tree,
+                                                parent,
+                                                BoundingBox::new(
+                                                    render_x, render_y, render_w, render_h,
+                                                ),
+                                                svg_fragment,
+                                            );
+                                            rendered = true;
+                                        }
+                                        Err(error) => {
+                                            push_placeholder_render_node(
+                                                tree,
+                                                parent,
+                                                BoundingBox::new(
+                                                    render_x, render_y, render_w, render_h,
+                                                ),
+                                                0xFFFFF4E5,
+                                                0xFFB45F06,
+                                                ole_chart_fallback_label(
+                                                    error.stable_message(),
+                                                    ole.bin_data_id,
+                                                ),
+                                            );
+                                            rendered = true;
+                                        }
+                                    }
                                 }
                             }
 
@@ -1568,6 +1683,14 @@ impl LayoutEngine {
                     RenderNodeType::Image(ImageNode {
                         fill_mode: Some(img_fill.fill_mode),
                         original_size,
+                        brightness: img_fill.brightness,
+                        contrast: img_fill.contrast,
+                        effect: match img_fill.effect {
+                            1 => crate::model::image::ImageEffect::GrayScale,
+                            2 => crate::model::image::ImageEffect::BlackWhite,
+                            3 => crate::model::image::ImageEffect::Pattern8x8,
+                            _ => crate::model::image::ImageEffect::RealPic,
+                        },
                         ..ImageNode::new(bin_data_id, image_data)
                     }),
                     BoundingBox::new(base_x, base_y, w, h),
@@ -1614,6 +1737,16 @@ impl LayoutEngine {
             width: (w - margin_left - margin_right).max(0.0),
             height: (h - margin_top - margin_bottom).max(0.0),
         };
+        let mut textbox_node = RenderNode::new(
+            tree.next_id(),
+            RenderNodeType::TextBox,
+            BoundingBox::new(
+                inner_area.x,
+                inner_area.y,
+                inner_area.width,
+                inner_area.height,
+            ),
+        );
 
         // [Task #874 #3 / #930] shortcut.hwp 1 페이지 우측하단 자동번호 "1" 시각 정합:
         // 도형이 원본 (sa.original_*) 대비 확대된 마스터 페이지 글상자는 한컴이 내부
@@ -1631,16 +1764,16 @@ impl LayoutEngine {
         // 글상자 샘플이 확보되면 재검증한다.
         let sa = &drawing.shape_attr;
         let local_styles_scaled: Option<ResolvedStyleSet> = {
-            let sw_ratio = if sa.original_width > 0 && sa.current_width > 0 {
-                sa.current_width as f64 / sa.original_width as f64
-            } else {
-                1.0
+            let positive_current_ratio = |current: u32, original: u32| -> f64 {
+                let signed_current = current as i32;
+                if original > 0 && signed_current > 0 {
+                    signed_current as f64 / original as f64
+                } else {
+                    1.0
+                }
             };
-            let sh_ratio = if sa.original_height > 0 && sa.current_height > 0 {
-                sa.current_height as f64 / sa.original_height as f64
-            } else {
-                1.0
-            };
+            let sw_ratio = positive_current_ratio(sa.current_width, sa.original_width);
+            let sh_ratio = positive_current_ratio(sa.current_height, sa.original_height);
             let max_ratio = sw_ratio.max(sh_ratio);
             let min_ratio = sw_ratio.min(sh_ratio);
             // [Task #928] 인라인 도형 (treat_as_char=true) 은 폰트 자동 축소 적용 안 함.
@@ -1649,6 +1782,11 @@ impl LayoutEngine {
             // 폰트를 11.5pt 그대로 유지한다. 본 ratio 축소 (#874 #3) 가 잘못 발동하여
             // 폰트가 6.88px 로 축소되던 회귀를 차단. shortcut.hwp 마스터 페이지
             // 글상자는 tac=false 라 ratio 적용 유지.
+            //
+            // [PR #1276] HWPX 바탕쪽 하단 글상자처럼 current size 가 음수 HWPUNIT 을
+            // u32 로 보존한 값이면(예: curSz height 4294965455 = -1841) 확대율로
+            // 사용하지 않는다. 이를 양수로 해석하면 sh_ratio 가 수백만 배가 되어
+            // 내부 글꼴이 0px 에 가깝게 붕괴한다.
             if min_ratio > 1.5 && !parent_treat_as_char {
                 let inv = (2.0 / max_ratio).min(1.0);
                 let mut local = styles.clone();
@@ -1678,7 +1816,7 @@ impl LayoutEngine {
                 // 세로쓰기 오버플로우 수신: 오버플로우 문단을 세로 레이아웃으로 렌더링
                 self.layout_vertical_textbox_text_with_paras(
                     tree,
-                    shape_node,
+                    &mut textbox_node,
                     overflow_paras,
                     text_box,
                     styles,
@@ -1722,7 +1860,7 @@ impl LayoutEngine {
                     let is_last_para = tb_para_idx + 1 == composed_paras.len();
                     para_y = self.layout_composed_paragraph(
                         tree,
-                        shape_node,
+                        &mut textbox_node,
                         composed,
                         styles,
                         &para_col_area,
@@ -1732,6 +1870,7 @@ impl LayoutEngine {
                         section_index,
                         tb_para_idx,
                         Some(cell_ctx),
+                        true,
                         is_last_para,
                         0.0,
                         None,
@@ -1740,6 +1879,9 @@ impl LayoutEngine {
                         None, // 도형 컨텍스트 — wrap zone 무관
                     );
                 }
+            }
+            if !textbox_node.children.is_empty() {
+                shape_node.children.push(textbox_node);
             }
             return;
         }
@@ -1781,7 +1923,7 @@ impl LayoutEngine {
         if text_direction != 0 {
             self.layout_vertical_textbox_text_with_paras(
                 tree,
-                shape_node,
+                &mut textbox_node,
                 &text_box.paragraphs[..para_count],
                 text_box,
                 styles,
@@ -1792,6 +1934,9 @@ impl LayoutEngine {
                 control_index,
                 parent_cell_path,
             );
+            if !textbox_node.children.is_empty() {
+                shape_node.children.push(textbox_node);
+            }
             return;
         }
 
@@ -1915,7 +2060,7 @@ impl LayoutEngine {
             let is_last_para = tb_para_idx + 1 == composed_paras.len();
             para_y = self.layout_composed_paragraph(
                 tree,
-                shape_node,
+                &mut textbox_node,
                 composed,
                 styles,
                 &para_col_area,
@@ -1925,6 +2070,7 @@ impl LayoutEngine {
                 section_index,
                 tb_para_idx,
                 Some(cell_ctx),
+                true,
                 is_last_para,
                 tb_inline_width,
                 None,
@@ -2102,7 +2248,7 @@ impl LayoutEngine {
                         let empty_map = std::collections::HashMap::new();
                         self.layout_shape_object(
                             tree,
-                            shape_node,
+                            &mut textbox_node,
                             shape.as_ref(),
                             child_x,
                             child_y,
@@ -2115,9 +2261,27 @@ impl LayoutEngine {
                             bin_data_content,
                             &empty_map,
                             &nested_parent_path,
+                            None, // [Task #1138] TODO: layout_textbox_content 에 cell ctx propagate (별도 후속)
                         );
                     }
                     Control::Picture(pic) => {
+                        // [Task #1171] 글상자 내부 picture — cellPath sentinel(cell_index=0)을
+                        // 빌드해 ImageNode.cell_context 로 전달. text-run(1963행)/표 경로와 동일 패턴.
+                        // 식별자: (바깥 Shape control_index, cell_index=0, 글상자 문단 pi). innerControlIdx 는
+                        // layout_picture 의 control_index 인자(= ctrl_idx_in_para)로 별도 전달된다.
+                        let pic_cell_ctx = CellContext {
+                            parent_para_index: para_index,
+                            path: {
+                                let mut p = parent_cell_path.to_vec();
+                                p.push(CellPathEntry {
+                                    control_index,
+                                    cell_index: 0,
+                                    cell_para_index: pi,
+                                    text_direction: 0,
+                                });
+                                p
+                            },
+                        };
                         if pic.common.treat_as_char {
                             // 인라인 이미지: 텍스트 내 삽입 위치까지의 advance를 반영하여 배치
                             advance_to_control(&mut inline_x);
@@ -2136,16 +2300,19 @@ impl LayoutEngine {
                                 width: clamped_w,
                                 height: clamped_h,
                             };
+                            // [Task #1151 v4] 글상자 내부 picture (inline) — section/para/control
+                            // 전달하여 findPictureAtClick 의 secIdx undefined skip 차단.
                             self.layout_picture(
                                 tree,
-                                shape_node,
+                                &mut textbox_node,
                                 pic,
                                 &pic_container,
                                 bin_data_content,
                                 Alignment::Left,
-                                None,
-                                None,
-                                None,
+                                Some(section_index),
+                                Some(para_index),
+                                Some(ctrl_idx_in_para),
+                                Some(&pic_cell_ctx),
                             );
                             inline_x += clamped_w;
                         } else {
@@ -2156,16 +2323,18 @@ impl LayoutEngine {
                                 width: inner_area.width,
                                 height: (inner_area.height - (inline_y - inner_area.y)).max(0.0),
                             };
+                            // [Task #1151 v4] 글상자 내부 picture (absolute) — section/para/control 전달.
                             self.layout_picture(
                                 tree,
-                                shape_node,
+                                &mut textbox_node,
                                 pic,
                                 &pic_container,
                                 bin_data_content,
                                 para_alignment,
-                                None,
-                                None,
-                                None,
+                                Some(section_index),
+                                Some(para_index),
+                                Some(ctrl_idx_in_para),
+                                Some(&pic_cell_ctx),
                             );
                             let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
                             max_inline_height = max_inline_height.max(pic_h);
@@ -2241,10 +2410,11 @@ impl LayoutEngine {
                                     control_index: Some(ctrl_idx_in_para),
                                     cell_index: None,
                                     cell_para_index: None,
+                                    note_ref: None,
                                 }),
                                 BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                             );
-                            shape_node.children.push(eq_node);
+                            textbox_node.children.push(eq_node);
                         }
                     }
                     Control::Table(table) => {
@@ -2265,7 +2435,7 @@ impl LayoutEngine {
                             .unwrap_or(Alignment::Left);
                         inline_y = self.layout_embedded_table(
                             tree,
-                            shape_node,
+                            &mut textbox_node,
                             table,
                             styles,
                             &inner_area,
@@ -2287,6 +2457,9 @@ impl LayoutEngine {
             if max_inline_height > 0.0 {
                 inline_y += max_inline_height;
             }
+        }
+        if !textbox_node.children.is_empty() {
+            shape_node.children.push(textbox_node);
         }
     }
 

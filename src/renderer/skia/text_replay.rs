@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use skia_safe::{
     font, paint, Canvas, Color, Font, FontMgr, FontStyle, Paint, PathEffect, Rect, Typeface,
@@ -13,12 +13,14 @@ use crate::renderer::layout::{compute_char_positions, split_into_clusters};
 use crate::renderer::render_tree::BoundingBox;
 use crate::renderer::{clamp_tab_leader_end_x, TextStyle};
 
+use super::font_lookup::{match_system_family_style, SystemFontFamilies};
 use super::renderer::colorref_to_skia;
 
 pub(super) struct SkiaTextReplay<'a> {
     pub(super) canvas: &'a Canvas,
     pub(super) font_mgr: &'a FontMgr,
     pub(super) custom_typefaces: &'a HashMap<String, Typeface>,
+    pub(super) system_families: &'a SystemFontFamilies,
     pub(super) output_options: &'a LayerOutputOptions,
 }
 
@@ -90,23 +92,26 @@ impl SkiaTextReplay<'_> {
                 // 모든 후보를 chain 으로 보존 — char 단위 fallback 에 사용.
                 let typeface_chain: Vec<Typeface> = {
                     let mut chain: Vec<Typeface> = Vec::new();
-                    let mut seen: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    let mut push = |chain: &mut Vec<Typeface>,
-                                    seen: &mut std::collections::HashSet<String>,
-                                    tf: Typeface| {
-                        let key = tf.family_name();
-                        if seen.insert(key) {
-                            chain.push(tf);
-                        }
-                    };
+                    let mut seen: HashSet<String> = HashSet::new();
+                    let mut push =
+                        |chain: &mut Vec<Typeface>, seen: &mut HashSet<String>, tf: Typeface| {
+                            let key = tf.family_name();
+                            if seen.insert(key) {
+                                chain.push(tf);
+                            }
+                        };
                     for family in &families {
                         if let Some(tf) = self.custom_typefaces.get(*family).cloned() {
                             push(&mut chain, &mut seen, tf);
                         }
                     }
                     for family in &families {
-                        if let Some(tf) = self.font_mgr.match_family_style(family, font_style) {
+                        if let Some(tf) = match_system_family_style(
+                            self.font_mgr,
+                            self.system_families,
+                            family,
+                            font_style,
+                        ) {
                             push(&mut chain, &mut seen, tf);
                         }
                     }
@@ -254,12 +259,45 @@ impl SkiaTextReplay<'_> {
                             (bbox.x + bbox.width / 2.0) as f32,
                             (bbox.y + bbox.height / 2.0) as f32,
                         );
+                    } else if chars.len() > 1 {
+                        let cx = (bbox.x + bbox.width / 2.0) as f32;
+                        let cy = (bbox.y + bbox.height / 2.0) as f32;
+                        if is_circle {
+                            shape_paint.set_style(paint::Style::Fill);
+                            shape_paint.set_color(fill_color);
+                            if is_reversed {
+                                canvas.draw_circle((cx, cy), box_size / 2.0, &shape_paint);
+                            }
+                            canvas.draw_circle((cx, cy), box_size / 2.0, &stroke_paint);
+                        } else if is_rect {
+                            let rect = Rect::from_xywh(
+                                cx - box_size / 2.0,
+                                cy - box_size / 2.0,
+                                box_size,
+                                box_size,
+                            );
+                            shape_paint.set_style(paint::Style::Fill);
+                            shape_paint.set_color(fill_color);
+                            if is_reversed {
+                                canvas.draw_rect(rect, &shape_paint);
+                            }
+                            canvas.draw_rect(rect, &stroke_paint);
+                        }
+
+                        for ch in chars.iter() {
+                            let display = {
+                                let codepoint = *ch as u32;
+                                if (0x2460..=0x2473).contains(&codepoint) {
+                                    (codepoint - 0x2460 + 1).to_string()
+                                } else if let Some(display) = pua_to_display_text(*ch) {
+                                    display
+                                } else {
+                                    ch.to_string()
+                                }
+                            };
+                            draw_overlap_text(&display, cx, cy);
+                        }
                     } else {
-                        let char_advance = if chars.len() > 1 {
-                            bbox.width as f32 / chars.len() as f32
-                        } else {
-                            box_size
-                        };
                         for (index, ch) in chars.iter().enumerate() {
                             let display = {
                                 let codepoint = *ch as u32;
@@ -273,7 +311,7 @@ impl SkiaTextReplay<'_> {
                             };
                             draw_overlap_box(
                                 &display,
-                                bbox.x as f32 + index as f32 * char_advance + box_size / 2.0,
+                                bbox.x as f32 + index as f32 * box_size + box_size / 2.0,
                                 (bbox.y + bbox.height / 2.0) as f32,
                             );
                         }
@@ -649,19 +687,22 @@ impl SkiaTextReplay<'_> {
                 12.0
             };
             let make_mark_font = |size: f32| {
-                let mut font = self
-                    .font_mgr
-                    .match_family_style("DejaVu Sans", FontStyle::normal())
-                    .or_else(|| {
-                        self.font_mgr
-                            .legacy_make_typeface(None::<&str>, FontStyle::normal())
-                    })
-                    .map(|tf| Font::new(tf, size))
-                    .unwrap_or_else(|| {
-                        let mut font = Font::default();
-                        font.set_size(size);
-                        font
-                    });
+                let mut font = match_system_family_style(
+                    self.font_mgr,
+                    self.system_families,
+                    "DejaVu Sans",
+                    FontStyle::normal(),
+                )
+                .or_else(|| {
+                    self.font_mgr
+                        .legacy_make_typeface(None::<&str>, FontStyle::normal())
+                })
+                .map(|tf| Font::new(tf, size))
+                .unwrap_or_else(|| {
+                    let mut font = Font::default();
+                    font.set_size(size);
+                    font
+                });
                 font.set_edging(font::Edging::AntiAlias);
                 font
             };

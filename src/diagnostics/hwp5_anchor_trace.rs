@@ -290,10 +290,74 @@ fn ctrl_header_key(data: &[u8]) -> String {
     } else {
         0
     };
+    let common_attr = if matches!(ctrl_id, tags::CTRL_GEN_SHAPE | tags::CTRL_TABLE) {
+        common_obj_attr_summary(u32::from_le_bytes([data[4], data[5], data[6], data[7]]))
+    } else {
+        String::new()
+    };
     format!(
-        "ctrl_id=0x{ctrl_id:08x}({name}); properties=0x{:08x}; extra=0x{:02x}; command={command}; field_id={field_id}; memo_index={memo_index}",
+        "ctrl_id=0x{ctrl_id:08x}({name}); properties=0x{:08x}{common_attr}; extra=0x{:02x}; command={command}; field_id={field_id}; memo_index={memo_index}",
         u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
         data[8],
+    )
+}
+
+fn common_obj_attr_summary(attr: u32) -> String {
+    let wrap_bits = (attr >> 21) & 0x07;
+    let wrap = match wrap_bits {
+        0 => "Square/어울림",
+        1 => "TopAndBottom/자리차지",
+        2 => "BehindText/글뒤로",
+        3 => "InFrontOfText/글앞으로",
+        _ => "reserved",
+    };
+    let vrel_bits = (attr >> 3) & 0x03;
+    let vrel = match vrel_bits {
+        1 => "Page",
+        2 => "Para",
+        _ => "Paper",
+    };
+    let valign_bits = (attr >> 5) & 0x07;
+    let valign = match valign_bits {
+        0 => "Top",
+        1 => "Center",
+        2 => "Bottom",
+        3 => "Inside",
+        4 => "Outside",
+        _ => "Top",
+    };
+    let hrel_bits = (attr >> 8) & 0x03;
+    let hrel = match hrel_bits {
+        1 => "Page",
+        2 => "Column",
+        3 => "Para",
+        _ => "Paper",
+    };
+    let halign_bits = (attr >> 10) & 0x07;
+    let halign = match halign_bits {
+        0 => "Left",
+        1 => "Center",
+        2 => "Right",
+        3 => "Inside",
+        4 => "Outside",
+        _ => "Left",
+    };
+    format!(
+        "; common=tac={}, wrap={}({}), vrel={}({}), valign={}({}), hrel={}({}), halign={}({}), flowWithText={}, allowOverlap={}, bit26={}",
+        attr & 0x01 != 0,
+        wrap_bits,
+        wrap,
+        vrel_bits,
+        vrel,
+        valign_bits,
+        valign,
+        hrel_bits,
+        hrel,
+        halign_bits,
+        halign,
+        attr & (1 << 13) != 0,
+        attr & (1 << 14) != 0,
+        attr & (1 << 26) != 0
     )
 }
 

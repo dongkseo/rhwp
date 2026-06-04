@@ -22,6 +22,7 @@
 - [한국어 단어 선택 + 자기검열](feedback_kr_word_choices.md) — "산수" 금지, 비교/최상급/공공기관 오인 회피
 - [단어 선택 — "산수" 대신 "계산"](feedback_word_choice_calculation.md) — 기술 문서에서 "산수" 금지
 - [기계적 어휘 회피](feedback_machine_vocabulary.md) — "본질/정합 영역" 반복 금지, 자연스러운 한국어 산문
+- ["영역" placeholder filler 금지](feedback_no_yeongyeok_filler.md) — 빈자리 메우기에 "영역" 금지, 실제 공간/범위 의미일 때만
 - [외부 공개 문서 자기검열 체크리스트](feedback_external_docs_self_censor.md) — 7개 카테고리 점검
 
 ## feedback — PR/컨트리뷰터 관련
@@ -29,31 +30,39 @@
 - [PR 댓글 톤 — 과도한 표현 자제](feedback_pr_comment_tone.md) — 차분하고 사실 중심
 - [작은 단위 PATCH 회전 운영](feedback_small_batch_release_strategy.md) — 빠른 회전, 위험 분산
 - [PR 생성은 별도 승인 후 진행](feedback_pr_requires_explicit_approval.md) — PR 준비와 GitHub PR 생성 분리
-- [PR 본문 한국어 작성 필수](feedback_pr_body_korean_required.md) — 내부 타스크 PR 제목과 본문은 한국어로 작성
-- [PR 전 로컬 CI급 검증 필수](feedback_pr_ci_before_pr.md) — PR 생성/최종 푸시 전에 CI급 로컬 테스트 먼저 실행
+- [PR 본문 한국어 작성 필수](feedback_pr_body_korean_required.md) — 내부 타스크 PR 제목과 본문은 한국어
+- [PR 전 로컬 CI급 검증 필수](feedback_pr_ci_before_pr.md) — PR 생성/최종 푸시 전 CI급 로컬 테스트
+- [push 전 cargo test --tests + fmt --check 필수](feedback_push_full_test_required.md) — --lib만으론 통합 테스트 회귀 못 잡음 (PR #1020)
+- [컨트리뷰터 사이클 사전 점검 의무](feedback_contributor_cycle_check.md) — gh pr list --author로 누적 PR 확인, "첫 사이클" 임의 추정 금지
+- [PR supersede 체인 세 패턴](feedback_pr_supersede_chain.md) — close+통합 / 머지+supersede / 머지+회귀정정. 동일 컨트리뷰터 PR 점검 필수
+- [GitHub 미연결 author는 .mailmap으로 정정](feedback_mailmap_for_unlinked_authors.md) — history rewrite 금지, 비파괴 매핑
 
 ## feedback — 시각 판정/한컴 호환
 - [시각 판정 권위](feedback_visual_judgment_authority.md) — 한컴 2022 정답지, Claude는 정량 측정만 보조
 - [rhwp 자체 시각 해석 권위](feedback_rhwp_visual_authority.md) — IR 충실보다 시각 본질 우선 가능
-- [PDF 는 정답지가 아니다](feedback_pdf_not_authoritative.md) — 한컴 PDF 출력은 환경별로 다름, 1차 기준 수용 금지
+- [PDF 정답지 등급](feedback_pdf_not_authoritative.md) — 한컴 2020/2022 편집기 PDF만 정답지, 뷰어/외부/2010은 미달
 - [한컴 호환은 케이스별 명시 가드](feedback_hancom_compat_specific_over_general.md) — 일반화보다 구조 가드가 안전
 - [자기 검증 ≠ 한컴 호환](feedback_self_verification_not_hancom.md) — 한컴2020 수동 검증 게이트 필수
+- [렌더링 의미는 추정 금지 — 권위 자료로 확정](feedback_no_inference_authoritative_spec.md) — 한컴 스펙+대비 샘플+편집기 UI 교차검증 (#1156)
 - [v0.7.6 회귀의 origin](feedback_v076_regression_origin.md) — 컨트리뷰터 PDF 정답지 사용 → 회귀. 시각 검증 게이트
 - [시각 회귀 비중 증가](feedback_visual_regression_grows.md) — 페이지 수 비교만으로 검출 불가, 시각 판정이 핵심
 
 ## feedback — 코드/렌더링 관련
 - [renderer별 별도 image 함수 sweep](feedback_image_renderer_paths_separate.md) — svg/canvas/paint/json 4 backend 점검
+- [결함 진단 시 layer 귀속 정확화](feedback_diagnosis_layer_attribution.md) — emission 위치 ≠ 결함 본질 위치, 시프트 출처 추적
+- [정정 시 두 경로 점검 패턴](feedback_fix_scope_check_two_paths.md) — layout 정정만으로 부족, reflow/preprocessing도 동일 정정
 - [폰트 추가 시 alias 동기화 필수](feedback_font_alias_sync.md) — style_resolver + font_metrics_data 2계층 등록
 - [트러블슈팅 폴더 사전 검색 의무](feedback_search_troubleshootings_first.md) — 직렬화/한컴 호환 작업 전 전수 검색
 
-## feedback — 릴리즈/배포
+## feedback — 릴리즈/배포/CI
 - [릴리즈 전 main 동기화 점검 필수](feedback_release_sync_check.md) — git pull --ff-only origin main
 - [릴리즈 작업 시 매뉴얼 정독 필수](feedback_release_manual_required.md) — 부분 검색 금지, 체크리스트 1:1 대조
 - [AMO 제출 4대 함정](feedback_amo_submission_gotchas.md) — Firefox 확장 제출 전 체크리스트
+- [CI 진행중 수치 보고 금지](feedback_no_metrics_from_inprogress_ci.md) — in_progress run의 step 시간으로 성능 보고 금지 (#1192)
 
 ## project
 - [브랜치 정책 + iOS 분기](project_branch_policy.md) — main/devel/local-devel + ios/devel(맥북 전용)
-- [외부 컨트리뷰터 명단](project_external_contributors.md) — v0.7.x 누적 20명, 첫 PR 식별용
+- [외부 컨트리뷰터 명단](project_external_contributors.md) — v0.7.x 누적 23명, 첫 PR 식별용
 - [알한글 iOS 프로젝트](project_alhangeul_ios.md) — iPad HWP 학습 도구, 맥북 전용
 - [안드로이드 IME 미구현](project_android_ime_pending.md) — 기기 미보유
 - [rhwp 정체성 — DTP 엔진 + 워드프로세서](project_dtp_identity.md) — 아래아한글 = QuarkXPress 대체 의도
@@ -64,7 +73,7 @@
 - [HWPX switch/case와 줄간격 유형](hwpx_switch_case.md) — HwpUnitChar case=글자에따라, default=고정값
 
 ## reference
-- [작업지시자 정답지 한컴 환경](reference_authoritative_hancom.md) — 한컴 2010+2022 편집기만 정답지
-- [로컬 폰트 경로](reference_font_path.md) — TTF 폰트 프로젝트 외부 분리
+- [작업지시자 정답지 한컴 환경](reference_authoritative_hancom.md) — Windows 한컴 편집기 1차 + 맥/리눅스는 한글 2020/2022 PDF
+- [로컬 폰트 경로](reference_font_path.md) — TTF 폰트 프로젝트 외부 분리 (Linux/macOS 경로별)
 - [hwp2hwpx Java 라이브러리](reference_hwp2hwpx_library.md) — HWP↔HWPX 변환 매핑 권위 자료
 - [Discord 커뮤니티](reference_discord.md) — Rust Discord 소개 (2026-04-04)

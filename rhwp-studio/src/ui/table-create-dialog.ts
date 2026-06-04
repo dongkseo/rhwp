@@ -16,6 +16,7 @@
  */
 
 import { makeOption } from './dom-utils';
+import { enableDialogDrag } from './dialog-drag';
 
 const GRID_ROWS = 8;
 const GRID_COLS = 10;
@@ -253,6 +254,7 @@ export class TableCreateDialog {
     closeBtn.addEventListener('click', close);
     title.appendChild(closeBtn);
     dlg.appendChild(title);
+    enableDialogDrag(dlg, title);
 
     // 본문: 좌측 폼 + 우측 버튼
     const body = document.createElement('div');

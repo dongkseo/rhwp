@@ -2,8 +2,8 @@ use crate::paint::paint_op::PaintOp;
 use crate::paint::profile::RenderProfile;
 use crate::paint::resources::ResourceArena;
 use crate::renderer::render_tree::{
-    BoundingBox, FieldMarkerType, GroupNode, NodeId, TableCellNode, TableNode, TextLineNode,
-    TextRunNode,
+    BoundingBox, FieldMarkerType, GroupNode, NodeId, RenderLayerInfo, TableCellNode, TableNode,
+    TextLineNode, TextRunNode,
 };
 
 /// 한 페이지의 visual layer tree.
@@ -253,6 +253,7 @@ pub enum CacheHint {
 pub enum ClipKind {
     Body,
     TableCell,
+    TextBox,
     Generic,
 }
 
@@ -260,6 +261,7 @@ pub enum ClipKind {
 pub struct LayerNode {
     pub bounds: BoundingBox,
     pub source_node_id: Option<NodeId>,
+    pub layer: Option<RenderLayerInfo>,
     pub kind: LayerNodeKind,
 }
 
@@ -274,6 +276,7 @@ impl LayerNode {
         Self {
             bounds,
             source_node_id,
+            layer: None,
             kind: LayerNodeKind::Group {
                 children,
                 cache_hint,
@@ -292,6 +295,7 @@ impl LayerNode {
         Self {
             bounds,
             source_node_id,
+            layer: None,
             kind: LayerNodeKind::ClipRect {
                 clip,
                 child: Box::new(child),
@@ -304,8 +308,14 @@ impl LayerNode {
         Self {
             bounds,
             source_node_id,
+            layer: None,
             kind: LayerNodeKind::Leaf { ops },
         }
+    }
+
+    pub fn with_layer(mut self, layer: Option<RenderLayerInfo>) -> Self {
+        self.layer = layer;
+        self
     }
 }
 

@@ -17,10 +17,10 @@ use std::io::Write;
 
 use quick_xml::Writer;
 
-use crate::model::paragraph::Paragraph;
+use crate::model::paragraph::{LineSeg, Paragraph};
 use crate::model::shape::{
-    CommonObjAttr, HorzAlign, HorzRelTo, LineShape, RectangleShape, TextBox, TextWrap, VertAlign,
-    VertRelTo,
+    CommonObjAttr, HorzAlign, HorzRelTo, LineShape, RectangleShape, TextBox, TextFlow, TextWrap,
+    VertAlign, VertRelTo,
 };
 
 use super::utils::{empty_tag, end_tag, start_tag, start_tag_attrs};
@@ -42,6 +42,7 @@ pub fn write_rect<W: Write>(
     let id_str = c.instance_id.to_string();
     let z_order = c.z_order.to_string();
     let tw = text_wrap_str(c.text_wrap);
+    let tf = text_flow_str(c.text_flow);
 
     start_tag_attrs(
         w,
@@ -51,7 +52,7 @@ pub fn write_rect<W: Write>(
             ("zOrder", &z_order),
             ("numberingType", "NONE"),
             ("textWrap", tw),
-            ("textFlow", "BOTH_SIDES"),
+            ("textFlow", tf),
             ("lock", "0"),
             ("dropcapstyle", "None"),
             ("href", ""),
@@ -87,6 +88,7 @@ pub fn write_line<W: Write>(w: &mut Writer<W>, line: &LineShape) -> Result<(), S
     let id_str = c.instance_id.to_string();
     let z_order = c.z_order.to_string();
     let tw = text_wrap_str(c.text_wrap);
+    let tf = text_flow_str(c.text_flow);
     let sx = line.start.x.to_string();
     let sy = line.start.y.to_string();
     let ex = line.end.x.to_string();
@@ -101,7 +103,7 @@ pub fn write_line<W: Write>(w: &mut Writer<W>, line: &LineShape) -> Result<(), S
             ("zOrder", &z_order),
             ("numberingType", "NONE"),
             ("textWrap", tw),
-            ("textFlow", "BOTH_SIDES"),
+            ("textFlow", tf),
             ("lock", "0"),
             ("dropcapstyle", "None"),
             ("href", ""),
@@ -135,6 +137,7 @@ pub fn write_container_open<W: Write>(
     let id_str = common.instance_id.to_string();
     let z_order = common.z_order.to_string();
     let tw = text_wrap_str(common.text_wrap);
+    let tf = text_flow_str(common.text_flow);
 
     start_tag_attrs(
         w,
@@ -144,7 +147,7 @@ pub fn write_container_open<W: Write>(
             ("zOrder", &z_order),
             ("numberingType", "NONE"),
             ("textWrap", tw),
-            ("textFlow", "BOTH_SIDES"),
+            ("textFlow", tf),
             ("lock", "0"),
             ("dropcapstyle", "None"),
             ("href", ""),
@@ -248,6 +251,7 @@ fn write_draw_text_paragraph<W: Write>(
 
     // minimal lineseg
     start_tag(w, "hp:linesegarray")?;
+    let line_flags = LineSeg::TAG_SINGLE_SEGMENT_LINE.to_string();
     empty_tag(
         w,
         "hp:lineseg",
@@ -260,7 +264,7 @@ fn write_draw_text_paragraph<W: Write>(
             ("spacing", "600"),
             ("horzpos", "0"),
             ("horzsize", "42520"),
-            ("flags", "393216"),
+            ("flags", line_flags.as_str()),
         ],
     )?;
     end_tag(w, "hp:linesegarray")?;
@@ -341,6 +345,15 @@ fn text_wrap_str(w: TextWrap) -> &'static str {
         TopAndBottom => "TOP_AND_BOTTOM",
         BehindText => "BEHIND_TEXT",
         InFrontOfText => "IN_FRONT_OF_TEXT",
+    }
+}
+
+fn text_flow_str(f: TextFlow) -> &'static str {
+    match f {
+        TextFlow::BothSides => "BOTH_SIDES",
+        TextFlow::LeftOnly => "LEFT_ONLY",
+        TextFlow::RightOnly => "RIGHT_ONLY",
+        TextFlow::LargestOnly => "LARGEST_ONLY",
     }
 }
 

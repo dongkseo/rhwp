@@ -21,6 +21,7 @@ import type {
   LayerAffineTransform,
   LayerGlyphOutlineOp,
   LayerImageOp,
+  LayerInfo,
   LayerLeafNode,
   LayerLineOp,
   LayerNode,
@@ -49,6 +50,11 @@ import {
   canvasKitImageSourceRect,
 } from './canvaskit/image-replay';
 import { canvaskitClipRightPad } from './canvaskit/policy';
+import {
+  CANVASKIT_REPLAY_PLANES,
+  type CanvasKitReplayPlane,
+  layerPaintOpReplayPlane,
+} from './canvaskit/replay-plane';
 import { glyphOutlinePayloadStatus } from './glyph-outline-payload-status';
 
 type CanvasKitApi = CanvasKit;
@@ -141,7 +147,9 @@ export class CanvasKitLayerRenderer {
       canvas.save();
       canvas.clear(this.color(hasPageBackground ? 'rgba(0,0,0,0)' : '#ffffff'));
       canvas.scale(scale, scale);
-      this.renderNode(canvas, tree.root, tree.profile ?? 'screen');
+      for (const replayPlane of CANVASKIT_REPLAY_PLANES) {
+        this.renderNode(canvas, tree.root, tree.profile ?? 'screen', replayPlane);
+      }
       if (pageInfo) {
         const paint = this.makeStrokePaint('#c0c0c0', 0.3);
         const left = pageInfo.marginLeft;
@@ -219,21 +227,34 @@ export class CanvasKitLayerRenderer {
     return surface;
   }
 
-  private renderNode(canvas: SkCanvas, node: LayerNode, profile: LayerRenderProfile): void {
+  private renderNode(
+    canvas: SkCanvas,
+    node: LayerNode,
+    profile: LayerRenderProfile,
+    replayPlane: CanvasKitReplayPlane,
+    inheritedLayer: LayerInfo | null = null,
+  ): void {
+    const activeLayer = node.layer ?? inheritedLayer;
     if (node.kind === 'group') {
       for (const child of node.children) {
-        this.renderNode(canvas, child, profile);
+        this.renderNode(canvas, child, profile, replayPlane, activeLayer);
       }
       return;
     }
     if (node.kind === 'clipRect') {
-      this.renderClipNode(canvas, node, profile);
+      this.renderClipNode(canvas, node, profile, replayPlane, activeLayer);
       return;
     }
-    this.renderLeaf(canvas, node);
+    this.renderLeaf(canvas, node, replayPlane, activeLayer);
   }
 
-  private renderClipNode(canvas: SkCanvas, node: LayerClipNode, profile: LayerRenderProfile): void {
+  private renderClipNode(
+    canvas: SkCanvas,
+    node: LayerClipNode,
+    profile: LayerRenderProfile,
+    replayPlane: CanvasKitReplayPlane,
+    inheritedLayer: LayerInfo | null,
+  ): void {
     const pad = canvaskitClipRightPad(this.renderMode, profile, node.clipKind);
     const clip = {
       ...node.clip,
@@ -241,12 +262,21 @@ export class CanvasKitLayerRenderer {
     };
     canvas.save();
     canvas.clipRect(this.rect(clip), this.canvasKit.ClipOp?.Intersect ?? 0, true);
-    this.renderNode(canvas, node.child, profile);
+    this.renderNode(canvas, node.child, profile, replayPlane, inheritedLayer);
     canvas.restore();
   }
 
-  private renderLeaf(canvas: SkCanvas, node: LayerLeafNode): void {
+  private renderLeaf(
+    canvas: SkCanvas,
+    node: LayerLeafNode,
+    replayPlane: CanvasKitReplayPlane,
+    inheritedLayer: LayerInfo | null,
+  ): void {
+    const activeLayer = node.layer ?? inheritedLayer;
     for (const op of node.ops) {
+      if (layerPaintOpReplayPlane(op, activeLayer) !== replayPlane) {
+        continue;
+      }
       this.renderOp(canvas, op);
     }
   }

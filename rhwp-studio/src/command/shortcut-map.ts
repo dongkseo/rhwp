@@ -2,6 +2,8 @@
 export interface ShortcutDef {
   /** 키 문자 (소문자). 예: 'z', 'b', '=', '-' */
   key: string;
+  /** 물리 키 코드. IME 입력 중 key가 Process일 때 사용한다. 예: 'KeyJ' */
+  code?: string;
   /** Ctrl (Windows) 또는 Meta (Mac) */
   ctrl?: boolean;
   shift?: boolean;
@@ -83,6 +85,16 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   [{ key: ']', ctrl: true }, 'format:font-size-increase'],
   [{ key: '[', ctrl: true }, 'format:font-size-decrease'],
 
+  // 장평/자간 (한컴 호환)
+  [{ key: 'j', code: 'KeyJ', alt: true, shift: true }, 'format:char-ratio-decrease'],
+  [{ key: 'ㅓ', alt: true, shift: true }, 'format:char-ratio-decrease'],
+  [{ key: 'k', code: 'KeyK', alt: true, shift: true }, 'format:char-ratio-increase'],
+  [{ key: 'ㅏ', alt: true, shift: true }, 'format:char-ratio-increase'],
+  [{ key: 'n', code: 'KeyN', alt: true, shift: true }, 'format:char-spacing-decrease'],
+  [{ key: 'ㅜ', alt: true, shift: true }, 'format:char-spacing-decrease'],
+  [{ key: 'w', code: 'KeyW', alt: true, shift: true }, 'format:char-spacing-increase'],
+  [{ key: 'ㅈ', alt: true, shift: true }, 'format:char-spacing-increase'],
+
   // 문단 정렬
   // Ctrl+Shift+L: 왼쪽 정렬 (브라우저 주소창 포커스이나 편집 영역에서 양보)
   [{ key: 'l', ctrl: true, shift: true }, 'format:align-left'],
@@ -115,13 +127,16 @@ export function matchShortcut(
   shortcuts: [ShortcutDef, string][],
 ): string | null {
   const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  const eventKey = e.key.toLowerCase();
+  const eventCode = (e.code ?? '').toLowerCase();
 
   for (const [def, cmdId] of shortcuts) {
     if (def.ctrl && !ctrlOrMeta) continue;
     if (!def.ctrl && ctrlOrMeta) continue;
     if ((def.shift ?? false) !== e.shiftKey) continue;
     if ((def.alt ?? false) !== e.altKey) continue;
-    if (e.key.toLowerCase() === def.key) return cmdId;
+    if (eventKey === def.key) return cmdId;
+    if (def.code && eventCode === def.code.toLowerCase()) return cmdId;
   }
   return null;
 }

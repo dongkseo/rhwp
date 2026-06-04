@@ -314,6 +314,7 @@ impl LayoutEngine {
     }
 
     /// 테이블 셀 내 도형(Shape) 컨트롤을 레이아웃한다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout_cell_shape(
         &self,
         tree: &mut PageRenderTree,
@@ -325,6 +326,8 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         bin_data_content: &[BinDataContent],
         clamp_header_negative_para_offset: bool,
+        // [Task #1138] 표 셀 컨텍스트: (section_idx, outer_para_idx, outer_table_ctrl_idx, cell_idx, cell_para_idx, inner_control_idx)
+        table_cell_ctx: Option<(usize, usize, usize, usize, usize, usize)>,
     ) {
         let child_common = shape.common();
 
@@ -376,6 +379,17 @@ impl LayoutEngine {
         };
 
         let empty_map = std::collections::HashMap::new();
+        // [Task #1138] table_cell_ctx 가 Some 일 때 layout_shape_object 에
+        // section_index/outer_para_idx/inner_control_idx 를 셀 컨텍스트에서 추출하여 전달.
+        let (sec_idx, outer_para_idx, inner_ctrl_idx, shape_table_cell_ref) = match table_cell_ctx {
+            Some((sec, outer_para, outer_table_ci, cell_i, cell_para_i, inner_ci)) => (
+                sec,
+                outer_para,
+                inner_ci,
+                Some((cell_i, cell_para_i, outer_table_ci)),
+            ),
+            None => (0, 0, 0, None),
+        };
         self.layout_shape_object(
             tree,
             cell_node,
@@ -384,13 +398,14 @@ impl LayoutEngine {
             child_y,
             child_w,
             child_h,
-            0,
-            0,
-            0,
+            sec_idx,
+            outer_para_idx,
+            inner_ctrl_idx,
             styles,
             bin_data_content,
             &empty_map,
             &[],
+            shape_table_cell_ref,
         );
     }
 
@@ -663,10 +678,12 @@ impl LayoutEngine {
                     Some((s, p, c)) => (s, pidx, Some(c)),
                     None => (0, 0, None),
                 };
+                let numbered_comp = self.apply_paragraph_numbering(Some(composed), para, styles, 0);
+                let composed_for_layout = numbered_comp.as_ref().unwrap_or(composed);
                 para_y = self.layout_composed_paragraph(
                     tree,
                     &mut cell_node,
-                    composed,
+                    composed_for_layout,
                     styles,
                     &inner_area,
                     para_y,
@@ -675,6 +692,7 @@ impl LayoutEngine {
                     sec_for_layout,
                     para_for_layout,
                     ctx,
+                    false,
                     pidx + 1 == para_count,
                     0.0,
                     None,
@@ -709,13 +727,36 @@ impl LayoutEngine {
                             let img_data =
                                 find_bin_data(bin_data_content, bin_id).map(|bd| bd.data.clone());
                             let img_node_id = tree.next_id();
+                            // [Task #1151 v4] 셀 안 inline picture 의 cell context + outer
+                            // 정보 보존. rendering.rs:1495 의 Image JSON 직렬화 에 cellIdx/
+                            // cellParaIdx 노출 → studio findPictureAtClick / cursor_rect hit-test
+                            // 가 인식. enclosing_ctx 에서 section / outer paragraph / outer table
+                            // control 인덱스 추출. ctrl_idx 는 셀 paragraph 안의 picture 인덱스.
+                            // [Task #1161] 전체 다단계 경로(중첩 표 포함)를 먼저 구성해
+                            // ImageNode.cell_context 와 inline_shape_position 등록에 공유.
+                            // 단일 레벨 스칼라(cell_index/cell_para_index/outer_table_control_index)
+                            // 는 이 경로의 innermost 투영으로 유지(하위호환).
+                            let cell_ctx =
+                                enclosing_ctx.map(|(_, outer_pi, parent_path, table_ci)| {
+                                    let mut path = parent_path.to_vec();
+                                    path.push(CellPathEntry {
+                                        control_index: table_ci,
+                                        cell_index: cell_idx,
+                                        cell_para_index: pidx,
+                                        text_direction: cell.text_direction,
+                                    });
+                                    CellContext {
+                                        parent_para_index: outer_pi,
+                                        path,
+                                    }
+                                });
                             let img_node = RenderNode::new(
                                 img_node_id,
                                 RenderNodeType::Image(ImageNode {
                                     bin_data_id: bin_id,
                                     data: img_data,
-                                    section_index: None,
-                                    para_index: None,
+                                    section_index: enclosing_ctx.map(|(s, _, _, _)| s),
+                                    para_index: enclosing_ctx.map(|(_, p, _, _)| p),
                                     control_index: Some(ctrl_idx),
                                     fill_mode: None,
                                     original_size: None,
@@ -728,10 +769,31 @@ impl LayoutEngine {
                                     text_wrap: None,
                                     external_path: pic.image_attr.external_path.clone(),
                                     header_footer_ref: None,
+                                    cell_index: Some(cell_idx),
+                                    cell_para_index: Some(pidx),
+                                    outer_table_control_index: enclosing_ctx
+                                        .map(|(_, _, _, table_ci)| table_ci),
+                                    cell_context: cell_ctx.clone(),
                                 }),
                                 BoundingBox::new(pic_x, pic_y, fit_w, fit_h),
                             );
                             cell_node.children.push(img_node);
+                            // [Task #1151 v4] 셀 안 inline picture 의 위치를 inline_shape_positions
+                            // 에 등록. cursor_rect.rs 의 hit-test 루프가 이 등록 없이는 picture 클릭을
+                            // 인식하지 못해 (키보드 입력으로 paragraph_layout 의 다른 path 가 등록할
+                            // 때까지) 첫 클릭 무반응. enclosing_ctx 가 Some 인 경우만 (셀 컨텍스트 있음).
+                            if let (Some((sec_idx, outer_pi, _, _)), Some(cell_ctx)) =
+                                (enclosing_ctx, cell_ctx.as_ref())
+                            {
+                                tree.set_inline_shape_position(
+                                    sec_idx,
+                                    outer_pi,
+                                    ctrl_idx,
+                                    Some(cell_ctx),
+                                    pic_x,
+                                    pic_y,
+                                );
+                            }
                         }
                         _ => {}
                     }

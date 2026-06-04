@@ -185,6 +185,7 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         section_index: usize,
         styles: &ResolvedStyleSet,
+        outline_numbering_id: u16,
         col_area: &LayoutRect,
         y_start: f64,
         bin_data_content: &[BinDataContent],
@@ -290,6 +291,7 @@ impl LayoutEngine {
                             nested,
                             section_index,
                             styles,
+                            outline_numbering_id,
                             col_area,
                             y_start,
                             bin_data_content,
@@ -606,6 +608,7 @@ impl LayoutEngine {
             table,
             section_index,
             styles,
+            outline_numbering_id,
             col_area,
             bin_data_content,
             depth,
@@ -1269,6 +1272,17 @@ impl LayoutEngine {
                 let mut w = 0.0;
                 for run in &line.runs {
                     let mut ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                    if run.char_overlap.is_some() {
+                        let fs = if ts.font_size > 0.0 {
+                            ts.font_size
+                        } else {
+                            12.0
+                        };
+                        let chars: Vec<char> = run.text.chars().collect();
+                        w += fs
+                            * crate::renderer::composer::char_overlap_advance_units(&chars) as f64;
+                        continue;
+                    }
                     // 자연 폭 측정: 음수 자간을 제거하여 글리프가 서로 겹치지 않는 최소 폭을 얻음
                     if ts.letter_spacing < 0.0 {
                         ts.letter_spacing = 0.0;
@@ -1352,6 +1366,9 @@ impl LayoutEngine {
                     img_id,
                     RenderNodeType::Image(ImageNode {
                         fill_mode: Some(img_fill.fill_mode),
+                        brightness: img_fill.brightness,
+                        contrast: img_fill.contrast,
+                        effect: img_fill.effect,
                         ..ImageNode::new(img_fill.bin_data_id, Some(img_content.data.clone()))
                     }),
                     BoundingBox::new(cell_x, cell_y, cell_w, cell_h),
@@ -1595,6 +1612,7 @@ impl LayoutEngine {
         table: &crate::model::table::Table,
         section_index: usize,
         styles: &ResolvedStyleSet,
+        outline_numbering_id: u16,
         col_area: &LayoutRect,
         bin_data_content: &[BinDataContent],
         depth: usize,
@@ -2040,10 +2058,21 @@ impl LayoutEngine {
                         } else {
                             composed.lines.len()
                         };
+                        let numbered_comp = if end_line > 0 {
+                            self.apply_paragraph_numbering(
+                                Some(composed),
+                                para,
+                                styles,
+                                outline_numbering_id,
+                            )
+                        } else {
+                            None
+                        };
+                        let composed_for_layout = numbered_comp.as_ref().unwrap_or(composed);
                         para_y = self.layout_composed_paragraph(
                             tree,
                             &mut cell_node,
-                            composed,
+                            composed_for_layout,
                             styles,
                             &inner_area,
                             para_y,
@@ -2052,6 +2081,7 @@ impl LayoutEngine {
                             section_index,
                             cp_idx,
                             cell_context.clone(),
+                            false,
                             is_last_para,
                             0.0,
                             None,
@@ -2221,6 +2251,10 @@ impl LayoutEngine {
                                             width: clamped_w,
                                             height: clamped_h,
                                         };
+                                        // [Task #1151 v4] 셀 안 inline picture (tac=true):
+                                        // outer paragraph idx + inner picture ctrl idx +
+                                        // cell_ctx 전달 → ImageNode cell_index + cursor_rect
+                                        // hit-test 정합.
                                         self.layout_picture(
                                             tree,
                                             &mut cell_node,
@@ -2229,8 +2263,9 @@ impl LayoutEngine {
                                             bin_data_content,
                                             Alignment::Left,
                                             Some(section_index),
-                                            None,
-                                            None,
+                                            cell_context.as_ref().map(|c| c.parent_para_index),
+                                            Some(ctrl_idx),
+                                            cell_context.as_ref(),
                                         );
                                         inline_x += clamped_w;
                                         continue;
@@ -2280,6 +2315,9 @@ impl LayoutEngine {
                                         width: pic_w,
                                         height: pic_h,
                                     };
+                                    // [Task #1151 v4] 셀 안 non-inline picture (tac=false 자리차지 등):
+                                    // outer paragraph idx + inner picture ctrl idx +
+                                    // cell_ctx 전달.
                                     self.layout_picture(
                                         tree,
                                         &mut cell_node,
@@ -2288,8 +2326,9 @@ impl LayoutEngine {
                                         bin_data_content,
                                         Alignment::Left,
                                         Some(section_index),
-                                        None,
-                                        None,
+                                        cell_context.as_ref().map(|c| c.parent_para_index),
+                                        Some(ctrl_idx),
+                                        cell_context.as_ref(),
                                     );
                                     para_y += pic_h;
                                 }
@@ -2546,6 +2585,10 @@ impl LayoutEngine {
                                         width: shape_w,
                                         height: inner_area.height,
                                     };
+                                    // [Task #1138] 셀 컨텍스트 (section, outer_para, outer_table_ctrl, cell, cell_para, inner_ctrl)
+                                    let table_cell_ctx = table_meta.map(|(opi, otci)| {
+                                        (section_index, opi, otci, cell_idx, cp_idx, ctrl_idx)
+                                    });
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
@@ -2556,6 +2599,7 @@ impl LayoutEngine {
                                         styles,
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
+                                        table_cell_ctx,
                                     );
                                     inline_x += shape_w;
                                 } else {
@@ -2567,6 +2611,10 @@ impl LayoutEngine {
                                     } else {
                                         para_y
                                     };
+                                    // [Task #1138] 셀 컨텍스트
+                                    let table_cell_ctx = table_meta.map(|(opi, otci)| {
+                                        (section_index, opi, otci, cell_idx, cp_idx, ctrl_idx)
+                                    });
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
@@ -2577,6 +2625,7 @@ impl LayoutEngine {
                                         styles,
                                         bin_data_content,
                                         clamp_header_negative_para_offset,
+                                        table_cell_ctx,
                                     );
                                 }
                             }
@@ -2643,6 +2692,7 @@ impl LayoutEngine {
                                             control_index: Some(ctrl_idx),
                                             cell_index: Some(cell_idx),
                                             cell_para_index: Some(cp_idx),
+                                            note_ref: None,
                                         }),
                                         BoundingBox::new(eq_x, eq_y, eq_w, eq_h),
                                     );
@@ -2684,12 +2734,36 @@ impl LayoutEngine {
                                     if already_rendered_inline {
                                         inline_x += tac_w;
                                     } else {
+                                        // [Task #1195] 표 앞에 텍스트(공백 등)가 선행하면, 한컴은
+                                        // 그 textRun 너비 다음에 표를 놓되 잔여 너비가 부족하면
+                                        // 다음 줄(line feed)에 조판한다. 즉 표는 문단 첫 줄이 아니라
+                                        // 표가 속한 line_seg(표 앞 빈 줄 다음)에 위치한다.
+                                        // 이미지 TAC 분기(L2231)와 동일하게 para_y_before_compose 에
+                                        // (표 line_seg.vpos − 첫 line_seg.vpos) 상대 오프셋을 더한다.
+                                        // (para_y_before_compose 에 이미 ls[0].vpos 가 누적되어 있음.)
+                                        let table_anchor_y =
+                                            if has_preceding_text && para.line_segs.len() > 1 {
+                                                let first_vpos = para
+                                                    .line_segs
+                                                    .first()
+                                                    .map(|f| f.vertical_pos)
+                                                    .unwrap_or(0);
+                                                let tbl_vpos = para
+                                                    .line_segs
+                                                    .last()
+                                                    .map(|s| s.vertical_pos)
+                                                    .unwrap_or(first_vpos);
+                                                para_y_before_compose
+                                                    + hwpunit_to_px(tbl_vpos - first_vpos, self.dpi)
+                                            } else {
+                                                para_y_before_compose
+                                            };
                                         let ctrl_area = LayoutRect {
                                             x: inline_x,
-                                            y: para_y_before_compose,
+                                            y: table_anchor_y,
                                             width: tac_w,
                                             height: (inner_area.height
-                                                - (para_y_before_compose - inner_area.y))
+                                                - (table_anchor_y - inner_area.y))
                                                 .max(0.0),
                                         };
                                         let table_h = self.layout_table(
@@ -2698,8 +2772,9 @@ impl LayoutEngine {
                                             nested_table,
                                             section_index,
                                             styles,
+                                            outline_numbering_id,
                                             &ctrl_area,
-                                            para_y_before_compose,
+                                            table_anchor_y,
                                             bin_data_content,
                                             None,
                                             depth + 1,
@@ -2826,6 +2901,7 @@ impl LayoutEngine {
                                         nested_table,
                                         section_index,
                                         styles,
+                                        outline_numbering_id,
                                         &ctrl_area,
                                         nested_y,
                                         bin_data_content,
@@ -4305,7 +4381,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 50.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 50.0, &styles);
         assert_eq!(r.end_cut, vec![3]);
         assert!(!r.fully_consumed);
         assert!(!r.hit_hard_break);
@@ -4317,7 +4393,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 500.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 500.0, &styles);
         assert_eq!(r.end_cut, vec![6]);
         assert!(r.fully_consumed);
     }
@@ -4328,7 +4404,7 @@ mod row_cut_tests {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(6, 0)])]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 5.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 5.0, &styles);
         assert_eq!(r.end_cut, vec![1]);
         assert!(!r.fully_consumed);
     }
@@ -4341,7 +4417,7 @@ mod row_cut_tests {
         let styles = ResolvedStyleSet::default();
         let t = table(vec![cell(0, 0, vec![text_para(3, 0), text_para(2, 1000)])]);
         // avail 충분해도 리셋에서 정지.
-        let r = eng.advance_row_cut(&t, 0, &vec![], 1000.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 1000.0, &styles);
         assert_eq!(r.end_cut, vec![3]);
         assert!(r.hit_hard_break);
         assert!(!r.fully_consumed);
@@ -4361,7 +4437,7 @@ mod row_cut_tests {
             cell(0, 0, vec![text_para(3, 0)]),
             cell(0, 1, vec![text_para(6, 0)]),
         ]);
-        let r = eng.advance_row_cut(&t, 0, &vec![], 500.0, &styles);
+        let r = eng.advance_row_cut(&t, 0, &[], 500.0, &styles);
         assert_eq!(r.end_cut, vec![3, 6]);
         assert!(r.fully_consumed);
         assert!((r.consumed_height - 96.0).abs() < 0.5);

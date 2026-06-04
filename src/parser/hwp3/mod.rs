@@ -3,6 +3,7 @@
 //! HWP3(.hwp) 문서 포맷을 읽고 파싱하여 애플리케이션의 공통 문서 모델로 변환한다.
 //! 문서 정보, 요약, 문단, 스타일 등을 종합적으로 처리하는 진입점 역할을 한다.
 use crate::model::document::Document;
+use crate::model::paragraph::LineSeg;
 use snafu::Snafu;
 use std::io::{self, Cursor, Read};
 
@@ -74,6 +75,25 @@ pub(crate) fn check_record_count(count: usize) -> Result<(), io::Error> {
         ));
     }
     Ok(())
+}
+
+fn hwp3_page_border_fill(
+    doc_info: &Hwp3DocInfo,
+    border_fill_id: u16,
+) -> crate::model::page::PageBorderFill {
+    // HWP3 원본에는 HWP5/HWPX의 "종이 기준" 선택 기능이 없다.
+    // 저장된 border_margin은 쪽 테두리와 본문 사이의 간격이므로 HWP5 모델의
+    // Page/BodyBased로 정규화한다. (Task #1129 Stage 24)
+    crate::model::page::PageBorderFill {
+        attr: 0x01,
+        spacing_left: (doc_info.border_margin_left as i16) * 4,
+        spacing_right: (doc_info.border_margin_right as i16) * 4,
+        spacing_top: (doc_info.border_margin_top as i16) * 4,
+        spacing_bottom: (doc_info.border_margin_bottom as i16) * 4,
+        border_fill_id,
+        basis: crate::model::page::PageBorderBasis::BodyBased,
+        ui_basis: crate::model::page::PageBorderUiBasis::Page,
+    }
 }
 
 /// HWP3 개체의 CommonObjAttr 필드들에서 HWP5 attr 비트필드를 계산한다.
@@ -2040,7 +2060,7 @@ pub(crate) fn parse_paragraph_list(
                 line_spacing: fallback_line_spacing,
                 column_start: cs_sw.map(|(cs, _)| cs).unwrap_or(0),
                 segment_width: cs_sw.map(|(_, sw)| sw).unwrap_or(0),
-                tag: 0x00060000,
+                tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                 ..Default::default()
             });
         } else {
@@ -2112,7 +2132,7 @@ pub(crate) fn parse_paragraph_list(
                 // hint (원래 HWP3 가 본 줄에서 페이지/단 break 했음) → 본 환경 typeset
                 // 의 자체 pagination 과 충돌 → 본 hint 누설 시 강제 페이지 break 발생.
                 // Stage A+D vpos 누적 정합화로 자연스러운 pagination 정합.
-                let tag = 0x00060000u32;
+                let tag = LineSeg::TAG_SINGLE_SEGMENT_LINE;
 
                 // 이 줄의 pgy로 어울림 구역 판정 (per-line)
                 //
@@ -2848,24 +2868,7 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
         // (Task #987) 기존 (len-1) 0-based 는 off-by-one — Double 대신 인접 빈 border 가
         // 렌더되어 이중선이 화면에 나타나지 않던 원인.
         let bfid = doc_border_fills.len() as u16;
-        // attr bit 0 = paper_based(1) vs body_based(0). 렌더러 layout.rs 가 이 비트를 존중.
-        // [Task #987] sample16 한컴 정답지 = body 기준 (작업지시자 시각 판정).
-        // 기존 attr=1(paper) 은 bfid off-by-one 으로 잘못된 border_fill 을 읽던
-        // 상태의 착시 정합이었음. off-by-one 수정 후 body 기준이 정답.
-        section_def.page_border_fill = crate::model::page::PageBorderFill {
-            attr: 0,
-            spacing_left: (doc_info.border_margin_left as i16) * 4,
-            spacing_right: (doc_info.border_margin_right as i16) * 4,
-            spacing_top: (doc_info.border_margin_top as i16) * 4,
-            spacing_bottom: (doc_info.border_margin_bottom as i16) * 4,
-            border_fill_id: bfid,
-            // [Task #1006] HWP3: paper-based (작업지시자 Hancom Office 시각 판정).
-            // 이전 #987 의 "body-based" 재판정은 close-up 비교 부재로 인한 오판단이었음.
-            // Hancom Office close-up: outline 이 paper-spacing edge 에서 시작 + logo 가
-            // outline 내부 top-left 위치 (HWP5 변환본과 동일). HWP3/HWP5/HWPX 모두 동일
-            // contract (PaperBased) 로 통합.
-            basis: crate::model::page::PageBorderBasis::PaperBased,
-        };
+        section_def.page_border_fill = hwp3_page_border_fill(&doc_info, bfid);
     }
 
     let section = Section {
@@ -3267,6 +3270,29 @@ mod tests {
         assert!(check_record_count(HWP3_MAX_RECORD_SIZE + 1).is_err());
         assert!(check_record_count(0xFFFFFFFF).is_err());
         assert!(check_record_count(1024).is_ok());
+    }
+
+    #[test]
+    fn test_hwp3_page_border_fill_is_always_page_basis() {
+        use crate::model::page::{PageBorderBasis, PageBorderUiBasis};
+
+        let doc_info = Hwp3DocInfo {
+            border_margin_left: 10,
+            border_margin_right: 20,
+            border_margin_top: 30,
+            border_margin_bottom: 40,
+            ..Default::default()
+        };
+        let pbf = hwp3_page_border_fill(&doc_info, 7);
+
+        assert_eq!(pbf.attr & 0x01, 0x01);
+        assert_eq!(pbf.border_fill_id, 7);
+        assert_eq!(pbf.spacing_left, 40);
+        assert_eq!(pbf.spacing_right, 80);
+        assert_eq!(pbf.spacing_top, 120);
+        assert_eq!(pbf.spacing_bottom, 160);
+        assert_eq!(pbf.basis, PageBorderBasis::BodyBased);
+        assert_eq!(pbf.ui_basis, PageBorderUiBasis::Page);
     }
 
     #[test]

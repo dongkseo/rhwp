@@ -1410,7 +1410,7 @@ mod tests {
         let para = Paragraph {
             text: "abc".to_string(),
             char_offsets: vec![0, 1, 2],
-            controls: vec![Control::Footnote(Box::new(Footnote::default()))],
+            controls: vec![Control::Footnote(Box::default())],
             ..Default::default()
         };
 
@@ -1424,10 +1424,10 @@ mod tests {
             text: "  ".to_string(),
             char_offsets: vec![24, 25],
             controls: vec![
-                Control::SectionDef(Box::new(SectionDef::default())),
+                Control::SectionDef(Box::default()),
                 Control::ColumnDef(ColumnDef::default()),
-                Control::Footnote(Box::new(Footnote::default())),
-                Control::Footnote(Box::new(Footnote::default())),
+                Control::Footnote(Box::default()),
+                Control::Footnote(Box::default()),
             ],
             ..Default::default()
         };

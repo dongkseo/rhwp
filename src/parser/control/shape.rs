@@ -338,7 +338,9 @@ pub(crate) fn parse_common_obj_attr(ctrl_data: &[u8]) -> CommonObjAttr {
     common.treat_as_char = attr & 0x01 != 0;
     common.flow_with_text = attr & (1 << 13) != 0;
     common.allow_overlap = attr & (1 << 14) != 0;
+    common.size_protect = attr & (1 << 20) != 0;
     common.hwp5_gen_shape_attr_bit26 = attr & (1 << 26) != 0;
+    common.hwp5_gen_shape_attr_bit28 = attr & (1 << 28) != 0;
     common.vert_rel_to = match (attr >> 3) & 0x03 {
         1 => VertRelTo::Page,
         2 => VertRelTo::Para,
@@ -388,6 +390,14 @@ pub(crate) fn parse_common_obj_attr(ctrl_data: &[u8]) -> CommonObjAttr {
         2 => TextWrap::BehindText,    // 글 뒤로
         3 => TextWrap::InFrontOfText, // 글 앞으로
         _ => TextWrap::Square,
+    };
+    // bit 24-25: TextFlowSide (텍스트 흐르는 방향)
+    common.text_flow = match (attr >> 24) & 0x03 {
+        0 => crate::model::shape::TextFlow::BothSides,
+        1 => crate::model::shape::TextFlow::LeftOnly,
+        2 => crate::model::shape::TextFlow::RightOnly,
+        3 => crate::model::shape::TextFlow::LargestOnly,
+        _ => crate::model::shape::TextFlow::BothSides,
     };
 
     common.vertical_offset = r.read_u32().unwrap_or(0);

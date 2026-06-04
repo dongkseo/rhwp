@@ -8,12 +8,15 @@ use super::composer::{
 };
 pub(crate) use super::image_resolver::{
     bmp_bytes_to_png_bytes, detect_image_mime_type, pcx_bytes_to_png_bytes,
+    real_picture_watermark_bytes_to_hancom_tone_png_bytes,
+    real_picture_watermark_fill_bytes_to_hancom_tone_png_bytes,
     watermark_jpeg_bytes_to_hancom_baked_png_bytes,
 };
 use super::pua_oldhangul::map_pua_old_hangul;
 use super::render_tree::{
-    BoundingBox, FormObjectNode, ImageNode, PageRenderTree, RenderNode, RenderNodeType,
-    ShapeTransform,
+    BoundingBox, FormObjectNode, ImageNode, PageBackgroundImage, PageRenderTree, RenderNode,
+    RenderNodeType, ShapeTransform, LEGACY_IMAGE_WATERMARK_OPACITY,
+    REAL_PICTURE_WATERMARK_FILL_OPACITY, REAL_PICTURE_WATERMARK_PAGE_OPACITY,
 };
 use super::{
     clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
@@ -81,6 +84,8 @@ pub struct SvgRenderer {
     overlay_para_bounds: std::collections::HashMap<usize, OverlayBounds>,
     /// 디버그 오버레이용: 표 경계 수집
     overlay_table_bounds: Vec<OverlayTableInfo>,
+    /// 디버그 오버레이용: 이미지 경계 수집
+    overlay_image_bounds: Vec<OverlayImageInfo>,
     /// 디버그 오버레이용: vpos=0 리셋 위치 수집 (문단 첫 줄 제외)
     overlay_vpos_resets: Vec<OverlayVposReset>,
     /// 디버그 오버레이용: 표/머리말/꼬리말 내부 깊이 (셀 내·헤더 문단 제외)
@@ -132,6 +137,17 @@ struct OverlayTableInfo {
     col_count: u16,
 }
 
+/// 디버그 오버레이용 이미지 정보
+struct OverlayImageInfo {
+    section_index: usize,
+    para_index: usize,
+    control_index: usize,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 impl SvgRenderer {
     pub fn new() -> Self {
         Self {
@@ -147,6 +163,7 @@ impl SvgRenderer {
             debug_overlay: false,
             overlay_para_bounds: std::collections::HashMap::new(),
             overlay_table_bounds: Vec::new(),
+            overlay_image_bounds: Vec::new(),
             overlay_vpos_resets: Vec::new(),
             overlay_skip_depth: 0,
             overlay_page_section: -1,
@@ -172,6 +189,59 @@ impl SvgRenderer {
     /// 렌더 트리를 SVG로 렌더링
     pub fn render_tree(&mut self, tree: &PageRenderTree) {
         self.render_node(&tree.root);
+    }
+
+    /// [Issue #1167/#1197] 노드의 z-order plane 키 (작을수록 먼저=아래).
+    /// SVG는 단일 스트림으로 출력하므로 웹/CanvasKit의 multi-layer 합성 순서를 직접
+    /// 보존해야 한다:
+    /// 페이지 배경(0) → 바탕쪽(1) → BehindText 객체(2) → 일반 Flow 콘텐츠(3)
+    /// → InFrontOfText 객체(4).
+    /// 페이지 배경(흰 바탕·테두리·배경 워터마크)은 반드시 가장 먼저 그려야 한다.
+    /// 그러지 않으면 root 레벨에서 BehindText 워터마크가 PageBackground 보다 앞으로
+    /// 정렬되어, 흰 배경 rect 가 워터마크를 덮어버린다(#1167 1차 회귀).
+    /// 바탕쪽은 한컴의 "본문 뒤" 배경 성격이므로 BehindText 용지 기준 객체보다
+    /// 먼저 그려야 한다. 그렇지 않으면 바탕쪽의 전체 페이지 그림이 #1197의 최종
+    /// 표시용 BehindText 표를 다시 덮는다.
+    /// #1197부터는 RenderNode.layer 가 있으면 표/도형도 이미지와 같은 plane 계약을 따른다.
+    fn node_z_plane(node: &RenderNode) -> u8 {
+        if matches!(&node.node_type, RenderNodeType::PageBackground(_)) {
+            return 0;
+        }
+        if matches!(&node.node_type, RenderNodeType::MasterPage) {
+            return 1;
+        }
+        if let Some(layer) = node.layer {
+            if let Some(text_wrap) = layer.text_wrap {
+                return match text_wrap {
+                    crate::model::shape::TextWrap::BehindText => 2,
+                    crate::model::shape::TextWrap::InFrontOfText => 4,
+                    _ => 3,
+                };
+            }
+        }
+        match &node.node_type {
+            RenderNodeType::Image(img) => match img.text_wrap {
+                Some(crate::model::shape::TextWrap::BehindText) => 2,
+                Some(crate::model::shape::TextWrap::InFrontOfText) => 4,
+                _ => 3,
+            },
+            _ => 3,
+        }
+    }
+
+    fn node_z_sort_key(node: &RenderNode) -> (u8, i32, u32) {
+        let layer = node.layer;
+        (
+            Self::node_z_plane(node),
+            layer.map(|l| l.z_order).unwrap_or(0),
+            layer.map(|l| l.stable_index).unwrap_or(0),
+        )
+    }
+
+    /// [Issue #1167/#1197] 자식 중 BehindText/InFrontOfText 객체가 섞여 있어 plane
+    /// 재정렬이 필요한지. 대부분의 노드는 Flow 만 가지므로 정렬 비용을 피한다.
+    fn children_need_plane_reorder(node: &RenderNode) -> bool {
+        node.children.iter().any(|c| Self::node_z_plane(c) != 3)
     }
 
     /// 개별 노드를 SVG로 렌더링
@@ -203,32 +273,7 @@ impl SvgRenderer {
                 }
                 // 이미지 (최상위)
                 if let Some(img) = &bg.image {
-                    let detected_mime = detect_image_mime_type(&img.data);
-                    // BMP → PNG 재인코딩 (브라우저 호환성)
-                    let (render_bytes, render_mime): (std::borrow::Cow<[u8]>, &str) =
-                        if detected_mime == "image/bmp" {
-                            match bmp_bytes_to_png_bytes(&img.data) {
-                                Some(png) => (std::borrow::Cow::Owned(png), "image/png"),
-                                None => (
-                                    std::borrow::Cow::Borrowed(img.data.as_slice()),
-                                    detected_mime,
-                                ),
-                            }
-                        } else {
-                            (
-                                std::borrow::Cow::Borrowed(img.data.as_slice()),
-                                detected_mime,
-                            )
-                        };
-                    let base64_data =
-                        base64::engine::general_purpose::STANDARD.encode(&*render_bytes);
-                    let data_uri = format!("data:{};base64,{}", render_mime, base64_data);
-                    self.output.push_str(&format!(
-                        "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"{}\"/>\n",
-                        node.bbox.x, node.bbox.y,
-                        node.bbox.width, node.bbox.height,
-                        data_uri,
-                    ));
+                    self.render_page_background_image(img, &node.bbox);
                 }
             }
             RenderNodeType::TextRun(run) => {
@@ -421,17 +466,14 @@ impl SvgRenderer {
             RenderNodeType::Equation(eq) => {
                 // 수식 SVG 조각을 bbox 위치에 배치
                 // HWP 저장 영역(bbox)과 레이아웃 산출 크기(layout_box)가 다를 수 있으므로
-                // bbox 너비에 맞춰 스케일링
+                // bbox 너비에 맞춰 스케일링한다. 높이는 줄 높이/여백을 포함한 영역이라
+                // 식 자체를 세로로 늘리면 한컴보다 글자가 찌그러진다.
                 let scale_x = if eq.layout_box.width > 0.0 && node.bbox.width > 0.0 {
                     node.bbox.width / eq.layout_box.width
                 } else {
                     1.0
                 };
-                let scale_y = if eq.layout_box.height > 0.0 && node.bbox.height > 0.0 {
-                    node.bbox.height / eq.layout_box.height
-                } else {
-                    1.0
-                };
+                let scale_y = 1.0_f64;
                 let needs_scale = (scale_x - 1.0).abs() > 0.01 || (scale_y - 1.0).abs() > 0.01;
                 if needs_scale {
                     self.output.push_str(&format!(
@@ -497,6 +539,15 @@ impl SvgRenderer {
             }
             RenderNodeType::TableCell(ref tc) if tc.clip => {
                 let clip_id = format!("cell-clip-{}", node.id);
+                self.defs.push(format!(
+                    "<clipPath id=\"{}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n",
+                    clip_id, node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
+                ));
+                self.output
+                    .push_str(&format!("<g clip-path=\"url(#{})\">", clip_id));
+            }
+            RenderNodeType::TextBox => {
+                let clip_id = format!("textbox-clip-{}", node.id);
                 self.defs.push(format!(
                     "<clipPath id=\"{}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n",
                     clip_id, node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
@@ -611,6 +662,27 @@ impl SvgRenderer {
                     }
                     self.overlay_skip_depth += 1;
                 }
+                RenderNodeType::Image(img) => {
+                    if let (Some(pi), Some(ci)) = (img.para_index, img.control_index) {
+                        if self.overlay_skip_depth == 0 {
+                            let img_si = img.section_index.unwrap_or(0);
+                            if self.overlay_page_section == -1 {
+                                self.overlay_page_section = img_si as i32;
+                            }
+                            if img_si as i32 == self.overlay_page_section {
+                                self.overlay_image_bounds.push(OverlayImageInfo {
+                                    section_index: img_si,
+                                    para_index: pi,
+                                    control_index: ci,
+                                    x: node.bbox.x,
+                                    y: node.bbox.y,
+                                    width: node.bbox.width,
+                                    height: node.bbox.height,
+                                });
+                            }
+                        }
+                    }
+                }
                 // 머리말/꼬리말/바탕쪽/각주/텍스트박스/그룹: body 외 영역 제외
                 RenderNodeType::Header
                 | RenderNodeType::Footer
@@ -624,8 +696,23 @@ impl SvgRenderer {
             }
         }
 
-        for child in &node.children {
-            self.render_node(child);
+        // [Issue #1167] 자식을 z-order plane 순서로 순회한다.
+        // SVG 는 후순위가 위로 합성되므로, BehindText 그림(워터마크)은 본문(Flow)
+        // 보다 먼저, InFrontOfText 그림(직인 등)은 본문보다 나중에 그려야 한다.
+        // PaintOp replay plane(background → behindText → flow → inFrontOfText)과
+        // 동일 의미. 같은 plane 내부는 안정 정렬로 기존 트리 순서를 보존한다.
+        // (PNG=native Skia / 웹캔버스=CanvasKit 는 PaintOp replay plane 으로 이미
+        //  정정됨 — PR #1163 / #1017. 본 변경은 SVG 경로 정합.)
+        if Self::children_need_plane_reorder(node) {
+            let mut ordered: Vec<&RenderNode> = node.children.iter().collect();
+            ordered.sort_by_key(|c| Self::node_z_sort_key(c));
+            for child in ordered {
+                self.render_node(child);
+            }
+        } else {
+            for child in &node.children {
+                self.render_node(child);
+            }
         }
 
         // 디버그 오버레이: skip 깊이 복원
@@ -673,6 +760,11 @@ impl SvgRenderer {
 
         // 셀 클리핑 그룹 종료
         if matches!(&node.node_type, RenderNodeType::TableCell(tc) if tc.clip) {
+            self.output.push_str("</g>\n");
+        }
+
+        // TextBox 클리핑 그룹 종료
+        if matches!(node.node_type, RenderNodeType::TextBox) {
             self.output.push_str("</g>\n");
         }
 
@@ -1241,6 +1333,113 @@ impl SvgRenderer {
         }
     }
 
+    /// PageBackground/BorderFill 이미지를 fill_mode에 따라 렌더링한다.
+    fn render_page_background_image(&mut self, img: &PageBackgroundImage, bbox: &BoundingBox) {
+        // PageBackground RealPic 워터마크 프리셋은 한컴의 색상 있는 배경 워터마크에 맞춰
+        // 색감 보정을 PNG 픽셀에 bake한 뒤 반투명으로 합성한다.
+        let preserve_color_watermark = img.is_real_picture_watermark_tone_preset();
+        // [Issue #1156] 워터마크 판정 = 밝기·대비가 둘 다 0 이 아님 (effect 무관).
+        // 한컴은 워터마크 효과 해제 시 밝기·대비를 0/0 으로 되돌린다. 종전의
+        // `!RealPic && ...` 조건은 effect=RealPic 배경 워터마크(143E: 70/-50)를
+        // 놓쳐 opacity 가 빠지는 회귀를 냈다.
+        let is_watermark_image = img.is_watermark();
+        let detected_mime = detect_image_mime_type(&img.data);
+        // BMP/PCX → PNG 재인코딩 (브라우저 호환성과 PCX white transparency 정합)
+        let (render_bytes, render_mime): (std::borrow::Cow<[u8]>, &str) =
+            if preserve_color_watermark {
+                match real_picture_watermark_bytes_to_hancom_tone_png_bytes(&img.data) {
+                    Some(png) => (std::borrow::Cow::Owned(png), "image/png"),
+                    None => (
+                        std::borrow::Cow::Borrowed(img.data.as_slice()),
+                        detected_mime,
+                    ),
+                }
+            } else if detected_mime == "image/bmp" {
+                match bmp_bytes_to_png_bytes(&img.data) {
+                    Some(png) => (std::borrow::Cow::Owned(png), "image/png"),
+                    None => (
+                        std::borrow::Cow::Borrowed(img.data.as_slice()),
+                        detected_mime,
+                    ),
+                }
+            } else if detected_mime == "image/x-pcx" {
+                match pcx_bytes_to_png_bytes(&img.data) {
+                    Some(png) => (std::borrow::Cow::Owned(png), "image/png"),
+                    None => (
+                        std::borrow::Cow::Borrowed(img.data.as_slice()),
+                        detected_mime,
+                    ),
+                }
+            } else {
+                (
+                    std::borrow::Cow::Borrowed(img.data.as_slice()),
+                    detected_mime,
+                )
+            };
+        let base64_data = base64::engine::general_purpose::STANDARD.encode(&*render_bytes);
+        let data_uri = format!("data:{};base64,{}", render_mime, base64_data);
+
+        let effect_filter_id = if preserve_color_watermark {
+            None
+        } else {
+            self.ensure_image_effect_filter(img.effect)
+        };
+        if let Some(ref fid) = effect_filter_id {
+            self.output
+                .push_str(&format!("<g filter=\"url(#{})\">\n", fid));
+        }
+        let bc_filter_id = if preserve_color_watermark {
+            None
+        } else {
+            self.ensure_brightness_contrast_filter(img.brightness, img.contrast)
+        };
+        if let Some(ref fid) = bc_filter_id {
+            self.output
+                .push_str(&format!("<g filter=\"url(#{})\">\n", fid));
+        }
+        let needs_watermark_opacity = preserve_color_watermark || is_watermark_image;
+        if needs_watermark_opacity {
+            let opacity = if preserve_color_watermark {
+                REAL_PICTURE_WATERMARK_PAGE_OPACITY
+            } else {
+                LEGACY_IMAGE_WATERMARK_OPACITY
+            };
+            self.output
+                .push_str(&format!("<g opacity=\"{}\">\n", opacity));
+        }
+
+        match img.fill_mode {
+            ImageFillMode::FitToSize | ImageFillMode::None => {
+                self.output.push_str(&format!(
+                    "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" href=\"{}\"/>\n",
+                    bbox.x, bbox.y, bbox.width, bbox.height, data_uri,
+                ));
+            }
+            ImageFillMode::TileAll => {
+                self.render_tiled_image(&render_bytes, &data_uri, bbox, true, true, None);
+            }
+            ImageFillMode::TileHorzTop | ImageFillMode::TileHorzBottom => {
+                self.render_tiled_image(&render_bytes, &data_uri, bbox, true, false, None);
+            }
+            ImageFillMode::TileVertLeft | ImageFillMode::TileVertRight => {
+                self.render_tiled_image(&render_bytes, &data_uri, bbox, false, true, None);
+            }
+            _ => {
+                self.render_positioned_image(&render_bytes, &data_uri, bbox, img.fill_mode, None);
+            }
+        }
+
+        if needs_watermark_opacity {
+            self.output.push_str("</g>\n");
+        }
+        if bc_filter_id.is_some() {
+            self.output.push_str("</g>\n");
+        }
+        if effect_filter_id.is_some() {
+            self.output.push_str("</g>\n");
+        }
+    }
+
     /// 이미지 노드를 fill_mode에 따라 렌더링한다.
     fn render_image_node(&mut self, img: &ImageNode, bbox: &super::render_tree::BoundingBox) {
         // [Task #741] 빈 binary 데이터 (외부 file path 그림 등) 도 placeholder 처리.
@@ -1270,15 +1469,24 @@ impl SvgRenderer {
             }
         };
 
-        let is_watermark_image = !matches!(img.effect, crate::model::image::ImageEffect::RealPic)
-            && (img.brightness != 0 || img.contrast != 0);
+        // RealPic 워터마크 프리셋은 한컴의 색상 있는 배경 워터마크에 맞춰
+        // 색감을 살린 뒤 반투명으로 합성한다. 표/셀 배경 fill은 쪽 배경보다
+        // 더 투명하게 합성되는 샘플이 있어 opacity만 별도 프로파일을 사용한다.
+        let preserve_color_watermark = img.is_real_picture_watermark_tone_preset();
+        // [Issue #1156] 워터마크 판정 = 밝기·대비가 둘 다 0 이 아님 (effect 무관).
+        let is_watermark_image = img.is_watermark();
         let mime_type = detect_image_mime_type(data);
 
         // WMF → SVG 변환 (브라우저는 WMF를 렌더링할 수 없으므로 SVG로 변환)
         // BMP → PNG 변환 (브라우저는 SVG <image> 내부의 data:image/bmp 미지원)
         // PCX → PNG 변환 (브라우저는 PCX 포맷을 native 렌더링하지 못함, Task #514)
         let (render_data, render_mime, baked_watermark): (std::borrow::Cow<[u8]>, &str, bool) =
-            if mime_type == "image/x-wmf" {
+            if preserve_color_watermark {
+                match real_picture_watermark_fill_bytes_to_hancom_tone_png_bytes(data) {
+                    Some(png_bytes) => (std::borrow::Cow::Owned(png_bytes), "image/png", true),
+                    None => (std::borrow::Cow::Borrowed(data), mime_type, false),
+                }
+            } else if mime_type == "image/x-wmf" {
                 match convert_wmf_to_svg(data) {
                     Some(svg_bytes) => (std::borrow::Cow::Owned(svg_bytes), "image/svg+xml", false),
                     None => (std::borrow::Cow::Borrowed(data), mime_type, false),
@@ -1303,7 +1511,7 @@ impl SvgRenderer {
             };
 
         // 그림 효과(그레이스케일/흑백) → SVG 필터 래핑
-        let effect_filter_id = if baked_watermark {
+        let effect_filter_id = if baked_watermark || preserve_color_watermark {
             None
         } else {
             self.ensure_image_effect_filter(img.effect)
@@ -1313,7 +1521,11 @@ impl SvgRenderer {
                 .push_str(&format!("<g filter=\"url(#{})\">\n", fid));
         }
         // 밝기/대비 → SVG 필터 래핑
-        let bc_filter_id = if baked_watermark {
+        // [Issue #677] 한컴 워터마크 효과 (effect != RealPic 이고 brightness/contrast 가
+        // 비-zero) 는 저장값을 그대로 brightness/contrast 필터로 적용한다. JPEG 워터마크는
+        // #976의 baked PNG 선보정이 성공하면 런타임 필터를 생략하고, RealPic 색상
+        // 워터마크는 #975의 baked PNG 톤 보정으로 처리한다.
+        let bc_filter_id = if baked_watermark || preserve_color_watermark {
             None
         } else {
             self.ensure_brightness_contrast_filter(img.brightness, img.contrast)
@@ -1322,9 +1534,18 @@ impl SvgRenderer {
             self.output
                 .push_str(&format!("<g filter=\"url(#{})\">\n", fid));
         }
-        // 선보정이 실패한 워터마크는 기존 런타임 합성 정책을 유지한다.
-        if is_watermark_image && !baked_watermark {
-            self.output.push_str("<g opacity=\"0.17\">\n");
+        // 워터마크 반투명 영역. JPEG baked 워터마크는 이미 한컴 톤으로 픽셀화되어
+        // 있으므로 추가 opacity를 적용하지 않는다.
+        let needs_watermark_opacity =
+            preserve_color_watermark || (is_watermark_image && !baked_watermark);
+        if needs_watermark_opacity {
+            let opacity = if preserve_color_watermark {
+                REAL_PICTURE_WATERMARK_FILL_OPACITY
+            } else {
+                LEGACY_IMAGE_WATERMARK_OPACITY
+            };
+            self.output
+                .push_str(&format!("<g opacity=\"{}\">\n", opacity));
         }
 
         let base64_data = base64::engine::general_purpose::STANDARD.encode(&*render_data);
@@ -1425,7 +1646,7 @@ impl SvgRenderer {
             }
         }
 
-        if is_watermark_image && !baked_watermark {
+        if needs_watermark_opacity {
             self.output.push_str("</g>\n");
         }
         if bc_filter_id.is_some() {
@@ -1691,13 +1912,11 @@ impl SvgRenderer {
             return;
         }
 
-        // 기존 단일 문자 처리
+        // 일반 CharOverlap 처리. 디코딩되지 않는 다중 PUA 조합도 한 컨트롤 안에서
+        // 같은 중심에 겹쳐 그린다. table-vpos-01의 10/11/12 마커는
+        // U+F02BA + U+F02C3/C4/C5 조합으로 저장되며, 나란히 그리면 숫자가
+        // 사각형 밖으로 밀린다.
         let box_size = font_size;
-        let char_advance = if chars.len() > 1 {
-            bbox_w / chars.len() as f64
-        } else {
-            box_size
-        };
 
         let is_reversed = overlap.border_type == 2 || overlap.border_type == 4;
         let is_circle = overlap.border_type == 1 || overlap.border_type == 2;
@@ -1743,6 +1962,45 @@ impl SvgRenderer {
             font_attrs.push_str(" font-style=\"italic\"");
         }
 
+        if chars.len() > 1 {
+            let cx = bbox_x + bbox_w / 2.0;
+            let cy = bbox_y + bbox_h / 2.0;
+
+            if is_circle {
+                let ry = box_size / 2.0;
+                let rx = ry * 0.85;
+                self.output.push_str(&format!(
+                    "<ellipse cx=\"{:.2}\" cy=\"{:.2}\" rx=\"{:.2}\" ry=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
+                    cx, cy, rx, ry, fill_color, stroke_color,
+                ));
+            } else if is_rect {
+                let rx = cx - box_size / 2.0;
+                let ry = cy - box_size / 2.0;
+                self.output.push_str(&format!(
+                    "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
+                    rx, ry, box_size, box_size, fill_color, stroke_color,
+                ));
+            }
+
+            for ch in chars.iter() {
+                let display_str = {
+                    let cp = *ch as u32;
+                    if (0x2460..=0x2473).contains(&cp) {
+                        format!("{}", cp - 0x2460 + 1)
+                    } else if let Some(s) = pua_to_display_text(*ch) {
+                        s
+                    } else {
+                        ch.to_string()
+                    }
+                };
+                self.output.push_str(&format!(
+                    "<text x=\"{:.2}\" y=\"{:.2}\" fill=\"{}\" {} text-anchor=\"middle\" dominant-baseline=\"central\">{}</text>\n",
+                    cx, cy, text_color, font_attrs, escape_xml(&display_str),
+                ));
+            }
+            return;
+        }
+
         for (i, ch) in chars.iter().enumerate() {
             let display_str = {
                 let cp = *ch as u32;
@@ -1755,7 +2013,7 @@ impl SvgRenderer {
                 }
             };
 
-            let cx = bbox_x + i as f64 * char_advance + box_size / 2.0;
+            let cx = bbox_x + i as f64 * box_size + box_size / 2.0;
             let cy = bbox_y + bbox_h / 2.0;
 
             if is_circle {
@@ -2114,6 +2372,56 @@ impl SvgRenderer {
             }
         }
     }
+
+    fn place_debug_label(
+        occupied: &mut Vec<(f64, f64, f64, f64)>,
+        x: f64,
+        preferred_y: f64,
+        width: f64,
+        height: f64,
+        page_height: f64,
+    ) -> f64 {
+        fn overlaps(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
+            let pad = 1.0;
+            let (ax, ay, aw, ah) = a;
+            let (bx, by, bw, bh) = b;
+            ax < bx + bw + pad && ax + aw + pad > bx && ay < by + bh + pad && ay + ah + pad > by
+        }
+
+        let min_y = 0.0;
+        let max_y = (page_height - height).max(0.0);
+        let preferred_y = preferred_y.clamp(min_y, max_y);
+        let step = height + 2.0;
+
+        for i in 0..64 {
+            let distance = step * i as f64;
+            for offset in if i == 0 {
+                [0.0, f64::NAN]
+            } else {
+                [-distance, distance]
+            } {
+                if offset.is_nan() {
+                    continue;
+                }
+                let candidate_y = preferred_y + offset;
+                if candidate_y < min_y || candidate_y > max_y {
+                    continue;
+                }
+                let candidate = (x, candidate_y, width, height);
+                if !occupied
+                    .iter()
+                    .any(|&(ox, oy, ow, oh)| overlaps(candidate, (ox, oy, ow, oh)))
+                {
+                    occupied.push(candidate);
+                    return candidate_y;
+                }
+            }
+        }
+
+        occupied.push((x, preferred_y, width, height));
+        preferred_y
+    }
+
     /// 디버그 오버레이: 문단/표 경계와 인덱스 라벨을 렌더링
     fn render_debug_overlay(&mut self) {
         self.output
@@ -2123,6 +2431,7 @@ impl SvgRenderer {
         let colors = [
             "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#98D8C8", "#F7DC6F",
         ];
+        let mut occupied_labels = Vec::new();
 
         // 문단 경계 렌더링
         let mut sorted_paras: Vec<_> = self.overlay_para_bounds.iter().collect();
@@ -2140,16 +2449,24 @@ impl SvgRenderer {
             ));
             // 라벨 (좌측 상단)
             let label_w = label.len() as f64 * 5.0 + 4.0;
+            let label_h = 10.0;
+            let label_y = Self::place_debug_label(
+                &mut occupied_labels,
+                bounds.x,
+                bounds.y - label_h,
+                label_w,
+                label_h,
+                self.height,
+            );
             self.output.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"10\" fill=\"{}\" rx=\"2\"/>\n",
-                bounds.x,
-                bounds.y - 10.0,
-                label_w,
-                color,
+                bounds.x, label_y, label_w, color,
             ));
             self.output.push_str(&format!(
                 "<text x=\"{}\" y=\"{}\" font-family=\"monospace\" font-size=\"8\" fill=\"#fff\" font-weight=\"bold\">{}</text>\n",
-                bounds.x + 2.0, bounds.y - 2.0, label,
+                bounds.x + 2.0,
+                label_y + label_h - 2.0,
+                label,
             ));
         }
 
@@ -2173,18 +2490,61 @@ impl SvgRenderer {
             );
             let label_w = label.len() as f64 * 5.0 + 4.0;
             let label_x = (tbl.x + tbl.width - label_w).max(tbl.x);
+            let label_h = 11.0;
+            let label_y = Self::place_debug_label(
+                &mut occupied_labels,
+                label_x,
+                tbl.y - label_h,
+                label_w,
+                label_h,
+                self.height,
+            );
             self.output.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"11\" fill=\"#E74C3C\" rx=\"2\"/>\n",
-                label_x,
-                tbl.y - 11.0,
-                label_w,
+                label_x, label_y, label_w,
             ));
             self.output.push_str(&format!(
                 "<text x=\"{}\" y=\"{}\" font-family=\"monospace\" font-size=\"8\" fill=\"#fff\" font-weight=\"bold\">{}</text>\n",
-                label_x + 2.0, tbl.y - 2.0, label,
+                label_x + 2.0,
+                label_y + label_h - 2.0,
+                label,
             ));
         }
         self.overlay_table_bounds = table_bounds;
+
+        // 이미지 경계 렌더링
+        let image_bounds = std::mem::take(&mut self.overlay_image_bounds);
+        for img in &image_bounds {
+            self.output.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#7B61FF\" stroke-width=\"1.2\" stroke-dasharray=\"4,2\"/>\n",
+                img.x, img.y, img.width, img.height,
+            ));
+            let label = format!(
+                "s{}:pi={} ci={} image y={:.1}",
+                img.section_index, img.para_index, img.control_index, img.y
+            );
+            let label_w = label.len() as f64 * 5.0 + 4.0;
+            let label_h = 11.0;
+            let label_y = Self::place_debug_label(
+                &mut occupied_labels,
+                img.x,
+                img.y - label_h,
+                label_w,
+                label_h,
+                self.height,
+            );
+            self.output.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"11\" fill=\"#7B61FF\" rx=\"2\"/>\n",
+                img.x, label_y, label_w,
+            ));
+            self.output.push_str(&format!(
+                "<text x=\"{}\" y=\"{}\" font-family=\"monospace\" font-size=\"8\" fill=\"#fff\" font-weight=\"bold\">{}</text>\n",
+                img.x + 2.0,
+                label_y + label_h - 2.0,
+                label,
+            ));
+        }
+        self.overlay_image_bounds = image_bounds;
 
         // vpos=0 리셋 위치 마커 (앰버 가로 점선 + 라벨)
         let vpos_resets = std::mem::take(&mut self.overlay_vpos_resets);
@@ -2200,15 +2560,24 @@ impl SvgRenderer {
                 rs.section_index, rs.para_index, rs.line_index
             );
             let label_w = label.len() as f64 * 5.0 + 4.0;
+            let label_h = 11.0;
+            let label_y = Self::place_debug_label(
+                &mut occupied_labels,
+                rs.x,
+                rs.y - label_h,
+                label_w,
+                label_h,
+                self.height,
+            );
             self.output.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"11\" fill=\"#FFB300\" rx=\"2\"/>\n",
-                rs.x,
-                rs.y - 11.0,
-                label_w,
+                rs.x, label_y, label_w,
             ));
             self.output.push_str(&format!(
                 "<text x=\"{}\" y=\"{}\" font-family=\"monospace\" font-size=\"8\" fill=\"#000\" font-weight=\"bold\">{}</text>\n",
-                rs.x + 2.0, rs.y - 2.0, label,
+                rs.x + 2.0,
+                label_y + label_h - 2.0,
+                label,
             ));
         }
         self.overlay_vpos_resets = vpos_resets;
@@ -2227,6 +2596,7 @@ impl Renderer for SvgRenderer {
         self.gradient_counter = 0;
         self.overlay_para_bounds.clear();
         self.overlay_table_bounds.clear();
+        self.overlay_image_bounds.clear();
         self.overlay_vpos_resets.clear();
         self.overlay_skip_depth = 0;
         self.overlay_page_section = -1;
@@ -3009,6 +3379,36 @@ fn known_font_filenames(font_name: &str) -> Vec<&'static str> {
     }
 }
 
+/// Task #1224: 한국어 고딕(돋움/고딕/굴림) 계열의 오픈소스 대체 폰트 파일명.
+///
+/// 한컴/MS 저작권 고딕(한컴돋움·Haansoft Dotum·맑은 고딕·돋움·굴림 등) 파일 부재 시
+/// 임베딩의 **최후 후보**로 사용한다. 현 폴백(Noto Sans CJK KR Regular)은 한컴 돋움보다
+/// 획이 +43% 두꺼워(페이지 밀도 0.378 vs 0.265) 본문이 과도하게 굵게 렌더되므로, 획 두께가
+/// 한컴 돋움에 근접한 Noto Sans KR ExtraLight(rsvg 페이지 밀도 0.277)로 교정한다
+/// (`ttfs/opensource/`).
+///
+/// serif(바탕/명조/궁서)·라틴 폰트에는 적용하지 않는다(시각 정합과 무관). 실제 저작권
+/// 폰트가 탐색 경로에 있으면 그쪽이 우선한다(대체는 탐색 경로 말단의 `ttfs/opensource/`).
+///
+/// 주의: 현 임베딩 subsetter(typst, PDF용)는 cmap 을 제거하므로 @font-face 임베딩은
+/// 브라우저 `<text>` 매핑에 무효. 본 대체의 실효 경로는 **폴백 체인 + fontconfig/웹폰트로
+/// 설치된 ExtraLight** 이다(Task #1224 보고서 참조).
+#[cfg(not(target_arch = "wasm32"))]
+fn korean_gothic_substitute(font_name: &str) -> Option<&'static str> {
+    let lower = font_name.to_ascii_lowercase();
+    let is_gothic = font_name.contains("돋움")
+        || font_name.contains("고딕")
+        || font_name.contains("굴림")
+        || lower.contains("dotum")
+        || lower.contains("gothic")
+        || lower.contains("gulim");
+    if is_gothic {
+        Some("NotoSansKR-ExtraLight.ttf")
+    } else {
+        None
+    }
+}
+
 /// 폰트명으로 TTF/OTF 파일을 탐색한다.
 #[cfg(not(target_arch = "wasm32"))]
 fn find_font_file(
@@ -3040,6 +3440,12 @@ fn find_font_file(
                 files.push(format!("{}.ttc", clean));
             }
         }
+        // Task #1224: 고딕 계열은 오픈소스 대체(Noto Sans KR ExtraLight)를 최후 후보로 추가.
+        // 실제 저작권 폰트가 앞선 탐색 경로에 있으면 그쪽이 우선하므로, 대체는
+        // 탐색 경로 말단(ttfs/opensource)에서만 매칭된다.
+        if let Some(sub) = korean_gothic_substitute(font_name) {
+            files.push(sub.to_string());
+        }
         files
     };
 
@@ -3068,6 +3474,9 @@ fn find_font_file(
     if Path::new("/mnt/c/Windows/Fonts").exists() {
         search_dirs.push(Path::new("/mnt/c/Windows/Fonts").to_path_buf());
     }
+    // Task #1224: 오픈소스 번들 대체 폰트 경로 — **최후 탐색**(실제 저작권/시스템 폰트가
+    // 항상 우선). 고딕 계열의 Noto Sans KR ExtraLight 대체가 여기서만 매칭된다.
+    search_dirs.push(Path::new("ttfs/opensource").to_path_buf());
 
     for dir in &search_dirs {
         if !dir.exists() {

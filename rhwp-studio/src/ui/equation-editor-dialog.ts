@@ -1,7 +1,8 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
-import type { EquationProperties } from '@/core/types';
+import type { EquationProperties, NoteControlRef } from '@/core/types';
 import { appendSvgMarkup } from './dom-utils';
+import { enableDialogDrag } from './dialog-drag';
 
 /**
  * 수식 편집 대화상자
@@ -231,6 +232,7 @@ export class EquationEditorDialog {
   private ci = 0;
   private cellIdx?: number;
   private cellParaIdx?: number;
+  private noteRef?: NoteControlRef;
 
   // 원본 속성 (비교용)
   private origProps: EquationProperties | null = null;
@@ -244,16 +246,19 @@ export class EquationEditorDialog {
   }
 
   /** 대화상자 열기 */
-  open(sec: number, para: number, ci: number, cellIdx?: number, cellParaIdx?: number): void {
+  open(sec: number, para: number, ci: number, cellIdx?: number, cellParaIdx?: number, noteRef?: NoteControlRef): void {
     this.build();
     this.sec = sec;
     this.para = para;
     this.ci = ci;
     this.cellIdx = cellIdx;
     this.cellParaIdx = cellParaIdx;
+    this.noteRef = noteRef;
 
     try {
-      this.origProps = this.wasm.getEquationProperties(sec, para, ci, cellIdx, cellParaIdx);
+      this.origProps = noteRef
+        ? this.wasm.getNoteEquationProperties(noteRef)
+        : this.wasm.getEquationProperties(sec, para, ci, cellIdx, cellParaIdx);
     } catch (err) {
       console.warn('[EquationEditor] 수식 속성 가져오기 실패:', err);
       return;
@@ -440,7 +445,7 @@ export class EquationEditorDialog {
       if (e.target === this.overlay) this.hide();
     });
 
-    this.enableDrag(titleBar);
+    enableDialogDrag(this.dialog, titleBar, { ignoreSelector: '.dialog-close, .eq-mode-btn' });
   }
 
   // ── 모드 ──────────────────────────────────────
@@ -696,7 +701,11 @@ export class EquationEditorDialog {
 
     if (Object.keys(updated).length > 0) {
       try {
-        this.wasm.setEquationProperties(this.sec, this.para, this.ci, this.cellIdx, this.cellParaIdx, updated);
+        if (this.noteRef) {
+          this.wasm.setNoteEquationProperties(this.noteRef, updated);
+        } else {
+          this.wasm.setEquationProperties(this.sec, this.para, this.ci, this.cellIdx, this.cellParaIdx, updated);
+        }
         this.eventBus.emit('document-changed');
       } catch (err) {
         console.warn('[EquationEditor] 수식 속성 설정 실패:', err);
@@ -706,26 +715,6 @@ export class EquationEditorDialog {
     this.hide();
   }
 
-  // ── 드래그 ────────────────────────────────────
-
-  private enableDrag(titleEl: HTMLElement): void {
-    let offsetX = 0, offsetY = 0, isDragging = false;
-    titleEl.addEventListener('mousedown', (e) => {
-      if ((e.target as HTMLElement).closest('.dialog-close, .eq-mode-btn')) return;
-      isDragging = true;
-      const rect = this.dialog.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      this.dialog.style.left = `${e.clientX - offsetX}px`;
-      this.dialog.style.top = `${e.clientY - offsetY}px`;
-      this.dialog.style.margin = '0';
-    });
-    document.addEventListener('mouseup', () => { isDragging = false; });
-  }
 }
 
 // ── 색상 변환 유틸리티 ──────────────────────────

@@ -26,7 +26,7 @@ fn main() {
 
     // 본문 default CharShape 비교 (id=9 — section setup paragraph 0.0 의 본문 CS)
     println!("\n--- [쪽번호 후보] CharShape id=0 (TextBox 사각형 내 \"1\") ---");
-    if let Some(cs) = doc.doc_info.char_shapes.get(0) {
+    if let Some(cs) = doc.doc_info.char_shapes.first() {
         print_char_shape(0, cs);
     }
     println!("\n--- [본문 비교] CharShape id=9 (본문 default ratio=95%) ---");
