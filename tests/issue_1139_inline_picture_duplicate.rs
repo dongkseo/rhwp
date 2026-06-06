@@ -171,6 +171,28 @@ fn collect_equation_bboxes_containing(node: &RenderNode, needle: &str, out: &mut
     }
 }
 
+fn collect_equation_bboxes_in_region(
+    node: &RenderNode,
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+    out: &mut Vec<BoundingBox>,
+) {
+    if let RenderNodeType::Equation(_) = &node.node_type {
+        if node.bbox.x >= x_min
+            && node.bbox.x < x_max
+            && node.bbox.y >= y_min
+            && node.bbox.y < y_max
+        {
+            out.push(node.bbox.clone());
+        }
+    }
+    for child in &node.children {
+        collect_equation_bboxes_in_region(child, x_min, x_max, y_min, y_max, out);
+    }
+}
+
 fn find_equation_bbox(
     node: &RenderNode,
     para_index: usize,
@@ -920,6 +942,127 @@ fn issue_1139_endnote_virtual_paragraph_selection_rects_are_available() {
         }),
         "드래그 선택 하이라이트용 사각형이 16쪽 미주 문단에서 생성되어야 함: {rects:?}"
     );
+}
+
+#[test]
+fn issue_1139_endnote_virtual_paragraph_vertical_move_does_not_panic() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let moved = doc
+        .move_vertical(0, 602, u32::MAX, 1, -1.0, u32::MAX, 0, 0, 0)
+        .unwrap_or_else(|e| panic!("미주 가상 문단 아래 이동 실패: {e:?}"));
+    let moved: Value = serde_json::from_str(&moved).expect("moveVertical json");
+
+    assert!(
+        moved["paragraphIndex"].as_u64().unwrap_or(0) >= 602,
+        "미주 가상 문단의 아래 이동은 본문 문단 인덱스 공간으로 되감기면 안 됨: {moved}"
+    );
+    assert!(
+        moved["pageIndex"].as_u64().is_some(),
+        "미주 가상 문단 아래 이동도 커서 좌표를 반환해야 함: {moved}"
+    );
+}
+
+#[test]
+fn issue_1139_endnote_virtual_paragraph_right_arrow_moves_within_text() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let moved = doc.navigate_next_editable_wasm(0, 602, 0, 1, "[]");
+    let moved: Value = serde_json::from_str(&moved).expect("navigateNextEditable json");
+
+    assert_eq!(
+        moved["type"].as_str(),
+        Some("text"),
+        "미주 가상 문단 오른쪽 이동이 문서 경계로 처리되면 안 됨: {moved}"
+    );
+    assert_eq!(
+        moved["para"].as_u64(),
+        Some(602),
+        "미주 가상 문단 오른쪽 이동은 같은 렌더 문단에서 시작해야 함: {moved}"
+    );
+    assert!(
+        moved["charOffset"].as_u64().unwrap_or(0) > 0,
+        "미주 가상 문단 오른쪽 이동은 다음 편집 위치로 전진해야 함: {moved}"
+    );
+}
+
+#[test]
+fn issue_1139_endnote_equation_cursor_rects_do_not_rewind_to_line_start() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let cursor_x = |para: u32, offset: u32| -> f64 {
+        let rect = doc
+            .get_cursor_rect(0, para, offset)
+            .unwrap_or_else(|e| panic!("cursor rect para={para} offset={offset}: {e:?}"));
+        let rect: Value = serde_json::from_str(&rect).expect("cursor rect json");
+        assert_eq!(
+            rect["pageIndex"].as_u64(),
+            Some(8),
+            "9쪽 미주 커서여야 함: para={para} offset={offset} rect={rect}"
+        );
+        rect["x"].as_f64().expect("cursor rect x")
+    };
+
+    for (para, end_offset) in [(471u32, 11u32), (474, 8), (479, 7)] {
+        let xs: Vec<f64> = (0..=end_offset)
+            .map(|offset| cursor_x(para, offset))
+            .collect();
+        assert!(
+            xs.windows(2).all(|pair| pair[1] + 0.1 >= pair[0]),
+            "미주 수식 문단 커서 x가 오른쪽 이동 중 줄 시작으로 되감기면 안 됨: para={para} xs={xs:?}"
+        );
+        assert!(
+            xs.last().copied().unwrap_or(0.0) > xs.first().copied().unwrap_or(0.0) + 20.0,
+            "미주 수식 문단 오른쪽 이동은 실제로 수식/텍스트 뒤쪽으로 전진해야 함: para={para} xs={xs:?}"
+        );
+        for offset in 0..end_offset {
+            let moved = doc.navigate_next_editable_wasm(0, para, offset, 1, "[]");
+            let moved: Value = serde_json::from_str(&moved).expect("navigate json");
+            assert_eq!(
+                moved["type"].as_str(),
+                Some("text"),
+                "미주 수식 문단 오른쪽 이동은 boundary가 아니어야 함: para={para} offset={offset} moved={moved}"
+            );
+        }
+    }
+}
+
+#[test]
+fn issue_1139_endnote_equation_right_arrow_skips_duplicate_boundary_stop() {
+    let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
+    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
+
+    let char_offset_after_right = |para: u32, offset: u32| -> u64 {
+        let moved = doc.navigate_next_editable_wasm(0, para, offset, 1, "[]");
+        let moved: Value = serde_json::from_str(&moved).expect("navigate json");
+        assert_eq!(
+            moved["type"].as_str(),
+            Some("text"),
+            "미주 수식 문단 오른쪽 이동은 boundary가 아니어야 함: para={para} offset={offset} moved={moved}"
+        );
+        assert_eq!(
+            moved["para"].as_u64(),
+            Some(para as u64),
+            "미주 수식 문단 오른쪽 이동은 같은 문단 안에서 진행되어야 함: para={para} offset={offset} moved={moved}"
+        );
+        moved["charOffset"].as_u64().expect("charOffset")
+    };
+
+    assert_eq!(
+        char_offset_after_right(471, 1),
+        2,
+        "텍스트가 섞인 문단에서는 두 번째 수식 자체를 건너뛰면 안 됨"
+    );
+    assert_eq!(
+        char_offset_after_right(479, 1),
+        3,
+        "수식만 연속된 문단에서는 이전 수식 끝과 다음 수식 시작의 같은 x 경계를 한 번 더 밟으면 안 됨"
+    );
+    assert_eq!(char_offset_after_right(479, 3), 5);
+    assert_eq!(char_offset_after_right(479, 5), 7);
 }
 
 #[test]
@@ -2254,7 +2397,9 @@ fn issue_1256_2022_sep_page10_question12_keeps_between_notes_gap() {
     // 한컴 PDF(pdf/3-09월_교육_통합_2022.pdf 10쪽) 기준 문11 풀이("k=9") 다음 빈 줄이
     // 들어가고 문12) 가 시작한다. 종전 #1209 는 저장 LINE_SEG 의 backtrack 위치
     // (cram, ~398px)를 단언했으나 이는 PDF 갭과 모순이라 #1256 에서 갭 포함 위치로 정정.
-    // 수식 중앙정렬·꼬리 간격(아래 나머지 단언)은 #1209 그대로 유지된다.
+    // #1310: 문12의 수식-only 미주 흐름은 한컴처럼 연속 TAC 수식을 열 폭 기준으로
+    // 자동 줄바꿈해야 한다. 따라서 문13 위치는 고정 상한이 아니라 수식 블록의 실제
+    // visual bottom 이후 gap으로 검증한다.
     let bytes = std::fs::read("samples/3-09월_교육_통합_2022.hwp").expect("sample");
     let doc = HwpDocument::from_bytes(&bytes).expect("parse");
     let tree = doc.build_page_render_tree(9).expect("page 10 render tree");
@@ -2280,18 +2425,47 @@ fn issue_1256_2022_sep_page10_question12_keeps_between_notes_gap() {
         "문12 제목과 본문 첫 줄 사이 간격은 한컴/PDF 흐름을 유지해야 함: title={question12_y}, body={question12_body_y}"
     );
     assert!(
-        question13_y <= 724.0,
-        "문12 수식 블록이 아래로 밀려 문13을 늦게 시작시키면 안 됨: q13_y={question13_y}"
-    );
-    assert!(
         (398.0..=408.0).contains(&question12_formula.x),
-        "문12 수식-only 문단은 배분 정렬 오프셋으로 중앙에 밀리면 안 됨: x={}",
+        "문12 수식-only 문단의 첫 시각 줄은 한컴 문단 첫 줄 원점을 적용해야 함(#1310): x={}",
         question12_formula.x
     );
     assert!(
         question12_formula.y - question12_tail_y <= 20.0,
         "문12 '따라서'와 수식-only 문단 사이 간격은 한컴/PDF처럼 촘촘해야 함: tail_y={question12_tail_y}, formula_y={}",
         question12_formula.y
+    );
+    let mut question12_formulas = Vec::new();
+    collect_equation_bboxes_in_region(
+        &tree.root,
+        398.0,
+        760.5,
+        question12_formula.y - 1.0,
+        question13_y,
+        &mut question12_formulas,
+    );
+    let max_formula_right = question12_formulas
+        .iter()
+        .map(|bbox| bbox.x + bbox.width)
+        .fold(0.0f64, f64::max);
+    assert!(
+        max_formula_right <= 760.5,
+        "문12 수식-only 흐름은 오른쪽 단을 넘지 않아야 함(#1310): max_right={max_formula_right}"
+    );
+    assert!(
+        question12_formulas.iter().any(|bbox| {
+            (bbox.x - (question12_formula.x + 80.7)).abs() <= 7.0
+                && bbox.y > question12_formula.y + 25.0
+                && bbox.width > 170.0
+        }),
+        "문12 첫 수식 줄에서 넘친 세 번째 TAC 수식은 다음 visual row로 줄바꿈되고 한컴 UI 내어쓰기 60.5pt 전체 x를 적용해야 함(#1310): {question12_formulas:?}"
+    );
+    let formula_bottom = question12_formulas
+        .iter()
+        .map(|bbox| bbox.y + bbox.height)
+        .fold(0.0f64, f64::max);
+    assert!(
+        (12.0..=42.0).contains(&(question13_y - formula_bottom)),
+        "문13은 wrapping된 문12 수식 블록 뒤에 자연스럽게 이어져야 함: formula_bottom={formula_bottom}, q13_y={question13_y}"
     );
 }
 
