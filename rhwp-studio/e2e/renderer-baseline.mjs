@@ -135,19 +135,48 @@ function parseProfiles(rawProfiles) {
   return deduped;
 }
 
-function normalizeSamples(manifest, filterPattern) {
-  const filter = filterPattern ? new RegExp(filterPattern, 'i') : null;
-  return (manifest.samples ?? []).map((sample) => ({
-    ...sample,
-    id: sample.id || path.basename(sample.file, path.extname(sample.file)),
-    file: sample.file,
-    category: sample.category || 'uncategorized',
-    page: sample.page ?? 0,
-  })).filter((sample) => {
+function normalizeSamples(manifest, filterText) {
+  const filter = filterText.trim().toLowerCase();
+  return (manifest.samples ?? []).map((sample) => {
+    const file = String(sample.file || '').trim();
+    if (!file || file.includes('\0') || file.includes('\\') || file.includes('?') || file.includes('#')) {
+      throw new Error(`invalid baseline sample file: ${sample.file}`);
+    }
+    if (file.startsWith('/') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(file)) {
+      throw new Error(`baseline sample file must be relative to /samples: ${sample.file}`);
+    }
+    let decoded = file;
+    try {
+      decoded = decodeURIComponent(file);
+    } catch {
+      throw new Error(`baseline sample file has invalid URL escaping: ${sample.file}`);
+    }
+    if (decoded !== file) {
+      throw new Error(`baseline sample file must not use percent-encoding: ${sample.file}`);
+    }
+    const parts = file.split('/');
+    if (parts.some((part) => !part || part === '.' || part === '..')) {
+      throw new Error(`baseline sample file escapes /samples: ${sample.file}`);
+    }
+
+    const id = String(sample.id || path.basename(file, path.extname(file))).trim();
+    if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) {
+      throw new Error(`invalid baseline sample id: ${sample.id}`);
+    }
+    return {
+      ...sample,
+      id,
+      file,
+      category: sample.category || 'uncategorized',
+      page: sample.page ?? 0,
+    };
+  }).filter((sample) => {
     if (!filter) {
       return true;
     }
-    return filter.test(sample.id) || filter.test(sample.file) || filter.test(sample.category);
+    return String(sample.id).toLowerCase().includes(filter)
+      || String(sample.file).toLowerCase().includes(filter)
+      || String(sample.category).toLowerCase().includes(filter);
   });
 }
 

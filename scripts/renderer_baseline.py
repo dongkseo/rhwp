@@ -4,13 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--filter",
         default="",
-        help="regex filter applied to sample id/file/category",
+        help="case-insensitive literal filter applied to sample id/file/category",
     )
     parser.add_argument(
         "--browser-mode",
@@ -104,17 +104,42 @@ def load_manifest(manifest_path: Path, filter_pattern: str) -> dict:
     if not isinstance(samples, list) or not samples:
         raise SystemExit("baseline manifest must contain a non-empty samples array")
 
-    filter_re = re.compile(filter_pattern, re.IGNORECASE) if filter_pattern else None
+    filter_text = filter_pattern.strip().lower()
     selected = []
     for sample in samples:
-        file_name = sample["file"]
-        sample_id = sample.get("id") or Path(file_name).stem
+        file_name = str(sample["file"]).strip()
+        if (
+            not file_name
+            or "\0" in file_name
+            or "\\" in file_name
+            or "?" in file_name
+            or "#" in file_name
+        ):
+            raise SystemExit(f"invalid baseline sample file: {sample['file']}")
+        if Path(file_name).is_absolute() or urllib.parse.urlsplit(file_name).scheme:
+            raise SystemExit(
+                f"baseline sample file must be relative to samples/: {sample['file']}"
+            )
+        if urllib.parse.unquote(file_name) != file_name:
+            raise SystemExit(
+                f"baseline sample file must not use percent-encoding: {sample['file']}"
+            )
+        parts = file_name.split("/")
+        if any(not part or part in (".", "..") for part in parts):
+            raise SystemExit(f"baseline sample file escapes samples/: {sample['file']}")
+
+        sample_id = str(sample.get("id") or Path(file_name).stem).strip()
+        if not sample_id or any(
+            not (char.isascii() and (char.isalnum() or char in "._-"))
+            for char in sample_id
+        ):
+            raise SystemExit(f"invalid baseline sample id: {sample.get('id')}")
         category = sample.get("category", "uncategorized")
         page = int(sample.get("page", 0))
-        if filter_re and not (
-            filter_re.search(sample_id)
-            or filter_re.search(file_name)
-            or filter_re.search(category)
+        if filter_text and not (
+            filter_text in str(sample_id).lower()
+            or filter_text in str(file_name).lower()
+            or filter_text in str(category).lower()
         ):
             continue
         selected_sample = dict(sample)
@@ -168,7 +193,11 @@ def collect_files(output_dir: Path, suffix: str) -> list[str]:
 
 
 def capture_native_sample(sample: dict, output_root: Path, profiles: list[str]) -> list[dict]:
-    sample_path = SAMPLES_DIR / sample["file"]
+    sample_path = (SAMPLES_DIR / sample["file"]).resolve()
+    try:
+        sample_path.relative_to(SAMPLES_DIR.resolve())
+    except ValueError:
+        raise SystemExit(f"sample file escapes samples/: {sample['file']}") from None
     if not sample_path.exists():
         raise SystemExit(f"sample file not found: {sample_path}")
 
