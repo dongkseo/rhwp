@@ -16,7 +16,7 @@
     "e2e:render-diff:ci": "node e2e/run-render-diff.mjs"
   },
   "devDependencies": {
-    "@types/chrome": "^0.1.42",
+    "@types/chrome": "^0.1.43",
     "puppeteer-core": "^25.1.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
