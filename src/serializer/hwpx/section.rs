@@ -26,6 +26,7 @@ use crate::model::control::{
 };
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
+use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
@@ -410,6 +411,8 @@ fn is_hwpx_inline_slot(control: &Control) -> bool {
             | Control::PageHide(_)
             | Control::PageNumberPos(_)
             | Control::NewNumber(_)
+            | Control::Header(_)
+            | Control::Footer(_)
     )
 }
 
@@ -461,8 +464,97 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
         Control::NewNumber(nn) => out.push_str(&render_new_num(nn)),
+        Control::Header(h) => out.push_str(&render_header(h, ctx)),
+        Control::Footer(f) => out.push_str(&render_footer(f, ctx)),
         _ => {}
     }
+}
+
+/// 머리말/꼬리말 적용 범위 → HWPX `applyPageType`. `parse_apply_page_type`의 역매핑.
+fn apply_page_type_to_str(a: HeaderFooterApply) -> &'static str {
+    match a {
+        HeaderFooterApply::Both => "BOTH",
+        HeaderFooterApply::Even => "EVEN",
+        HeaderFooterApply::Odd => "ODD",
+    }
+}
+
+/// `<hp:ctrl><hp:{header|footer} applyPageType=".."><hp:subList ...>문단들</hp:subList>...`
+/// 머리말/꼬리말은 중첩 문단(subList)을 가진다 — render_note_sublist와 동일한 문단 직렬화
+/// 경로(render_paragraph_parts)를 쓰되, subList 텍스트 영역 속성은 IR 보존값을 사용한다.
+fn render_header_footer(
+    tag: &str,
+    h: HeaderFooterFields<'_>,
+    ctx: &mut SerializeContext,
+) -> String {
+    let mut out = format!(
+        concat!(
+            r#"<hp:ctrl><hp:{tag} id="0" applyPageType="{apply}">"#,
+            r#"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" "#,
+            r#"linkListIDRef="0" linkListNextIDRef="0" textWidth="{tw}" textHeight="{th}" "#,
+            r#"hasTextRef="{tr}" hasNumRef="{nr}">"#
+        ),
+        tag = tag,
+        apply = apply_page_type_to_str(h.apply_to),
+        tw = h.text_width,
+        th = h.text_height,
+        tr = h.text_ref,
+        nr = h.num_ref,
+    );
+    let mut vert_cursor: u32 = 0;
+    for p in h.paragraphs.iter() {
+        let (t, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
+        vert_cursor = advance;
+        let cs = first_run_char_shape_id(p);
+        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+        out.push_str(&format!(r#"<hp:run charPrIDRef="{}">"#, cs));
+        out.push_str(&t);
+        out.push_str(r#"</hp:run><hp:linesegarray>"#);
+        out.push_str(&linesegs);
+        out.push_str(r#"</hp:linesegarray></hp:p>"#);
+    }
+    out.push_str(&format!("</hp:subList></hp:{tag}></hp:ctrl>", tag = tag));
+    out
+}
+
+/// render_header_footer 공통 인자 묶음 (Header/Footer가 동일 필드를 가짐).
+struct HeaderFooterFields<'a> {
+    apply_to: HeaderFooterApply,
+    text_width: u32,
+    text_height: u32,
+    text_ref: u8,
+    num_ref: u8,
+    paragraphs: &'a [Paragraph],
+}
+
+fn render_header(h: &Header, ctx: &mut SerializeContext) -> String {
+    render_header_footer(
+        "header",
+        HeaderFooterFields {
+            apply_to: h.apply_to,
+            text_width: h.text_width,
+            text_height: h.text_height,
+            text_ref: h.text_ref,
+            num_ref: h.num_ref,
+            paragraphs: &h.paragraphs,
+        },
+        ctx,
+    )
+}
+
+fn render_footer(f: &Footer, ctx: &mut SerializeContext) -> String {
+    render_header_footer(
+        "footer",
+        HeaderFooterFields {
+            apply_to: f.apply_to,
+            text_width: f.text_width,
+            text_height: f.text_height,
+            text_ref: f.text_ref,
+            num_ref: f.num_ref,
+            paragraphs: &f.paragraphs,
+        },
+        ctx,
+    )
 }
 
 /// `<hp:ctrl><hp:pageHiding .../></hp:ctrl>` — 감추기(PageHide) 컨트롤.

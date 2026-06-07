@@ -675,3 +675,52 @@ fn new_num_preserved_on_roundtrip() {
     let d2 = parse_hwpx(&out).expect("reparse aift");
     assert_eq!(new_nums(&d2), nn1, "NewNumber 컨트롤/값 보존 실패");
 }
+
+// 머리말/꼬리말: 중첩 문단(subList)을 포함하는 컨트롤이 직렬화 시 통째로 누락됐다.
+// 개수 + 적용범위(applyPageType) + 내부 문단 수까지 보존돼야 함.
+type HfSig = Vec<(rhwp::model::header_footer::HeaderFooterApply, usize, String)>;
+
+fn headers_footers(doc: &rhwp::model::document::Document) -> (HfSig, HfSig) {
+    use rhwp::model::control::Control;
+    let (mut hs, mut fs): (HfSig, HfSig) = (Vec::new(), Vec::new());
+    let first_text = |paras: &[rhwp::model::paragraph::Paragraph]| {
+        paras.first().map(|p| p.text.clone()).unwrap_or_default()
+    };
+    for s in &doc.sections {
+        for p in &s.paragraphs {
+            for c in &p.controls {
+                match c {
+                    Control::Header(h) => {
+                        hs.push((h.apply_to, h.paragraphs.len(), first_text(&h.paragraphs)))
+                    }
+                    Control::Footer(f) => {
+                        fs.push((f.apply_to, f.paragraphs.len(), first_text(&f.paragraphs)))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (hs, fs)
+}
+
+#[test]
+fn header_footer_preserved_on_roundtrip() {
+    use rhwp::parser::hwpx::parse_hwpx;
+    use rhwp::serializer::hwpx::serialize_hwpx;
+
+    let bytes = include_bytes!("../samples/hwpx/143E433F503322BD33.hwpx");
+    let d1 = parse_hwpx(bytes).expect("parse");
+    let (h1, f1) = headers_footers(&d1);
+    assert!(
+        !h1.is_empty() || !f1.is_empty(),
+        "fixture must contain header/footer"
+    );
+
+    let out = serialize_hwpx(&d1).expect("serialize");
+    let d2 = parse_hwpx(&out).expect("reparse");
+    let (h2, f2) = headers_footers(&d2);
+    // applyPageType + 내부 문단 수 + 첫 문단 텍스트까지 보존.
+    assert_eq!(h2, h1, "Header 컨트롤/내용 보존 실패");
+    assert_eq!(f2, f1, "Footer 컨트롤/내용 보존 실패");
+}
