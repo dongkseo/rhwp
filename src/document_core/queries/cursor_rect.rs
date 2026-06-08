@@ -882,6 +882,7 @@ impl DocumentCore {
                 {
                     if text_run.char_start.is_some() {
                         hit.first_body_x.get_or_insert(node.bbox.x);
+                        hit.height = hit.height.max(text_run.style.font_size);
                     } else if is_list_para
                         && text_run.field_marker
                             == crate::renderer::render_tree::FieldMarkerType::None
@@ -893,6 +894,7 @@ impl DocumentCore {
                             })
                             .unwrap_or(node.bbox.width);
                         hit.marker_end_x.get_or_insert(node.bbox.x + marker_width);
+                        hit.height = hit.height.max(text_run.style.font_size);
                     }
                 }
             }
