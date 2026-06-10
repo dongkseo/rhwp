@@ -12,6 +12,9 @@
 | 원 PR head | `232d6c14` |
 | 원 PR 본질 커밋 | `d9107849` |
 | 반영 커밋 | `26802b18`, `57b0c725` |
+| devel merge | `e2e809c3` |
+| PR close | `2026-06-10T01:46:34Z` |
+| Issue #1350 close | `2026-06-10T01:46:47Z` |
 
 ## 2. 처리 내용
 
@@ -96,11 +99,11 @@ serializer attr bit 25 재구성도 맞췄다. 따라서 `HWP5 → IR → HWPX`,
 
 ## 6. 후속 절차
 
-보고서 승인 후 진행 대상:
+처리 완료:
 
-- [ ] `mydocs/pr/pr_1351_report.md` 및 주문서 갱신 커밋
-- [ ] `local/devel` → `devel` no-ff merge
-- [ ] `origin/devel` push
-- [ ] PR #1351에 처리 코멘트 작성
-- [ ] PR #1351 close
-- [ ] Issue #1350 close
+- [x] `mydocs/pr/pr_1351_report.md` 및 주문서 갱신 커밋 — `8abb3294`
+- [x] `local/devel` → `devel` no-ff merge — `e2e809c3`
+- [x] `origin/devel` push — `e2e809c3`
+- [x] PR #1351에 처리 코멘트 작성 — https://github.com/edwardkim/rhwp/pull/1351#issuecomment-4665702342
+- [x] PR #1351 close — `2026-06-10T01:46:34Z`
+- [x] Issue #1350 close — `2026-06-10T01:46:47Z`
