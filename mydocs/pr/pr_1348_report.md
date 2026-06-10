@@ -11,6 +11,9 @@
 | 통합 방식 | 현재 `origin/devel` 기준 PR 단일 커밋 cherry-pick 검증 |
 | 원 PR head | `fcaf4998` |
 | 검증 커밋 | `1129f6c8` |
+| 문서 정리 커밋 | `7665e857` |
+| PR close | `2026-06-10T14:30:11Z` |
+| Issue #1347 close | `2026-06-10T14:30:15Z` |
 
 ## 2. 처리 내용
 
@@ -74,13 +77,14 @@ GitHub checks:
 - 하지만 body 하단 cap이 유지되어 overflow/꽉 찬 페이지에서도 과도한 선 출력은 방지된다.
 - contributor 작업 문서 중 `mydocs/report/task_m100_1347_report.md`, `mydocs/working/task_m100_1347_stage2.md`가 활성 폴더에 남아 있으므로 통합 전 archive 이동 여부를 결정해야 한다.
 
-## 5. 남은 절차
+## 5. 후속 절차
 
-1. 작업지시자 완료 보고서 승인
-2. `local/devel`에 PR 커밋 반영
-3. contributor 작업 문서 archive 정리
-4. 최종 검증
-5. `origin/devel` push
-6. PR #1348에 메인테이너 코멘트 작성
-7. PR #1348 close
-8. Issue #1347 close 확인 및 필요 시 수동 close
+처리 완료:
+
+- [x] 작업지시자 완료 보고서 승인
+- [x] `local/devel`에 PR 커밋 반영 — `1129f6c8`
+- [x] contributor 작업 문서 archive 정리 — `7665e857`
+- [x] `origin/devel` push — `7665e857`
+- [x] PR #1348에 메인테이너 코멘트 작성 — https://github.com/edwardkim/rhwp/pull/1348#issuecomment-4671315729
+- [x] PR #1348 close — `2026-06-10T14:30:11Z`
+- [x] Issue #1347 completed close — `2026-06-10T14:30:15Z`
