@@ -248,6 +248,8 @@ fn write_sub_list<W: Write>(
 
     // 셀 내부 문단 재귀 — 본문과 동일한 공유 직렬화 경로(render_paragraph_parts)로
     // 컨트롤 슬롯(표 재귀 포함) 방출 + run 분할 + lineseg IR 보존/fallback (#1379 2단계).
+    // sub_list_depth: 셀 경로 한정 colPr 인라인 방출 스코프 (#1379 3단계).
+    ctx.sub_list_depth += 1;
     let mut vert_cursor: u32 = 0;
     for para in cell.paragraphs.iter() {
         ctx.para_shape_ids.reference(para.para_shape_id);
@@ -264,6 +266,7 @@ fn write_sub_list<W: Write>(
             .write_all(p_xml.as_bytes())
             .map_err(|e| SerializeError::XmlError(e.to_string()))?;
     }
+    ctx.sub_list_depth -= 1;
 
     end_tag(w, "hp:subList")?;
     Ok(())
@@ -905,6 +908,53 @@ mod tests {
             count_cell_pictures(&doc2),
             n1,
             "roundtrip 후 셀 내 Picture 수가 보존되어야 함"
+        );
+    }
+
+    #[test]
+    fn task1379_cell_column_def_emits_col_pr() {
+        // 셀 문단의 ColumnDef 가 hp:ctrl/hp:colPr 인라인으로 방출되어야 함 (#1379 3단계).
+        let mut t = empty_table(1, 1);
+        {
+            let para = &mut t.cells[0].paragraphs[0];
+            para.char_count = 9; // 슬롯 1개(8 유닛) + 종단 1
+            let mut cd = crate::model::page::ColumnDef::default();
+            cd.column_count = 1;
+            cd.same_width = true;
+            para.controls
+                .push(crate::model::control::Control::ColumnDef(cd));
+        }
+        let xml = serialize(&t);
+        assert!(
+            xml.contains(
+                r#"<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>"#
+            ),
+            "셀 문단의 ColumnDef 가 hp:colPr 로 방출되어야 함: {}",
+            xml
+        );
+    }
+
+    #[test]
+    fn task1379_cell_column_def_col_line_emitted_when_separator() {
+        // separator_type≠0 인 경우 hp:colLine 자식 방출.
+        let mut t = empty_table(1, 1);
+        {
+            let para = &mut t.cells[0].paragraphs[0];
+            para.char_count = 9;
+            let mut cd = crate::model::page::ColumnDef::default();
+            cd.column_count = 2;
+            cd.same_width = true;
+            cd.spacing = 1134;
+            cd.separator_type = 2; // DASH
+            cd.separator_width = 1; // 0.12 mm
+            para.controls
+                .push(crate::model::control::Control::ColumnDef(cd));
+        }
+        let xml = serialize(&t);
+        assert!(
+            xml.contains(r##"<hp:colLine type="DASH" width="0.12 mm" color="#000000"/>"##),
+            "separator 있는 ColumnDef 는 hp:colLine 을 방출해야 함: {}",
+            xml
         );
     }
 

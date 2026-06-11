@@ -27,6 +27,7 @@ use crate::model::control::{
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
+use crate::model::page::{ColumnDef, ColumnDirection, ColumnType};
 use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
@@ -341,20 +342,6 @@ fn split_text_into(splitter: &mut RunSplitter, para: &Paragraph, tab_idx: &mut u
     );
 }
 
-/// 텍스트만 char_shapes 경계로 run 분할한 시퀀스 — 셀·글상자 경로 공유 헬퍼 (#1378 3단계).
-///
-/// 컨트롤 슬롯은 방출하지 않는다 (셀·글상자 컨트롤 보존은 #1379 범위).
-/// 문단의 모든 char_shapes entry 를 `ctx.char_shape_ids.reference()` 한다.
-pub(crate) fn render_text_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
-    for cs in &para.char_shapes {
-        ctx.char_shape_ids.reference(cs.char_shape_id);
-    }
-    let mut splitter = RunSplitter::new(para);
-    let mut tab_idx = 0usize;
-    split_text_into(&mut splitter, para, &mut tab_idx);
-    splitter.finish()
-}
-
 /// Paragraph 본문을 완전한 `<hp:run>` 시퀀스로 직렬화한다 (#1378 다중 run 분할).
 fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     // ID 참조 무결성 (구현계획서 1.5): 실제 char_shapes entry 만 reference.
@@ -382,9 +369,15 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     let slots: Vec<&Control> = if slot_count == para.controls.len() {
         para.controls.iter().collect()
     } else {
+        // [Task #1379] 셀·글상자 subList(depth > 0) 경로에서는 ColumnDef 도
+        // 인라인 슬롯으로 취급한다 (원본 XML 에 <hp:ctrl><hp:colPr/></hp:ctrl> 인라인 존재).
+        // 본문(depth 0) 경로는 섹션 템플릿 첫 run 의 colPr 가 받으므로 불변.
         para.controls
             .iter()
-            .filter(|c| is_hwpx_inline_slot(c))
+            .filter(|c| {
+                is_hwpx_inline_slot(c)
+                    || (ctx.sub_list_depth > 0 && matches!(c, Control::ColumnDef(_)))
+            })
             .collect()
     };
 
@@ -637,7 +630,78 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
             Err(e) => eprintln!("[hwpx] Form 직렬화 실패: {e}"),
         },
         Control::CharOverlap(co) => out.push_str(&render_compose(co)),
+        // [Task #1379] 셀·글상자 subList 한정 인라인 colPr 방출.
+        // 본문 경로(depth 0)는 섹션 템플릿 첫 run 에서 처리하므로 미방출 유지.
+        Control::ColumnDef(cd) if ctx.sub_list_depth > 0 => {
+            out.push_str(&render_col_pr_ctrl(cd));
+        }
         _ => {}
+    }
+}
+
+/// 셀·글상자 subList 인라인 `<hp:ctrl><hp:colPr .../></hp:ctrl>` (#1379 3단계).
+/// `parse_col_pr` / `parse_col_line`(parser/hwpx/section.rs)의 역매핑.
+fn render_col_pr_ctrl(cd: &ColumnDef) -> String {
+    let col_type = match cd.column_type {
+        ColumnType::Distribute => "BalancedNewspaper",
+        ColumnType::Parallel => "Parallel",
+        ColumnType::Normal => "NEWSPAPER",
+    };
+    let layout = match cd.direction {
+        ColumnDirection::RightToLeft => "RIGHT",
+        ColumnDirection::LeftToRight => "LEFT",
+    };
+    let mut out = format!(
+        r#"<hp:ctrl><hp:colPr id="" type="{}" layout="{}" colCount="{}" sameSz="{}" sameGap="{}""#,
+        col_type, layout, cd.column_count, cd.same_width as u8, cd.spacing,
+    );
+    if cd.separator_type != 0 {
+        out.push('>');
+        out.push_str(&format!(
+            r#"<hp:colLine type="{}" width="{} mm" color="{}"/>"#,
+            col_line_type_str(cd.separator_type),
+            line_width_mm(cd.separator_width),
+            super::shape::color_to_hex(cd.separator_color),
+        ));
+        out.push_str("</hp:colPr></hp:ctrl>");
+    } else {
+        out.push_str("/></hp:ctrl>");
+    }
+    out
+}
+
+/// `parse_hwpx_line_type` 역매핑 (colLine type).
+fn col_line_type_str(t: u8) -> &'static str {
+    match t {
+        2 => "DASH",
+        3 => "DOT",
+        4 => "DASH_DOT",
+        5 => "DASH_DOT_DOT",
+        6 => "LONG_DASH",
+        7 => "CIRCLE",
+        _ => "SOLID",
+    }
+}
+
+/// HWP 선 굵기 인덱스 → mm 수치 문자열 (`parse_hwpx_line_width` 역매핑).
+fn line_width_mm(w: u8) -> &'static str {
+    match w {
+        0 => "0.1",
+        1 => "0.12",
+        2 => "0.15",
+        3 => "0.2",
+        4 => "0.25",
+        5 => "0.3",
+        6 => "0.4",
+        7 => "0.5",
+        8 => "0.6",
+        9 => "0.7",
+        10 => "1.0",
+        11 => "1.5",
+        12 => "2.0",
+        13 => "3.0",
+        14 => "4.0",
+        _ => "5.0",
     }
 }
 
