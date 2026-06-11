@@ -558,7 +558,7 @@ fn inferred_control_slot_count(para: &Paragraph) -> usize {
         .saturating_sub(para.field_ranges.len() as u32) as usize
 }
 
-fn is_hwpx_inline_slot(control: &Control) -> bool {
+pub(crate) fn is_hwpx_inline_slot(control: &Control) -> bool {
     matches!(
         control,
         Control::Table(_)

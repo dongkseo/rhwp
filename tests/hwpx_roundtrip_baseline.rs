@@ -93,6 +93,80 @@ const XFAIL_1378_RECURSIVE: &[(&str, &str)] = &[
     ),
 ];
 
+/// [Task #1379 1단계 임시] 게이트 컨트롤 비교 확장(문단별 인라인 슬롯 컨트롤 타입
+/// 시퀀스, 셀·글상자·각주/미주 재귀 동승)으로 새로 검출된 실패 — (상대 경로, 사유).
+/// 전건이 셀(`tbl.cell`)·글상자(`shape.tb`) subList 컨트롤 미출력 기인으로 본 타스크
+/// 2~3단계 수정 대상이다. 해소되어 통과하게 되면 `xfail_1379_controls_entries_still_fail`
+/// 이 실패하므로 목록에서 제거하고 baseline 으로 승격해야 한다.
+const XFAIL_1379_CONTROLS: &[(&str, &str)] = &[
+    (
+        "2024년 1분기 해외직접투자 보도자료 ff.hwpx",
+        "3건 — 셀 내 pic·pageNumPos 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "2024년 연간 해외직접투자 보도자료 _ ff.hwpx",
+        "3건 — 셀 내 pic·pageNumPos 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "2025년 1분기 해외직접투자 보도자료f.hwpx",
+        "3건 — 셀 내 pic·pageNumPos + 글상자 내 pic 미출력, #1379 2~3단계에서 해소",
+    ),
+    (
+        "[2027] 온새미로 1 본교재.hwpx",
+        "1건 — 셀 내 shape 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "exam_social-p1.hwpx",
+        "5건 — 셀 내 shape·중첩 tbl 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "footnote-01.hwpx",
+        "1건 — 셀 내 fn(각주) 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "footnote-tbox-01.hwpx",
+        "1건 — 글상자 내 fn(각주) 미출력, #1379 3단계에서 해소",
+    ),
+    (
+        "form-002.hwpx",
+        "190건 — 셀 내 form 다수 + 중첩 tbl 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "hwpx-h-01.hwpx",
+        "3건 — 셀 내 pic·pageNumPos 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "hwpx-h-03.hwpx",
+        "3건 — 셀 내 pic·pageNumPos + 글상자 내 pic 미출력, #1379 2~3단계에서 해소",
+    ),
+    (
+        "hy-001.hwpx",
+        "2건 — 셀 내 pic + 글상자 내 pic 미출력, #1379 2~3단계에서 해소",
+    ),
+    (
+        "hy-002.hwpx",
+        "2건 — 셀 내 pic + 글상자 내 pic 미출력, #1379 2~3단계에서 해소",
+    ),
+    (
+        "issue_1133.hwpx",
+        "1건 — 셀 내 중첩 tbl 미출력, #1379 2단계에서 해소",
+    ),
+    (
+        "mel-001.hwpx",
+        "3건 — 셀 내 charOverlap 미출력 (render_control_slot arm 부재), \
+         #1379 2단계에서 해소",
+    ),
+    (
+        "ta-pic-001-r.hwpx",
+        "2건 — 셀 내 pic 미출력 (hp:pic 4개 소실, 이슈 본문 대표 샘플), \
+         #1379 2단계에서 해소",
+    ),
+    (
+        "tb-img-03.hwpx",
+        "1건 — 셀 내 pic 미출력, #1379 2단계에서 해소",
+    ),
+];
+
 /// 검사 제외 — 샘플 자체가 HWPX 패키지가 아님.
 const EXCLUDED: &[(&str, &str)] = &[(
     "hwpx-01.hwpx",
@@ -207,6 +281,11 @@ fn run_baseline(filter: impl Fn(&str) -> bool) {
         if in_list(XFAIL_1378_RECURSIVE, &rel) {
             continue;
         }
+        // [Task #1379 1단계 임시] 게이트 컨트롤 비교 확장으로 검출된 실패 — 사유는
+        // XFAIL_1379_CONTROLS 참조. 본 타스크 2~3단계 해소 시 이 블록과 목록을 제거한다.
+        if in_list(XFAIL_1379_CONTROLS, &rel) {
+            continue;
+        }
         if let Err(reason) = baseline_check(&path) {
             failures.push(format!("  {rel}: {reason}"));
         }
@@ -260,6 +339,24 @@ fn xfail_1378_recursive_entries_still_fail() {
         assert!(
             baseline_check(&path).is_err(),
             "XFAIL_1378_RECURSIVE 샘플이 통과함: {name} — baseline 으로 승격하고 \
+             목록에서 제거하라 (사유였던 결함: {reason})"
+        );
+    }
+}
+
+/// [Task #1379 1단계 임시] 컨트롤 비교 xfail 샘플은 여전히 실패해야 한다 —
+/// 본 타스크 2~3단계에서 해소되면 목록·skip 블록을 제거하고 baseline 으로 승격한다.
+#[test]
+fn xfail_1379_controls_entries_still_fail() {
+    for (name, reason) in XFAIL_1379_CONTROLS {
+        let path = Path::new(SAMPLES_ROOT).join(name);
+        assert!(
+            path.exists(),
+            "XFAIL_1379_CONTROLS 샘플 실종: {name} (목록 정비 필요)"
+        );
+        assert!(
+            baseline_check(&path).is_err(),
+            "XFAIL_1379_CONTROLS 샘플이 통과함: {name} — baseline 으로 승격하고 \
              목록에서 제거하라 (사유였던 결함: {reason})"
         );
     }
