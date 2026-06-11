@@ -27,55 +27,6 @@ const XFAIL: &[(&str, &str)] = &[(
      (task_m100_1315_stage1.md, 별도 이슈 후보)",
 )];
 
-/// #1378 임시 xfail — 게이트 강화(본문 문단 char_shapes 시퀀스 비교)로 검출된
-/// run 분할 미보존 샘플. 검출 양상 두 가지 (모두 본문 경로 `write_section` 기인):
-///
-/// 1. **run 평탄화**: 다중 char_shapes 문단이 `char_shapes[0]` 단일 run 으로 출력됨
-/// 2. **섹션 첫 문단 run 구조**: 템플릿 secPr run 의 `charPrIDRef="0"` 고정으로
-///    재파싱 시 `(0,0)` entry 추가·텍스트 run id 소실
-///
-/// #1378 2단계(본문)·3단계(셀·글상자)에서 해소하면서 이 목록을 제거한다.
-/// 해소 시 `xfail_1378_entries_still_fail` 테스트가 실패하므로 제거가 강제된다.
-const XFAIL_1378_RUN_SPLIT: &[&str] = &[
-    "143E433F503322BD33.hwpx",
-    "2024년 1분기 해외직접투자 보도자료 ff.hwpx",
-    "2024년 2분기 해외직접투자 보도자료ff.hwpx",
-    "2024년 연간 해외직접투자 보도자료 _ ff.hwpx",
-    "2025년 1분기 해외직접투자 보도자료f.hwpx",
-    "2025년 2분기 해외직접투자 (최종).hwpx",
-    "[2027] 온새미로 1 본교재.hwpx",
-    "aift.hwpx",
-    "el-school-001.hwpx",
-    "eq-002.hwpx",
-    "exam-kor-1p.hwpx",
-    "exam-kor-2p.hwpx",
-    "exam-kor-3p.hwpx",
-    "exam-kor-4p.hwpx",
-    "exam_kor.hwpx",
-    "exam_social-p1.hwpx",
-    "expense_report.hwpx",
-    "footnote-01.hwpx",
-    "form-002.hwpx",
-    "form-01.hwpx",
-    "form-02.hwpx",
-    "hcar-001.hwpx",
-    "hwpx-02.hwpx",
-    "hwpx-h-01.hwpx",
-    "hwpx-h-02.hwpx",
-    "hwpx-h-03.hwpx",
-    "hy-001.hwpx",
-    "hy-002.hwpx",
-    "issue_1133.hwpx",
-    "issue_157.hwpx",
-    "issue_241.hwpx",
-    "k-water-rfp.hwpx",
-    "landscape-001.hwpx",
-    "math-001.hwpx",
-    "mel-001.hwpx",
-    "table-text.hwpx",
-    "tb-org-02.hwpx",
-];
-
 /// 검사 제외 — 샘플 자체가 HWPX 패키지가 아님.
 const EXCLUDED: &[(&str, &str)] = &[(
     "hwpx-01.hwpx",
@@ -184,11 +135,6 @@ fn run_baseline(filter: impl Fn(&str) -> bool) {
             continue;
         }
         eligible += 1;
-        // #1378 임시 xfail 은 eligible 로 집계하되 검사는 건너뛴다
-        // (LARGE 전건이 임시 xfail 인 동안 "대상 없음" 가드 오탐 방지).
-        if XFAIL_1378_RUN_SPLIT.contains(&rel.as_str()) {
-            continue;
-        }
         if let Err(reason) = baseline_check(&path) {
             failures.push(format!("  {rel}: {reason}"));
         }
@@ -225,23 +171,6 @@ fn xfail_entries_still_fail() {
         assert!(
             baseline_check(&path).is_err(),
             "XFAIL 샘플이 통과함: {name} — baseline 으로 승격하고 XFAIL 에서 제거하라 (사유였던 결함: {reason})"
-        );
-    }
-}
-
-/// #1378 임시 xfail 샘플은 여전히 실패해야 한다 — run 분할 보존이 구현되어 통과하게
-/// 되면 이 목록에서 제거하여 baseline 으로 복귀시켜야 한다.
-#[test]
-fn xfail_1378_entries_still_fail() {
-    for name in XFAIL_1378_RUN_SPLIT {
-        let path = Path::new(SAMPLES_ROOT).join(name);
-        assert!(
-            path.exists(),
-            "XFAIL_1378 샘플 실종: {name} (목록 정비 필요)"
-        );
-        assert!(
-            baseline_check(&path).is_err(),
-            "XFAIL_1378 샘플이 통과함: {name} — 목록에서 제거하여 baseline 으로 복귀시켜라"
         );
     }
 }
