@@ -241,8 +241,9 @@ struct TypesetState {
 /// [Task #1363] 미주 높이 모델 SSOT 마이그레이션 단계 플래그(`RHWP_EN_SSOT`).
 ///
 /// 미주 para 누적(`acc`)을 layout 순차 렌더 높이(`line_advances_sum`)로 점진 이전하는
-/// 동안, divergence 항목을 단계별로 게이트하기 위한 A/B 스위치. 기본은 legacy(현행 saved-vpos
-/// delta) — 미설정 시 모든 동작이 종전과 동일하다. 상세: `mydocs/working/task_m100_1363_stage2.md`.
+/// 동안, divergence 항목을 단계별로 게이트하기 위한 A/B 스위치. 기본은 B(A + TAC 그림 미주 순차
+/// 적층)이며, `legacy`/`off`로 기존 saved-vpos delta 경로를 비교·롤백할 수 있다.
+/// 상세: `mydocs/working/archives/task_m100_1363_stage2.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EnSsotLevel {
     /// 전 divergence 원복 — 현행 `metric_advance_px.max(min_h)` (saved-vpos delta). 롤백용.
