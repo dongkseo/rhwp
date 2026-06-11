@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::parser::hwpx::parse_hwpx;
+use crate::serializer::hwpx::package_check::check_package;
 use crate::serializer::hwpx::roundtrip::diff_documents;
 use crate::serializer::hwpx::serialize_hwpx;
 
@@ -76,6 +77,12 @@ struct RoundtripRow {
     reparse_ok: bool,
     ir_diff_count: Option<usize>,
     ir_diff_summary: String,
+    /// 패키지 구조 검사 (2단계). `None` = 미실행 (선행 단계 실패).
+    pkg_ok: Option<bool>,
+    pkg_problems: String,
+    /// 2-round 안정성: round1 IR vs round2 IR 의 diff 건수. `None` = 미실행/실패.
+    round2_diff_count: Option<usize>,
+    round2_error: String,
     elapsed_ms: u128,
     error: String,
 }
@@ -88,11 +95,24 @@ impl RoundtripRow {
             "SERIALIZE_FAIL"
         } else if !self.reparse_ok {
             "REPARSE_FAIL"
-        } else if self.ir_diff_count == Some(0) {
-            "PASS"
-        } else {
+        } else if self.ir_diff_count.is_some_and(|c| c > 0) {
             "IR_DIFF"
+        } else if self.pkg_ok == Some(false) {
+            "PKG_FAIL"
+        } else if !self.round2_error.is_empty() || self.round2_diff_count.is_none() {
+            "ROUND2_FAIL"
+        } else if self.round2_diff_count.is_some_and(|c| c > 0) {
+            "ROUND2_DIFF"
+        } else {
+            "PASS"
         }
+    }
+
+    /// 회귀 검출용 하드 실패 (등급화 대상 분류와 별개).
+    fn is_hard_fail(&self) -> bool {
+        !(self.parse_ok && self.serialize_ok && self.reparse_ok)
+            || self.pkg_ok == Some(false)
+            || !self.round2_error.is_empty()
     }
 }
 
@@ -106,6 +126,10 @@ fn roundtrip_one(path: &Path, rel_path: &str, rt_path: &Path) -> RoundtripRow {
         reparse_ok: false,
         ir_diff_count: None,
         ir_diff_summary: String::new(),
+        pkg_ok: None,
+        pkg_problems: String::new(),
+        round2_diff_count: None,
+        round2_error: String::new(),
         elapsed_ms: 0,
         error: String::new(),
     };
@@ -170,6 +194,24 @@ fn roundtrip_one(path: &Path, rel_path: &str, rt_path: &Path) -> RoundtripRow {
         .collect::<Vec<_>>()
         .join("; ");
 
+    // 패키지 구조 검사 (2단계) — 재조립 ZIP 을 원본 IR 기준으로 검사
+    let pkg = check_package(&out, &doc1);
+    row.pkg_ok = Some(pkg.is_ok());
+    row.pkg_problems = pkg.summary();
+
+    // 2-round 안정성 (LINE_SEG reflow 류 드리프트 검출):
+    // round1 IR(doc2) 을 다시 직렬화→파싱한 IR(doc3) 과 비교해 0 이어야 안정.
+    match serialize_hwpx(&doc2) {
+        Ok(out2) => match parse_hwpx(&out2) {
+            Ok(doc3) => {
+                let diff2 = diff_documents(&doc2, &doc3);
+                row.round2_diff_count = Some(diff2.differences.len());
+            }
+            Err(e) => row.round2_error = format!("2-round 재파싱 실패: {e}"),
+        },
+        Err(e) => row.round2_error = format!("2-round 직렬화 실패: {e}"),
+    }
+
     finish(row, started)
 }
 
@@ -203,25 +245,31 @@ fn tsv_escape(s: &str) -> String {
 
 fn write_tsv(out_dir: &Path, rows: &[RoundtripRow]) -> Result<PathBuf, String> {
     let tsv_path = out_dir.join("inventory.tsv");
+    let opt_to_str = |o: Option<usize>| o.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
     let mut tsv = String::from(
-        "sample\tstatus\tparse_ok\tserialize_ok\treparse_ok\tir_diff_count\telapsed_ms\terror\tir_diff_summary\n",
+        "sample\tstatus\tparse_ok\tserialize_ok\treparse_ok\tir_diff_count\tpkg_ok\tround2_diff\telapsed_ms\terror\tir_diff_summary\tpkg_problems\tround2_error\n",
     );
     for row in rows {
-        let diff_count = row
-            .ir_diff_count
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "-".to_string());
+        let pkg = match row.pkg_ok {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "-",
+        };
         tsv.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             tsv_escape(&row.rel_path),
             row.status(),
             row.parse_ok,
             row.serialize_ok,
             row.reparse_ok,
-            diff_count,
+            opt_to_str(row.ir_diff_count),
+            pkg,
+            opt_to_str(row.round2_diff_count),
             row.elapsed_ms,
             tsv_escape(&row.error),
             tsv_escape(&row.ir_diff_summary),
+            tsv_escape(&row.pkg_problems),
+            tsv_escape(&row.round2_error),
         ));
     }
     fs::write(&tsv_path, tsv).map_err(|e| format!("TSV 쓰기 실패: {e}"))?;
@@ -235,6 +283,9 @@ fn print_summary(rows: &[RoundtripRow]) {
     println!("  총 파일        : {}", rows.len());
     println!("  PASS           : {}", count("PASS"));
     println!("  IR_DIFF        : {}", count("IR_DIFF"));
+    println!("  PKG_FAIL       : {}", count("PKG_FAIL"));
+    println!("  ROUND2_DIFF    : {}", count("ROUND2_DIFF"));
+    println!("  ROUND2_FAIL    : {}", count("ROUND2_FAIL"));
     println!("  PARSE_FAIL     : {}", count("PARSE_FAIL"));
     println!("  SERIALIZE_FAIL : {}", count("SERIALIZE_FAIL"));
     println!("  REPARSE_FAIL   : {}", count("REPARSE_FAIL"));
@@ -302,19 +353,20 @@ pub fn run(args: &[String]) {
     for (path, rel) in &inputs {
         let rt_path = rt_output_path(&opts.out_dir, rel);
         let row = roundtrip_one(path, rel, &rt_path);
-        let diff_str = row
-            .ir_diff_count
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "-".to_string());
+        let fmt_opt =
+            |o: Option<usize>| o.map(|c| c.to_string()).unwrap_or_else(|| "-".to_string());
         println!(
-            "[{:>14}] diff={:>3} {:>6}ms  {}",
+            "[{:>14}] diff={:>3} r2={:>3} {:>6}ms  {}",
             row.status(),
-            diff_str,
+            fmt_opt(row.ir_diff_count),
+            fmt_opt(row.round2_diff_count),
             row.elapsed_ms,
             row.rel_path
         );
-        if !row.error.is_empty() {
-            println!("                 └ {}", row.error);
+        for detail in [&row.error, &row.pkg_problems, &row.round2_error] {
+            if !detail.is_empty() {
+                println!("                 └ {}", detail);
+            }
         }
         rows.push(row);
     }
@@ -330,11 +382,8 @@ pub fn run(args: &[String]) {
         print_summary(&rows);
     }
 
-    // 실패(파싱/직렬화/재파싱)가 있으면 비정상 종료 코드로 회귀 검출에 활용
-    let any_fail = rows
-        .iter()
-        .any(|r| !(r.parse_ok && r.serialize_ok && r.reparse_ok));
-    if any_fail {
+    // 하드 실패(파싱/직렬화/재파싱/패키지/2-round 오류)가 있으면 비정상 종료 코드 (회귀 검출용)
+    if rows.iter().any(|r| r.is_hard_fail()) {
         std::process::exit(1);
     }
 }

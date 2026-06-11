@@ -15,6 +15,7 @@ pub mod field;
 pub mod fixtures;
 pub mod form;
 pub mod header;
+pub mod package_check;
 pub mod picture;
 pub mod roundtrip;
 pub mod section;
