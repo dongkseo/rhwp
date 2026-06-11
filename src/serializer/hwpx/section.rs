@@ -22,7 +22,7 @@
 use quick_xml::Writer;
 
 use crate::model::control::{
-    AutoNumber, AutoNumberType, Control, Equation, NewNumber, PageHide, PageNumberPos,
+    AutoNumber, AutoNumberType, CharOverlap, Control, Equation, NewNumber, PageHide, PageNumberPos,
 };
 use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
@@ -123,7 +123,7 @@ pub fn write_section(
 ///
 /// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
 /// 파서는 id 를 무시하므로 순차값으로 충분.
-fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
+pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -151,7 +151,7 @@ fn first_run_char_shape_id(p: &Paragraph) -> u32 {
 /// `<hp:lineseg>` 출력 원칙 (#177):
 /// - `para.line_segs` 가 비어있지 않으면 **IR 값 그대로 출력**
 /// - 비어있을 때만 텍스트 내 `\n` 기반으로 fallback 생성 (빈 문단·`Document::default()` 호환)
-fn render_paragraph_parts(
+pub(crate) fn render_paragraph_parts(
     para: &Paragraph,
     vert_start: u32,
     ctx: &mut SerializeContext,
@@ -636,8 +636,43 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
             Ok(xml) => out.push_str(&xml),
             Err(e) => eprintln!("[hwpx] Form 직렬화 실패: {e}"),
         },
+        Control::CharOverlap(co) => out.push_str(&render_compose(co)),
         _ => {}
     }
+}
+
+/// `<hp:compose>` 글자겹침(CharOverlap) — `<hp:run>` 직접 자식 (<hp:ctrl> 비포장).
+/// `parse_compose`(parser/hwpx/section.rs)의 역매핑. charPr 목록은 미설정(u32::MAX)
+/// 항목 포함 원본 그대로 방출한다 (ID 참조 등록 비대상).
+fn render_compose(co: &CharOverlap) -> String {
+    let circle_type = match co.border_type {
+        1 => "SHAPE_CIRCLE",
+        2 => "SHAPE_REVERSAL_CIRCLE",
+        3 => "SHAPE_RECTANGLE",
+        4 => "SHAPE_REVERSAL_RECTANGLE",
+        5 => "SHAPE_TRIANGLE",
+        6 => "SHAPE_REVERSAL_TIRANGLE",
+        _ => "CHAR",
+    };
+    let compose_type = if co.expansion == 1 {
+        "OVERLAP"
+    } else {
+        "SPREAD"
+    };
+    let text: String = co.chars.iter().collect();
+    let mut out = format!(
+        r#"<hp:compose circleType="{}" charSz="{}" composeType="{}" charPrCnt="{}" composeText="{}">"#,
+        circle_type,
+        co.inner_char_size,
+        compose_type,
+        co.char_shape_ids.len(),
+        xml_escape(&text),
+    );
+    for id in &co.char_shape_ids {
+        out.push_str(&format!(r#"<hp:charPr prIDRef="{}"/>"#, id));
+    }
+    out.push_str("</hp:compose>");
+    out
 }
 
 /// 장식 문자(userChar/prefixChar/suffixChar)용 속성값. '\0'(미설정)은 빈 문자열.
