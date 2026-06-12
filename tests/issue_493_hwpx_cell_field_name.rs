@@ -68,6 +68,11 @@ fn hwpx_cell_field_name_survives_roundtrip() {
 
     let pos2 = find_first_table(&reparsed).expect("table should survive roundtrip");
     let names = table_cell_names(&reparsed, pos2);
+    assert!(
+        names.len() >= 2,
+        "라운드트립 후 셀 수가 보존되어야 한다 (셀 {}개)",
+        names.len()
+    );
 
     assert_eq!(
         names[0].as_deref(),
