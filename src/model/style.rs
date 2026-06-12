@@ -2,6 +2,51 @@
 
 use super::*;
 
+/// HWP 선 굵기 enum: index(0~15) ↔ mm. 한컴 표준 16단계.
+///
+/// 파서(mm→index 최근접)와 직렬화기(index→mm 문자열)가 이 단일 테이블을 공유해
+/// 라운드트립 무손실을 보장한다. 종전엔 파서가 6단계 coarse bucket
+/// (mm≤0.3→1, ≤0.5→2, ≤1.0→3)으로, 직렬화기가 16단계로 달라서 0.4mm→0.15mm,
+/// 0.6mm→0.2mm 처럼 테두리 굵기가 변질됐다(IR index 는 안정이라 diff=0 이지만
+/// 시각적으로 다른 굵기로 출력).
+pub const BORDER_WIDTHS: [(f64, &str); 16] = [
+    (0.1, "0.1"),
+    (0.12, "0.12"),
+    (0.15, "0.15"),
+    (0.2, "0.2"),
+    (0.25, "0.25"),
+    (0.3, "0.3"),
+    (0.4, "0.4"),
+    (0.5, "0.5"),
+    (0.6, "0.6"),
+    (0.7, "0.7"),
+    (1.0, "1.0"),
+    (1.5, "1.5"),
+    (2.0, "2.0"),
+    (3.0, "3.0"),
+    (4.0, "4.0"),
+    (5.0, "5.0"),
+];
+
+/// mm 값에 가장 가까운 [`BORDER_WIDTHS`] 굵기 index(0~15)를 돌려준다(파서용).
+pub fn border_width_index(mm: f64) -> u8 {
+    BORDER_WIDTHS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (mm - a.0).abs().total_cmp(&(mm - b.0).abs()))
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0)
+}
+
+/// 굵기 index(0~15)에 대응하는 mm 문자열을 돌려준다(직렬화기용). 범위를 벗어나면
+/// 기본값 "0.1".
+pub fn border_width_mm_str(index: u8) -> &'static str {
+    BORDER_WIDTHS
+        .get(index as usize)
+        .map(|(_, s)| *s)
+        .unwrap_or("0.1")
+}
+
 /// 글꼴 정보 (HWPTAG_FACE_NAME)
 #[derive(Debug, Clone, Default)]
 pub struct Font {
@@ -868,6 +913,33 @@ impl ParaShapeMods {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn border_width_table_is_a_lossless_bijection() {
+        // 모든 enum index 가 mm 문자열로 나갔다가 최근접 매핑으로 같은 index 로 돌아와야 한다.
+        for (i, (mm, s)) in BORDER_WIDTHS.iter().enumerate() {
+            assert_eq!(border_width_mm_str(i as u8), *s, "index {i} → 문자열");
+            let reparsed: f64 = s.parse().unwrap();
+            assert_eq!(
+                border_width_index(reparsed),
+                i as u8,
+                "{mm}mm 가 index {i} 로 최근접 복원되어야 함"
+            );
+        }
+    }
+
+    #[test]
+    fn border_width_index_fixes_coarse_bucket_regression() {
+        // 종전 coarse bucket 이 변질시키던 실제 값들이 정확히 보존되는지 확인.
+        assert_eq!(border_width_index(0.4), 6); // 종전 2(→"0.15")로 변질
+        assert_eq!(border_width_mm_str(6), "0.4");
+        assert_eq!(border_width_index(0.6), 8); // 종전 3(→"0.2")로 변질
+        assert_eq!(border_width_mm_str(8), "0.6");
+        assert_eq!(border_width_index(0.1), 0);
+        assert_eq!(border_width_mm_str(0), "0.1");
+        // 범위 밖 index 는 기본값.
+        assert_eq!(border_width_mm_str(99), "0.1");
+    }
 
     #[test]
     fn test_char_shape_default() {

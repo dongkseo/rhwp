@@ -1969,26 +1969,15 @@ fn parse_diagonal_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 
 fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
     let s = attr_str(attr);
-    // "0.12 mm", "0.4 mm" 등의 형식에서 두께 인덱스 추출
+    // "0.12 mm", "0.4 mm" 등에서 mm 값을 뽑아 한컴 표준 16단계 굵기 index 로 최근접
+    // 매핑한다. 직렬화기 border_width_mm 과 동일한 BORDER_WIDTHS 테이블을 공유해야
+    // 라운드트립이 무손실이다.
     let mm: f64 = s
         .split_whitespace()
         .next()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0.12);
-    // 대략적인 HWP 두께 인덱스 매핑
-    if mm <= 0.12 {
-        0
-    } else if mm <= 0.3 {
-        1
-    } else if mm <= 0.5 {
-        2
-    } else if mm <= 1.0 {
-        3
-    } else if mm <= 1.5 {
-        4
-    } else {
-        5
-    }
+        .unwrap_or(0.1);
+    border_width_index(mm)
 }
 
 #[cfg(test)]

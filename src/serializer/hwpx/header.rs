@@ -17,8 +17,9 @@ use quick_xml::Writer;
 
 use crate::model::document::{DocInfo, DocProperties, Document};
 use crate::model::style::{
-    Alignment, BorderFill, BorderLine, BorderLineType, CharShape, DiagonalLine, FillType, Font,
-    HeadType, LineSpacingType, Numbering, ParaShape, Style, SubstFont, TabDef,
+    border_width_mm_str, Alignment, BorderFill, BorderLine, BorderLineType, CharShape,
+    DiagonalLine, FillType, Font, HeadType, LineSpacingType, Numbering, ParaShape, Style,
+    SubstFont, TabDef,
 };
 use crate::model::ColorRef;
 
@@ -398,29 +399,8 @@ fn border_line_type_str(t: BorderLineType) -> &'static str {
 }
 
 fn border_width_mm(w: u8) -> &'static str {
-    // HWP 선 굵기 인덱스(0~) → mm (한컴 매핑)
-    // 0=0.1mm, 1=0.12mm, 2=0.15mm, 3=0.2mm, 4=0.25mm, 5=0.3mm, 6=0.4mm, 7=0.5mm,
-    // 8=0.6mm, 9=0.7mm, 10=1.0mm, 11=1.5mm, 12=2.0mm, 13=3.0mm, 14=4.0mm, 15=5.0mm
-    // ref_empty.hwpx에서 기본값은 "0.1 mm" 관찰
-    match w {
-        0 => "0.1",
-        1 => "0.12",
-        2 => "0.15",
-        3 => "0.2",
-        4 => "0.25",
-        5 => "0.3",
-        6 => "0.4",
-        7 => "0.5",
-        8 => "0.6",
-        9 => "0.7",
-        10 => "1.0",
-        11 => "1.5",
-        12 => "2.0",
-        13 => "3.0",
-        14 => "4.0",
-        15 => "5.0",
-        _ => "0.1",
-    }
+    // 파서 parse_border_width 와 동일한 한컴 표준 16단계 테이블을 공유한다.
+    border_width_mm_str(w)
 }
 
 fn color_hex(c: ColorRef) -> String {
