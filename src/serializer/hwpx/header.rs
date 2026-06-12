@@ -139,16 +139,23 @@ fn write_fontfaces<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<()
             &[("lang", lang), ("fontCnt", &fonts.len().to_string())],
         )?;
         for (id, font) in fonts.iter().enumerate() {
-            empty_tag(
-                w,
-                "hh:font",
-                &[
-                    ("id", &id.to_string()),
-                    ("face", &font.name),
-                    ("type", font_type_str(font.alt_type)),
-                    ("isEmbedded", "0"),
-                ],
-            )?;
+            let id_str = id.to_string();
+            let font_attrs = [
+                ("id", id_str.as_str()),
+                ("face", font.name.as_str()),
+                ("type", font_type_str(font.alt_type)),
+                ("isEmbedded", "0"),
+            ];
+            // typeInfo(파나포스 10바이트)가 IR에 있으면 자식으로 복원한다.
+            // 없으면 종전대로 self-closing.
+            match &font.type_info {
+                Some(ti) => {
+                    start_tag_attrs(w, "hh:font", &font_attrs)?;
+                    write_font_type_info(w, ti)?;
+                    end_tag(w, "hh:font")?;
+                }
+                None => empty_tag(w, "hh:font", &font_attrs)?,
+            }
         }
         end_tag(w, "hh:fontface")?;
     }
@@ -163,6 +170,55 @@ fn font_type_str(alt_type: u8) -> &'static str {
         1 => "TTF",
         2 => "HFT",
         _ => "TTF", // 기본: TTF (한컴 샘플 관찰값)
+    }
+}
+
+/// `parse_font_type_info` 의 역함수.
+///
+/// IR 의 `type_info` 10바이트 배열을 `<hh:typeInfo>` 엘리먼트로 복원한다.
+/// 바이트 배치(파서와 동일): [0]=familyType, [1]=serifType(합성값, XML 미노출),
+/// [2]=weight, [3]=proportion, [4]=contrast, [5]=strokeVariation,
+/// [6]=armStyle, [7]=letterform, [8]=midline, [9]=xHeight.
+/// `[1]` 은 파서가 글꼴 이름/유형에서 합성하므로 재파싱 시 동일하게 재생성된다 —
+/// 따라서 직렬화하지 않아도 라운드트립이 정확하다.
+fn write_font_type_info<W: Write>(w: &mut Writer<W>, ti: &[u8; 10]) -> Result<(), SerializeError> {
+    let weight = ti[2].to_string();
+    let proportion = ti[3].to_string();
+    let contrast = ti[4].to_string();
+    let stroke_variation = ti[5].to_string();
+    let arm_style = ti[6].to_string();
+    let letterform = ti[7].to_string();
+    let midline = ti[8].to_string();
+    let x_height = ti[9].to_string();
+    empty_tag(
+        w,
+        "hh:typeInfo",
+        &[
+            ("familyType", font_family_type_str(ti[0])),
+            ("weight", &weight),
+            ("proportion", &proportion),
+            ("contrast", &contrast),
+            ("strokeVariation", &stroke_variation),
+            ("armStyle", &arm_style),
+            ("letterform", &letterform),
+            ("midline", &midline),
+            ("xHeight", &x_height),
+        ],
+    )
+}
+
+/// `parser::hwpx::header::font_family_type_to_u8` 의 역함수. 0/미상은 OWPML
+/// 표준값 `FCAT_UNKNOWN` 으로 복원한다.
+fn font_family_type_str(v: u8) -> &'static str {
+    match v {
+        1 => "FCAT_MYUNGJO",
+        2 => "FCAT_GOTHIC",
+        3 => "FCAT_SSERIF",
+        4 => "FCAT_BRUSHSCRIPT",
+        5 => "FCAT_DECORATIVE",
+        6 => "FCAT_NONRECTMJ",
+        7 => "FCAT_NONRECTGT",
+        _ => "FCAT_UNKNOWN",
     }
 }
 
@@ -1057,6 +1113,57 @@ mod tests {
         let ctx = SerializeContext::collect_from_document(&doc);
         let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
         assert_eq!(xml.matches("<hh:fontface ").count(), 7);
+    }
+
+    #[test]
+    fn write_font_type_info_is_inverse_of_parser_layout() {
+        // 파서 parse_font_type_info 의 바이트 배치를 그대로 역매핑해야 한다.
+        // FCAT_GOTHIC=2, [1]=serif(미노출), weight=6, 나머지=strokeVariation..xHeight=1.
+        let ti = [2u8, 3, 6, 0, 0, 1, 1, 1, 1, 1];
+        let mut writer = Writer::new(Vec::new());
+        write_font_type_info(&mut writer, &ti).expect("write typeInfo");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        assert_eq!(
+            xml,
+            r#"<hh:typeInfo familyType="FCAT_GOTHIC" weight="6" proportion="0" contrast="0" strokeVariation="1" armStyle="1" letterform="1" midline="1" xHeight="1"/>"#,
+            "typeInfo 9개 속성이 원본 순서/값으로 복원되어야 함"
+        );
+        // serif 바이트 [1] 은 XML 에 노출되지 않는다(파서가 글꼴명에서 합성).
+        assert!(!xml.contains("serif"));
+    }
+
+    #[test]
+    fn write_fontfaces_emits_type_info_child_only_when_present() {
+        let mut doc_info = DocInfo::default();
+        doc_info.font_faces = vec![Vec::new(); 7];
+        // 한 그룹에 typeInfo 가 있는 글꼴과 없는 글꼴을 같이 둔다.
+        doc_info.font_faces[0].push(Font {
+            name: "굴림".to_string(),
+            alt_type: 1,
+            ..Default::default()
+        });
+        doc_info.font_faces[0].push(Font {
+            name: "바탕".to_string(),
+            alt_type: 1,
+            type_info: Some([2, 3, 6, 0, 0, 1, 1, 1, 1, 1]),
+            ..Default::default()
+        });
+        let mut writer = Writer::new(Vec::new());
+        write_fontfaces(&mut writer, &doc_info).expect("write fontfaces");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+        // typeInfo 없는 글꼴은 self-closing 유지.
+        assert!(
+            xml.contains(r#"<hh:font id="0" face="굴림" type="TTF" isEmbedded="0"/>"#),
+            "typeInfo 없는 글꼴은 self-closing: {xml}"
+        );
+        // typeInfo 있는 글꼴은 자식으로 복원.
+        assert!(
+            xml.contains(
+                r#"<hh:font id="1" face="바탕" type="TTF" isEmbedded="0"><hh:typeInfo familyType="FCAT_GOTHIC""#
+            ),
+            "typeInfo 있는 글꼴은 자식 복원: {xml}"
+        );
+        assert_eq!(xml.matches("<hh:typeInfo ").count(), 1);
     }
 
     #[test]
