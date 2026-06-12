@@ -2384,8 +2384,7 @@ fn format_u32_list(values: &[u32]) -> String {
 
 fn brief_text(text: &str, max_chars: usize) -> String {
     let mut out = String::new();
-    let mut count = 0usize;
-    for ch in text.chars() {
+    for (count, ch) in text.chars().enumerate() {
         if count >= max_chars {
             out.push('…');
             break;
@@ -2398,7 +2397,6 @@ fn brief_text(text: &str, max_chars: usize) -> String {
             c if c.is_control() => out.push_str(&format!("\\u{{{:04X}}}", c as u32)),
             c => out.push(c),
         }
-        count += 1;
     }
     out
 }
