@@ -202,7 +202,23 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
 
     doc_props.section_count = 1; // content.hpf에서 갱신됨
 
+    // 문서 설정 tail(`</hh:refList>` ~ `</hh:head>`)을 원본 그대로 보존.
+    // compatibleDocument/docOption/trackchageConfig 등은 본문과 무관한 전역
+    // 설정이라 헤더 재생성 시 splice 로 무손실 복원한다.
+    doc_info.hwpx_head_tail = extract_head_tail(xml);
+
     Ok((doc_info, doc_props))
+}
+
+/// HWPX 헤더 문자열에서 `</hh:refList>` 닫는 태그와 `</hh:head>` 사이 구간을
+/// 그대로 추출한다(빈 구간이면 `Some("")` — 원본에 설정이 없었음을 보존).
+/// 두 경계 마커가 없으면(비-HWPX/HWP5 경로) `None` 을 돌려 하드코딩 폴백.
+fn extract_head_tail(xml: &str) -> Option<String> {
+    const REF_END: &str = "</hh:refList>";
+    const HEAD_END: &str = "</hh:head>";
+    let start = xml.find(REF_END)? + REF_END.len();
+    let end = xml[start..].find(HEAD_END)? + start;
+    Some(xml[start..end].to_string())
 }
 
 fn parse_doc_option_linkinfo(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
@@ -2272,6 +2288,23 @@ mod tests {
             hft.default_name,
             Some("Sinmyeong Gyeonmyeongjo".to_string())
         );
+    }
+
+    #[test]
+    fn extract_head_tail_captures_settings_region() {
+        let xml = r##"<hh:head><hh:beginNum/><hh:refList><hh:fontfaces/></hh:refList><hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument><hh:trackchageConfig flags="56"/></hh:head>"##;
+        assert_eq!(
+            extract_head_tail(xml),
+            Some(r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument><hh:trackchageConfig flags="56"/>"#.to_string()),
+            "refList 와 head 닫는 태그 사이 설정 구간을 그대로 추출해야 함"
+        );
+        // 설정이 없으면 빈 문자열로 보존(원본에 없었음을 구분; 폴백과 다름).
+        assert_eq!(
+            extract_head_tail("<hh:head><hh:refList></hh:refList></hh:head>"),
+            Some(String::new())
+        );
+        // 경계 마커가 없으면 None → serializer 하드코딩 폴백.
+        assert_eq!(extract_head_tail("<other/>"), None);
     }
 
     #[test]

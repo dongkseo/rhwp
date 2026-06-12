@@ -76,9 +76,20 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
     write_styles(&mut w, &doc.doc_info, ctx)?;
     end_tag(&mut w, "hh:refList")?;
 
-    write_compatible_document(&mut w)?;
-    write_doc_option(&mut w)?;
-    write_track_change_config(&mut w)?;
+    // 문서 설정 tail: 원본 HWPX 가 있으면 그대로 splice(compatibleDocument/
+    // docOption/trackchageConfig 무손실 보존), 없으면 하드코딩 폴백.
+    match &doc.doc_info.hwpx_head_tail {
+        Some(tail) => {
+            w.get_mut()
+                .write_all(tail.as_bytes())
+                .map_err(|e| SerializeError::XmlError(format!("head tail splice: {e}")))?;
+        }
+        None => {
+            write_compatible_document(&mut w)?;
+            write_doc_option(&mut w)?;
+            write_track_change_config(&mut w)?;
+        }
+    }
 
     end_tag(&mut w, "hh:head")?;
     Ok(w.into_inner())
@@ -1125,6 +1136,46 @@ mod tests {
         let expected = doc.doc_info.char_shapes.len();
         let actual = xml.matches("<hh:charPr ").count();
         assert_eq!(actual, expected, "charPr count mismatch");
+    }
+
+    #[test]
+    fn write_header_splices_doc_settings_tail_verbatim() {
+        let bytes = include_bytes!("../../../samples/hwpx/ref/ref_empty.hwpx");
+        let mut doc = parse_hwpx(bytes).expect("parse");
+        // 원본 설정 tail(빈 layoutCompatibility, pageInherit=1, trackchange=56).
+        doc.doc_info.hwpx_head_tail = Some(
+            r#"<hh:compatibleDocument targetProgram="HWP201X"><hh:layoutCompatibility/></hh:compatibleDocument><hh:docOption><hh:linkinfo path="" pageInherit="1" footnoteInherit="0"/></hh:docOption><hh:trackchageConfig flags="56"/>"#
+                .to_string(),
+        );
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains("<hh:layoutCompatibility/></hh:compatibleDocument>"),
+            "원본의 빈 layoutCompatibility 가 그대로 보존되어야 함: {xml}"
+        );
+        assert!(xml.contains(r#"pageInherit="1""#), "pageInherit=1 보존");
+        assert!(
+            xml.contains(r#"<hh:trackchageConfig flags="56"/>"#),
+            "trackchange flags=56 보존"
+        );
+        assert!(
+            !xml.contains("<hh:char/><hh:paragraph/>"),
+            "하드코딩 layoutCompatibility 자식이 없어야 함"
+        );
+    }
+
+    #[test]
+    fn write_header_falls_back_to_hardcoded_tail_when_absent() {
+        let bytes = include_bytes!("../../../samples/hwpx/ref/ref_empty.hwpx");
+        let mut doc = parse_hwpx(bytes).expect("parse");
+        doc.doc_info.hwpx_head_tail = None;
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains("<hh:layoutCompatibility><hh:char/><hh:paragraph/><hh:section/><hh:object/><hh:field/></hh:layoutCompatibility>"),
+            "원본 부재 시 하드코딩 폴백: {xml}"
+        );
+        assert!(xml.contains(r#"<hh:trackchageConfig flags="0"/>"#));
     }
 
     #[test]

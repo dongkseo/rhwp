@@ -165,6 +165,12 @@ pub struct DocInfo {
     pub distribute_doc_data_removed: bool,
     /// raw_stream이 model 변경과 동기화되지 않음 (serializer에서 재생성 필요)
     pub raw_stream_dirty: bool,
+    /// HWPX 헤더의 `</hh:refList>` 와 `</hh:head>` 사이 문서 설정 블록
+    /// (compatibleDocument/docOption/trackchageConfig)을 원본 그대로 보존한다.
+    /// 본문과 무관한 문서 전역 설정이라 헤더를 재생성해도 이 구간만은 원본을
+    /// splice 해 무손실을 보장한다(content.hpf metadata 보존과 동일 전략).
+    /// 원본 HWPX가 없으면(HWP5 경로 등) None → serializer가 하드코딩 폴백.
+    pub hwpx_head_tail: Option<String>,
 }
 
 /// 본문의 구역 (Section)
