@@ -27,6 +27,11 @@
 //! - 문단별 `line_segs` 9필드 비교 (`diff_linesegs`) 를 `ParagraphLinesegs` 로 변환해
 //!   게이트 동승 (3단계). 파서 zero-default 주입 제거 + serializer 방출 생략(2단계)
 //!   이후의 원본 무 ↔ RT 유 합성 비대칭(개수·값 불일치)을 검출한다.
+//!
+//! Task #1388 확장:
+//! - 섹션별 `PageDef`(용지 크기·방향·제본 + 여백 7필드) 비교 (`diff_page_def`) 를
+//!   `SectionPageDef` 로 게이트 동승. serializer 의 secPr 템플릿 고정값 방출
+//!   (여백·gutterType 변형)을 검출한다.
 
 #![allow(dead_code)]
 
@@ -134,6 +139,14 @@ pub enum IrDifference {
         path: String,
         detail: String,
     },
+    /// 섹션 `PageDef`(용지·여백) 불일치 — secPr 페이지 여백 보존 게이트 (#1388).
+    ///
+    /// `detail` 은 불일치 필드별 "field: expected=.. actual=.." 을 세미콜론으로
+    /// 연결한 문자열 (`diff_page_def`).
+    SectionPageDef {
+        section: usize,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for IrDifference {
@@ -215,6 +228,9 @@ impl std::fmt::Display for IrDifference {
                 "section[{}] paragraph[{}]{} linesegs: {}",
                 section, paragraph, path, detail
             ),
+            SectionPageDef { section, detail } => {
+                write!(f, "section[{}] page_def: {}", section, detail)
+            }
         }
     }
 }
@@ -255,6 +271,14 @@ pub fn diff_documents(a: &Document, b: &Document) -> IrDiff {
                 expected: ap,
                 actual: bp,
             });
+        }
+
+        // 섹션 PageDef(용지·여백) 비교 (#1388) — secPr 페이지 여백 보존 게이트.
+        if let Some(detail) = diff_page_def(
+            &a.sections[i].section_def.page_def,
+            &b.sections[i].section_def.page_def,
+        ) {
+            diff.push(IrDifference::SectionPageDef { section: i, detail });
         }
 
         // 문단별 char_shapes 시퀀스 비교 (#1378) — run 분할 보존 게이트.
@@ -330,6 +354,52 @@ pub fn diff_documents(a: &Document, b: &Document) -> IrDiff {
     }
 
     diff
+}
+
+/// 섹션 `PageDef` 비교 (#1388). 불일치 필드를 "field: expected=.. actual=.." 로 모아
+/// 세미콜론으로 연결해 돌려준다. 일치하면 `None`.
+///
+/// 비교 제외 필드와 사유:
+/// - `attr`: 비트 원본 — `binding`/`landscape` 와 의미 중복 (해석 필드 쪽을 비교)
+/// - `pagination_bottom_tolerance`: 렌더러 내부 허용치 — 파일 포맷 필드 아님
+fn diff_page_def(
+    a: &crate::model::page::PageDef,
+    b: &crate::model::page::PageDef,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    macro_rules! cmp_field {
+        ($field:ident) => {
+            if a.$field != b.$field {
+                parts.push(format!(
+                    "{}: expected={} actual={}",
+                    stringify!($field),
+                    a.$field,
+                    b.$field
+                ));
+            }
+        };
+    }
+    cmp_field!(width);
+    cmp_field!(height);
+    cmp_field!(margin_left);
+    cmp_field!(margin_right);
+    cmp_field!(margin_top);
+    cmp_field!(margin_bottom);
+    cmp_field!(margin_header);
+    cmp_field!(margin_footer);
+    cmp_field!(margin_gutter);
+    cmp_field!(landscape);
+    if a.binding != b.binding {
+        parts.push(format!(
+            "binding: expected={:?} actual={:?}",
+            a.binding, b.binding
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
 }
 
 /// 문단별 lineseg 비교 결과 1건 (Task #1380).
@@ -1263,5 +1333,77 @@ mod tests {
         let doc3 = parse_hwpx(&out2).expect("parse r2");
         let d2 = diff_documents(&doc2, &doc3);
         assert!(d2.is_empty(), "round2: {:?}", d2.differences);
+    }
+
+    // ---------- #1388: diff_page_def (게이트 동승) ----------
+
+    fn doc_with_page_def(pd: crate::model::page::PageDef) -> Document {
+        let mut doc = Document::default();
+        let mut section = crate::model::document::Section::default();
+        section.section_def.page_def = pd;
+        doc.sections.push(section);
+        doc
+    }
+
+    #[test]
+    fn task1388_page_def_in_gate() {
+        // 여백·제본 차이는 diff_documents(게이트)에서 검출되어야 한다.
+        // 값은 온새미로 sec0 실측: 원본 left=7086 right=14173 LEFT_RIGHT →
+        // 종전 RT 템플릿 고정값 left=8504 right=8504 LEFT_ONLY.
+        let mut a_pd = crate::model::page::PageDef::default();
+        a_pd.margin_left = 7086;
+        a_pd.margin_right = 14173;
+        a_pd.binding = crate::model::page::BindingMethod::DuplexSided;
+        let mut b_pd = a_pd.clone();
+        b_pd.margin_left = 8504;
+        b_pd.margin_right = 8504;
+        b_pd.binding = crate::model::page::BindingMethod::SingleSided;
+
+        let diff = diff_documents(&doc_with_page_def(a_pd), &doc_with_page_def(b_pd));
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::SectionPageDef { section, detail } => {
+                assert_eq!(*section, 0);
+                assert_eq!(
+                    detail,
+                    "margin_left: expected=7086 actual=8504; \
+                     margin_right: expected=14173 actual=8504; \
+                     binding: expected=DuplexSided actual=SingleSided"
+                );
+            }
+            other => panic!("SectionPageDef 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1388_page_def_equal_is_empty() {
+        // 동일 PageDef 는 차이 0 — attr/pagination_bottom_tolerance 는 비교 제외.
+        let mut a_pd = crate::model::page::PageDef::default();
+        a_pd.margin_left = 7086;
+        let mut b_pd = a_pd.clone();
+        b_pd.attr = 0xFF;
+        b_pd.pagination_bottom_tolerance = 100;
+        let diff = diff_documents(&doc_with_page_def(a_pd), &doc_with_page_def(b_pd));
+        assert!(diff.is_empty(), "{:?}", diff.differences);
+    }
+
+    #[test]
+    fn task1388_roundtrip_preserves_page_def() {
+        // 비템플릿 여백(left/right=4252)을 가진 실샘플의 roundtrip 에서
+        // PageDef 차이 0 — 2단계 serializer 수정의 게이트 검증.
+        let bytes = std::fs::read("samples/hwpx/ta-pic-001-r.hwpx").expect("샘플 읽기");
+        let doc1 = parse_hwpx(&bytes).expect("parse 원본");
+        let pd = &doc1.sections[0].section_def.page_def;
+        assert!(
+            pd.margin_left != 8504 || pd.margin_right != 8504,
+            "픽스처 전제: 템플릿 고정값과 다른 여백이어야 한다 (left={} right={})",
+            pd.margin_left,
+            pd.margin_right
+        );
+
+        let out = serialize_hwpx(&doc1).expect("serialize");
+        let doc2 = parse_hwpx(&out).expect("reparse");
+        let diff = diff_documents(&doc1, &doc2);
+        assert!(diff.is_empty(), "{:?}", diff.differences);
     }
 }

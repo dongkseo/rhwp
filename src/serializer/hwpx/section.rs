@@ -1246,6 +1246,11 @@ fn replace_first_linesegs(xml: &str, new_element: &str) -> String {
 ///
 /// OWPML landscape: WIDELY=세로(landscape=false), NARROWLY=가로(landscape=true).
 /// width/height 는 짧은변/긴변 그대로 (HWP 바이너리 동일 규약).
+///
+/// [#1388] 확장: gutterType(제본 방향) + `<hp:margin>` 여백 7필드를 IR 값으로 치환.
+/// 종전엔 템플릿 고정 여백(left/right=8504 등)이 그대로 출력되어 원본 여백이
+/// 변형됐다 (samples/hwpx 전수 51/74 섹션 영향, 본문 +56.7px 시프트·페이지 수 변동).
+/// gutterType ↔ binding 매핑은 parser/hwpx/section.rs `parse_page_pr` 의 역매핑.
 fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String {
     // 템플릿의 pagePr 여는 태그(고정 문자열) → IR 기반으로 교체.
     const TEMPLATE_PAGE_PR: &str =
@@ -1255,15 +1260,40 @@ fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String 
     } else {
         "WIDELY"
     };
+    let gutter_type = match page_def.binding {
+        crate::model::page::BindingMethod::SingleSided => "LEFT_ONLY",
+        crate::model::page::BindingMethod::DuplexSided => "LEFT_RIGHT",
+        crate::model::page::BindingMethod::TopFlip => "TOP_BOTTOM",
+    };
     let new_page_pr = format!(
-        r#"<hp:pagePr landscape="{}" width="{}" height="{}" gutterType="LEFT_ONLY">"#,
-        landscape, page_def.width, page_def.height,
+        r#"<hp:pagePr landscape="{}" width="{}" height="{}" gutterType="{}">"#,
+        landscape, page_def.width, page_def.height, gutter_type,
     );
-    if xml.contains(TEMPLATE_PAGE_PR) {
+    let out = if xml.contains(TEMPLATE_PAGE_PR) {
         xml.replacen(TEMPLATE_PAGE_PR, &new_page_pr, 1)
     } else {
         // 템플릿이 변경됐거나 이미 치환된 경우 — 원본 유지(회귀 방지).
         xml.to_string()
+    };
+
+    // 템플릿의 hp:margin(고정 문자열) → IR 여백 7필드로 교체 (#1388).
+    // write_section 은 콘텐츠 삽입 전에 호출하므로 템플릿 내 유일 1회 등장이 보장된다.
+    const TEMPLATE_PAGE_MARGIN: &str = r#"<hp:margin header="4252" footer="4252" gutter="0" left="8504" right="8504" top="5668" bottom="4252"/>"#;
+    let new_margin = format!(
+        r#"<hp:margin header="{}" footer="{}" gutter="{}" left="{}" right="{}" top="{}" bottom="{}"/>"#,
+        page_def.margin_header,
+        page_def.margin_footer,
+        page_def.margin_gutter,
+        page_def.margin_left,
+        page_def.margin_right,
+        page_def.margin_top,
+        page_def.margin_bottom,
+    );
+    if out.contains(TEMPLATE_PAGE_MARGIN) {
+        out.replacen(TEMPLATE_PAGE_MARGIN, &new_margin, 1)
+    } else {
+        // 템플릿이 변경됐거나 이미 치환된 경우 — 원본 유지(회귀 방지).
+        out
     }
 }
 
@@ -1318,6 +1348,95 @@ mod tests {
             "first run must use char_shape_id 42, xml excerpt around <hp:t>: {:?}",
             xml.find("<hp:t>")
                 .map(|i| &xml[i.saturating_sub(50)..(i + 50).min(xml.len())])
+        );
+    }
+
+    // ---------- #1388: replace_page_pr — secPr 페이지 여백 원본 보존 ----------
+
+    #[test]
+    fn task1388_page_margin_reflects_page_def() {
+        let mut para = Paragraph::default();
+        para.text = "m".to_string();
+        let (doc, mut section) = make_doc_with_paragraph(para);
+        let pd = &mut section.section_def.page_def;
+        pd.width = 59527;
+        pd.height = 84189;
+        pd.margin_header = 4251;
+        pd.margin_footer = 4251;
+        pd.margin_gutter = 0;
+        pd.margin_left = 7086;
+        pd.margin_right = 14173;
+        pd.margin_top = 4251;
+        pd.margin_bottom = 4251;
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            xml.contains(
+                r#"<hp:margin header="4251" footer="4251" gutter="0" left="7086" right="14173" top="4251" bottom="4251"/>"#
+            ),
+            "hp:margin must reflect IR PageDef 7 fields (온새미로 sec0 실측값)"
+        );
+        assert!(
+            !xml.contains(r#"left="8504""#),
+            "template margin value must not survive"
+        );
+        // #1166 동적화 회귀 없음 — width/height 동반 검증.
+        assert!(xml.contains(r#"width="59527" height="84189""#));
+    }
+
+    #[test]
+    fn task1388_gutter_type_reflects_binding() {
+        use crate::model::page::BindingMethod;
+        for (binding, expected) in [
+            (BindingMethod::SingleSided, r#"gutterType="LEFT_ONLY""#),
+            (BindingMethod::DuplexSided, r#"gutterType="LEFT_RIGHT""#),
+            (BindingMethod::TopFlip, r#"gutterType="TOP_BOTTOM""#),
+        ] {
+            let mut para = Paragraph::default();
+            para.text = "g".to_string();
+            let (doc, mut section) = make_doc_with_paragraph(para);
+            section.section_def.page_def.binding = binding;
+            let mut ctx = SerializeContext::collect_from_document(&doc);
+            let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+            let xml = std::str::from_utf8(&bytes).unwrap();
+            assert!(
+                xml.contains(expected),
+                "binding={:?} must emit {}",
+                binding,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn task1388_template_mismatch_keeps_original() {
+        // 템플릿 anchor 가 없는 입력 — 원본 유지(silent no-op, 회귀 방지 정책).
+        let mut pd = crate::model::page::PageDef::default();
+        pd.margin_left = 1234;
+        let xml = r#"<hp:pagePr landscape="WIDELY" width="1" height="2" gutterType="LEFT_ONLY"><hp:margin header="0" footer="0" gutter="0" left="9" right="9" top="9" bottom="9"/></hp:pagePr>"#;
+        assert_eq!(replace_page_pr(xml, &pd), xml);
+    }
+
+    #[test]
+    fn task1388_template_anchor_present_in_template() {
+        // 템플릿 변경 시 silent no-op 으로 빠지지 않도록 anchor 존재를 직접 보장한다.
+        let pd = crate::model::page::PageDef {
+            margin_header: 1,
+            margin_footer: 2,
+            margin_gutter: 3,
+            margin_left: 4,
+            margin_right: 5,
+            margin_top: 6,
+            margin_bottom: 7,
+            ..Default::default()
+        };
+        let out = replace_page_pr(EMPTY_SECTION_XML, &pd);
+        assert!(
+            out.contains(
+                r#"<hp:margin header="1" footer="2" gutter="3" left="4" right="5" top="6" bottom="7"/>"#
+            ),
+            "EMPTY_SECTION_XML 의 margin anchor 치환이 실패 — 템플릿이 변경됐는지 확인"
         );
     }
 
