@@ -267,6 +267,28 @@ fallback behavior conservative.
 - The glyph id field remains `u32` in Text IR, but backend selection/proof keeps
   the current range guard before direct glyph replay.
 
+## P26 Guarded V2 Authority Follow-Ups
+
+P26 does not promote a new replay family. It closes the authority gaps left by
+the earlier v2 phases so experimental vocabulary cannot be mistaken for a stable
+backend contract.
+
+- `MixedPerGlyph` remains vocabulary for future vertical and per-glyph transform
+  work. CanvasKit/native selection now reports
+  `mixedPerGlyphAuthorityPending` and keeps the homogeneous `TextRun` fallback
+  until cluster/grapheme orientation, transform replay, vertical fixtures, and
+  backend fallback policy are proven together.
+- `lineBreakRisks` stays report-only telemetry. Even under
+  `fallbackFreeStrict`, line-break risk metadata does not become a validation
+  error when the slot has a strict variant.
+- The guarded COLRv1 subset remains limited to the P19 solid/gradient/transform
+  graph contract. Composite, blend, clip, nested paint, partial sweep, and other
+  future graph primitives require document-backed fixtures before writer or
+  backend authority expands.
+- Cross-scope variant vocabulary stays diagnostic-only. Variants still need a
+  same-leaf default `TextRun` fallback before they can participate in schema-v1
+  compatible export.
+
 Every overlay removal requires a Canvas2D-vs-CanvasKit fixture. Rasterizer
 output can use fuzzy PNG comparison, but semantic decisions must be exact:
 selected variant id, fallback reason, resource resolution, effect preprocessing

@@ -13,9 +13,9 @@ use serde::Serialize;
 use crate::document_core::helpers::json_escape as raw_json_escape;
 use crate::model::style::UnderlineType;
 use crate::paint::{
-    GlyphOutlinePayloadKind, GlyphRunDiagnostics, GlyphRunReplayEligibility,
-    LayerGlyphOutlinePaint, LayerNode, LayerNodeKind, PageLayerTree, PaintOp, TextVariantKind,
-    TextVariantQuality,
+    GlyphOutlinePayloadKind, GlyphRunDiagnostics, GlyphRunOrientation, GlyphRunReplayEligibility,
+    LayerGlyphOutlinePaint, LayerGlyphRunPaint, LayerNode, LayerNodeKind, PageLayerTree, PaintOp,
+    TextVariantKind, TextVariantQuality,
 };
 use crate::renderer::render_tree::{FieldMarkerType, TextRunNode};
 
@@ -401,13 +401,13 @@ fn collect_node(
                         entry.part_count = entry.part_count.max(variant.part_count);
                         entry.present_parts.insert(variant.part_index);
                         entry.quality = entry.quality.or(variant.quality);
-                        if glyph_run_is_strict(&run.diagnostics) {
+                        if glyph_run_is_strict(run) {
                             entry.strict_parts.insert(variant.part_index);
                         }
                         entry.fallback_reason = entry
                             .fallback_reason
                             .take()
-                            .or_else(|| glyph_run_fallback_reason(&run.diagnostics));
+                            .or_else(|| glyph_run_fallback_reason(run));
                     }
                     PaintOp::GlyphOutline { outline, .. } => {
                         let variant = &outline.variant;
@@ -508,7 +508,7 @@ impl VariantAccumulator {
     }
 }
 
-fn glyph_run_is_strict(diagnostics: &GlyphRunDiagnostics) -> bool {
+fn glyph_run_diagnostics_are_strict(diagnostics: &GlyphRunDiagnostics) -> bool {
     diagnostics.strict_visual_eligible
         && matches!(
             diagnostics.quality,
@@ -524,8 +524,23 @@ fn glyph_run_is_strict(diagnostics: &GlyphRunDiagnostics) -> bool {
         && diagnostics.used_fallback_font_count == 0
 }
 
-fn glyph_run_fallback_reason(diagnostics: &GlyphRunDiagnostics) -> Option<String> {
-    if glyph_run_is_strict(diagnostics) {
+fn glyph_run_is_strict(run: &LayerGlyphRunPaint) -> bool {
+    glyph_run_diagnostics_are_strict(&run.diagnostics)
+        && !matches!(run.orientation, GlyphRunOrientation::MixedPerGlyph)
+}
+
+fn glyph_run_fallback_reason(run: &LayerGlyphRunPaint) -> Option<String> {
+    if glyph_run_is_strict(run) {
+        return None;
+    }
+    if matches!(run.orientation, GlyphRunOrientation::MixedPerGlyph) {
+        return Some("mixedPerGlyphAuthorityPending".to_string());
+    }
+    glyph_run_diagnostics_fallback_reason(&run.diagnostics)
+}
+
+fn glyph_run_diagnostics_fallback_reason(diagnostics: &GlyphRunDiagnostics) -> Option<String> {
+    if glyph_run_diagnostics_are_strict(diagnostics) {
         return None;
     }
     if let Some(reason) = &diagnostics.reason {
@@ -547,7 +562,7 @@ fn glyph_run_fallback_reason(diagnostics: &GlyphRunDiagnostics) -> Option<String
 }
 
 fn glyph_outline_is_strict(outline: &LayerGlyphOutlinePaint) -> bool {
-    glyph_run_is_strict(&outline.diagnostics)
+    glyph_run_diagnostics_are_strict(&outline.diagnostics)
         && !outline.paths.is_empty()
         && outline.paint_style.is_fill_only_glyph_replay()
         && match outline.payload_kind {
@@ -595,7 +610,7 @@ fn glyph_outline_fallback_reason(outline: &LayerGlyphOutlinePaint) -> Option<Str
         }
         _ => {}
     }
-    glyph_run_fallback_reason(&outline.diagnostics)
+    glyph_run_diagnostics_fallback_reason(&outline.diagnostics)
 }
 
 fn line_break_risk_for_run(leaf_path: &str, run: &TextRunNode) -> Option<TextV2LineBreakRisk> {
@@ -666,10 +681,10 @@ mod tests {
     use super::*;
     use crate::paint::{
         FontFaceKey, FontFallbackPolicyId, FontInstanceKey, GlyphCluster, GlyphOutlineFillRule,
-        GlyphOutlinePayloadKind, GlyphRange, GlyphRunOrientation, LayerAffineTransform,
-        LayerGlyphOutlinePaint, LayerGlyphOutlinePath, LayerGlyphRunPaint, LayerNode, LayerPoint,
-        PaintTextStyle, ScriptTag, ShapeKey, ShapingEngineId, TextDirection, TextSourceId,
-        TextSourceRange, TextSourceSpan, WritingMode,
+        GlyphOutlinePayloadKind, GlyphRange, GlyphRunOrientation, GlyphTransform,
+        LayerAffineTransform, LayerGlyphOutlinePaint, LayerGlyphOutlinePath, LayerGlyphRunPaint,
+        LayerNode, LayerPoint, PaintTextStyle, ScriptTag, ShapeKey, ShapingEngineId, TextDirection,
+        TextSourceId, TextSourceRange, TextSourceSpan, WritingMode,
     };
     use crate::renderer::render_tree::BoundingBox;
     use crate::renderer::{PathCommand, TextStyle};
@@ -1018,6 +1033,48 @@ mod tests {
     }
 
     #[test]
+    fn reports_mixed_per_glyph_as_authority_pending() {
+        let mut op = glyph_op(None, 0);
+        if let PaintOp::GlyphRun { run, .. } = &mut op {
+            run.orientation = GlyphRunOrientation::MixedPerGlyph;
+            run.glyph_transforms = Some(vec![GlyphTransform {
+                xx: 1.0,
+                xy: 0.0,
+                yx: 0.0,
+                yy: 1.0,
+                tx: 0.0,
+                ty: 0.0,
+            }]);
+        }
+        let tree = PageLayerTree::new(
+            100.0,
+            100.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 100.0, 100.0),
+                None,
+                vec![text_op("A"), op],
+            ),
+        );
+        let diagnostics = TextV2Diagnostics::from_layer_tree_with_profile(
+            &tree,
+            TextV2CompatibilityProfile::FallbackFreeStrict,
+        );
+
+        assert!(diagnostics.has_errors());
+        assert!(!diagnostics.slot_diagnostics[0].strict_variant_available);
+        assert_eq!(
+            diagnostics.slot_diagnostics[0].fallback_reason.as_deref(),
+            Some("mixedPerGlyphAuthorityPending")
+        );
+        assert_eq!(
+            diagnostics.slot_diagnostics[0].variants[0]
+                .fallback_reason
+                .as_deref(),
+            Some("mixedPerGlyphAuthorityPending")
+        );
+    }
+
+    #[test]
     fn reports_line_break_risk_context_for_complex_text_runs() {
         let mut run = text_run("A\tB");
         run.style.inline_tabs.push([0, 0, 0, 0, 0, 0, 0]);
@@ -1043,5 +1100,34 @@ mod tests {
         assert!(diagnostics.line_break_risks[0]
             .reasons
             .contains(&"tabLeaderOrInlineTab"));
+    }
+
+    #[test]
+    fn keeps_line_break_risk_report_only_when_strict_variant_exists() {
+        let mut run = text_run("A\tB");
+        run.style.inline_tabs.push([0, 0, 0, 0, 0, 0, 0]);
+        let tree = PageLayerTree::new(
+            100.0,
+            100.0,
+            LayerNode::leaf(
+                BoundingBox::new(0.0, 0.0, 100.0, 100.0),
+                None,
+                vec![
+                    PaintOp::TextRun {
+                        bbox: BoundingBox::new(0.0, 0.0, 20.0, 20.0),
+                        run,
+                    },
+                    glyph_op(None, 0),
+                ],
+            ),
+        );
+        let diagnostics = TextV2Diagnostics::from_layer_tree_with_profile(
+            &tree,
+            TextV2CompatibilityProfile::FallbackFreeStrict,
+        );
+
+        assert_eq!(diagnostics.line_break_risks.len(), 1);
+        assert!(diagnostics.slot_diagnostics[0].strict_variant_available);
+        assert!(!diagnostics.has_errors());
     }
 }
