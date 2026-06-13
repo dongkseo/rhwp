@@ -1937,6 +1937,14 @@ fn parse_table_cell(
             b"borderFillIDRef" => cell.border_fill_id = parse_u16(&attr),
             b"header" => cell.is_header = attr_str(&attr) == "1",
             b"hasMargin" => cell.apply_inner_margin = attr_str(&attr) == "1",
+            // 셀 필드 이름 (누름틀 셀 필드, #493). 직렬화기는 무명 셀도 name=""로
+            // 항상 방출하므로 빈 값은 None — HWP5 파서(parse_cell_field_name)와
+            // 동일 의미. 누락 시 HWPX 로드에서 getFieldList가 셀 필드를 반환하지 못하고
+            // HWPX 라운드트립에서 셀 필드 이름이 유실된다.
+            b"name" => {
+                let v = attr_str(&attr);
+                cell.field_name = if v.is_empty() { None } else { Some(v) };
+            }
             _ => {}
         }
     }
