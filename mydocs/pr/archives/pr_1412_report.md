@@ -14,7 +14,10 @@
 | 통합 방식 | PR 커밋 7개 cherry-pick + contributor 문서 archive 정리 |
 | 리뷰 문서 커밋 | `c0005b83` |
 | PR 커밋 반영 | `38d8ff7d`..`07d876a6` |
-| 처리 상태 | devel merge/push 전, 처리 보고서 승인 대기 |
+| 처리 상태 | 완료 |
+| devel merge | `ca2d214f` |
+| PR close | `2026-06-14T23:54:24Z` |
+| Issue #1411 close | `2026-06-14T23:54:32Z` |
 
 ## 2. 처리 내용
 
@@ -110,12 +113,13 @@ TAC shape/equation/table continuation split 계열로 분류되어 후속 범위
 새 단위 테스트가 `layout.rs` 변경을 직접 추가로 덮지는 않지만, contributor의 targeted sweep,
 GitHub Canvas visual diff, 로컬 focused test와 빌드 확인을 종합하면 수용 조건을 만족한다.
 
-## 6. 승인 후 절차
+## 6. 완료 절차
 
-처리 보고서 승인 후 다음 순서로 진행한다.
+처리 보고서 승인 후 다음 절차를 완료했다.
 
 1. `local/devel` 상태 재확인
-2. `local/devel`을 `devel`에 no-ff merge
-3. `git push origin devel`
+2. `local/devel`을 `devel`에 no-ff merge — `ca2d214f`
+3. `git push origin devel` — `a2a1b383..ca2d214f`
 4. PR #1412에 cherry-pick 반영 코멘트 작성 후 close
-5. Issue #1411 close 여부 확인, 자동 close되지 않으면 수동 close
+5. Issue #1411 수동 close
+6. PR #1412 리뷰/처리 문서 archive 이동
