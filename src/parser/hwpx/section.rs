@@ -4410,7 +4410,7 @@ fn parse_ctrl_field_begin(
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
                 if local == b"parameters" {
-                    parse_field_parameters(reader, &mut f)?;
+                    parse_field_parameters(ce, reader, &mut f)?;
                 } else if local == b"subList" && f.field_type == FieldType::Memo {
                     f.memo_paragraphs = parse_sublist_paragraphs(reader, b"subList")?;
                 } else {
@@ -4434,15 +4434,63 @@ fn parse_ctrl_field_begin(
 }
 
 /// `<parameters>` 내부에서 Command 문자열 파라미터를 추출한다.
-fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Result<(), HwpxError> {
+/// XML 텍스트/속성값 이스케이프 (#1391 parameters verbatim 재조립용).
+fn escape_xml_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn parse_field_parameters(
+    start: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+    field: &mut Field,
+) -> Result<(), HwpxError> {
     let mut buf = Vec::new();
     let mut in_command = false;
     let mut in_memo_number = false;
+
+    // [#1391] parameters 요소 원문 verbatim 재조립 — IR 이 Command/Number 만
+    // 추출하므로 무손실 roundtrip 을 위해 자식 시퀀스를 그대로 보존한다.
+    // parameters 자식은 stringParam/integerParam(name 속성 + 텍스트)만으로
+    // 단순하므로 이벤트 재방출이 안전하다.
+    let mut raw = String::from("<hp:parameters");
+    for attr in start.attributes().flatten() {
+        raw.push(' ');
+        raw.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
+        raw.push_str("=\"");
+        raw.push_str(&escape_xml_text(&attr_str(&attr)));
+        raw.push('"');
+    }
+    raw.push('>');
+
+    // 현재 열린 파라미터 요소 태그(닫을 때 사용).
+    let mut open_param: Option<String> = None;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
+                let tag = String::from_utf8_lossy(cname.as_ref()).to_string();
+                raw.push('<');
+                raw.push_str(&tag);
+                for attr in ce.attributes().flatten() {
+                    raw.push(' ');
+                    raw.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
+                    raw.push_str("=\"");
+                    raw.push_str(&escape_xml_text(&attr_str(&attr)));
+                    raw.push('"');
+                }
+                raw.push('>');
+                open_param = Some(tag);
                 if local == b"stringParam" {
                     for attr in ce.attributes().flatten() {
                         if attr.key.as_ref() == b"name" && attr_str(&attr) == "Command" {
@@ -4461,6 +4509,16 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
             Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
+                raw.push('<');
+                raw.push_str(&String::from_utf8_lossy(cname.as_ref()));
+                for attr in ce.attributes().flatten() {
+                    raw.push(' ');
+                    raw.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
+                    raw.push_str("=\"");
+                    raw.push_str(&escape_xml_text(&attr_str(&attr)));
+                    raw.push('"');
+                }
+                raw.push_str("/>");
                 if local == b"stringParam" {
                     for attr in ce.attributes().flatten() {
                         if attr.key.as_ref() == b"name" && attr_str(&attr) == "Command" {
@@ -4470,28 +4528,39 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
                 }
             }
             Ok(Event::Text(ref t)) => {
+                let decoded = t.decode().unwrap_or_default();
+                raw.push_str(&escape_xml_text(&decoded));
                 if in_command {
-                    field.command.push_str(&t.decode().unwrap_or_default());
+                    field.command.push_str(&decoded);
                 } else if in_memo_number {
-                    if let Ok(value) = t.decode().unwrap_or_default().trim().parse::<u32>() {
+                    if let Ok(value) = decoded.trim().parse::<u32>() {
                         field.memo_index = value;
                     }
                 }
             }
             Ok(Event::GeneralRef(ref r)) => {
+                let decoded = decode_xml_general_ref(r);
+                raw.push_str(&escape_xml_text(&decoded));
                 if in_command {
-                    field.command.push_str(&decode_xml_general_ref(r));
+                    field.command.push_str(&decoded);
                 }
             }
             Ok(Event::End(ref ee)) => {
                 let eename = ee.name();
                 let local = local_name(eename.as_ref());
+                if local == b"parameters" {
+                    raw.push_str("</hp:parameters>");
+                    break;
+                }
+                if let Some(tag) = open_param.take() {
+                    raw.push_str("</");
+                    raw.push_str(&tag);
+                    raw.push('>');
+                }
                 if local == b"stringParam" {
                     in_command = false;
                 } else if local == b"integerParam" {
                     in_memo_number = false;
-                } else if local == b"parameters" {
-                    break;
                 }
             }
             Ok(Event::Eof) => break,
@@ -4500,6 +4569,7 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
         }
         buf.clear();
     }
+    field.raw_parameters_xml = Some(raw);
     Ok(())
 }
 
@@ -6417,7 +6487,8 @@ mod tests {
         loop {
             match reader.read_event_into(&mut buf).unwrap() {
                 Event::Start(ref e) if local_name(e.name().as_ref()) == b"parameters" => {
-                    parse_field_parameters(&mut reader, &mut field).unwrap();
+                    let start = e.to_owned();
+                    parse_field_parameters(&start, &mut reader, &mut field).unwrap();
                     break;
                 }
                 Event::Eof => panic!("parameters not found"),

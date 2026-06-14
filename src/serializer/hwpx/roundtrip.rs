@@ -187,6 +187,15 @@ pub enum IrDifference {
         path: String,
         detail: String,
     },
+    /// 필드 parameters / MEMO 본문 불일치 — 필드 보존 게이트 (#1391).
+    ///
+    /// `path` 는 `…field` (parameters) 또는 `…field.memo.p[k]` (본문 재귀).
+    FieldContent {
+        section: usize,
+        paragraph: usize,
+        path: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for IrDifference {
@@ -299,6 +308,16 @@ impl std::fmt::Display for IrDifference {
             } => write!(
                 f,
                 "section[{}] paragraph[{}]{} comment: {}",
+                section, paragraph, path, detail
+            ),
+            FieldContent {
+                section,
+                paragraph,
+                path,
+                detail,
+            } => write!(
+                f,
+                "section[{}] paragraph[{}]{} field: {}",
                 section, paragraph, path, detail
             ),
         }
@@ -721,6 +740,18 @@ fn diff_paragraph_linesegs(
                     diff_paragraph_linesegs(out, section, paragraph, &p, qa, qb);
                 }
             }
+            // MEMO 본문 문단 lineseg 재귀 (#1391).
+            (Control::Field(fa), Control::Field(fb)) => {
+                for (k, (qa, qb)) in fa
+                    .memo_paragraphs
+                    .iter()
+                    .zip(fb.memo_paragraphs.iter())
+                    .enumerate()
+                {
+                    let p = format!("{path}/ctrl[{ci}]field.memo.p[{k}]");
+                    diff_paragraph_linesegs(out, section, paragraph, &p, qa, qb);
+                }
+            }
             _ => {}
         }
     }
@@ -900,6 +931,41 @@ fn diff_paragraph_char_shapes(
             (Control::Endnote(na), Control::Endnote(nb)) => {
                 for (k, (qa, qb)) in na.paragraphs.iter().zip(nb.paragraphs.iter()).enumerate() {
                     let p = format!("{path}/ctrl[{ci}]en.p[{k}]");
+                    diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
+                }
+            }
+            // 필드 parameters / MEMO 본문 비교 (#1391).
+            (Control::Field(fa), Control::Field(fb)) => {
+                if fa.raw_parameters_xml != fb.raw_parameters_xml {
+                    diff.push(IrDifference::FieldContent {
+                        section,
+                        paragraph,
+                        path: format!("{path}/ctrl[{ci}]field"),
+                        detail: format!(
+                            "parameters: expected={:?} actual={:?}",
+                            fa.raw_parameters_xml, fb.raw_parameters_xml
+                        ),
+                    });
+                }
+                if fa.memo_paragraphs.len() != fb.memo_paragraphs.len() {
+                    diff.push(IrDifference::FieldContent {
+                        section,
+                        paragraph,
+                        path: format!("{path}/ctrl[{ci}]field"),
+                        detail: format!(
+                            "memo paragraphs: expected={} actual={}",
+                            fa.memo_paragraphs.len(),
+                            fb.memo_paragraphs.len()
+                        ),
+                    });
+                }
+                for (k, (qa, qb)) in fa
+                    .memo_paragraphs
+                    .iter()
+                    .zip(fb.memo_paragraphs.iter())
+                    .enumerate()
+                {
+                    let p = format!("{path}/ctrl[{ci}]field.memo.p[{k}]");
                     diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
                 }
             }
@@ -1990,5 +2056,66 @@ mod tests {
         let a = doc_with_control(crate::model::control::Control::Picture(Box::new(pa)));
         let b = doc_with_control(crate::model::control::Control::Picture(Box::new(pb)));
         assert!(diff_documents(&a, &b).is_empty());
+    }
+
+    // ---------- #1391: 필드 parameters / MEMO 본문 게이트 동승 ----------
+
+    #[test]
+    fn task1391_field_parameters_loss_in_gate() {
+        let mut fa = crate::model::control::Field::default();
+        fa.raw_parameters_xml = Some("<hp:parameters cnt=\"1\"></hp:parameters>".into());
+        let fb = crate::model::control::Field::default();
+        let a = doc_with_control(crate::model::control::Control::Field(fa));
+        let b = doc_with_control(crate::model::control::Control::Field(fb));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::FieldContent { path, detail, .. } => {
+                assert_eq!(path, "/ctrl[0]field");
+                assert!(detail.starts_with("parameters: expected="), "{detail}");
+            }
+            other => panic!("FieldContent 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1391_memo_paragraph_loss_in_gate() {
+        let mut fa = crate::model::control::Field::default();
+        fa.field_type = crate::model::control::FieldType::Memo;
+        fa.memo_paragraphs.push(Paragraph::default());
+        let mut fb = crate::model::control::Field::default();
+        fb.field_type = crate::model::control::FieldType::Memo;
+        let a = doc_with_control(crate::model::control::Control::Field(fa));
+        let b = doc_with_control(crate::model::control::Control::Field(fb));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::FieldContent { detail, .. } => {
+                assert_eq!(detail, "memo paragraphs: expected=1 actual=0");
+            }
+            other => panic!("FieldContent 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1391_aift_memo_roundtrips() {
+        // 실샘플 — aift MEMO 2건 parameters + 본문 보존, roundtrip 게이트 0.
+        let bytes = std::fs::read("samples/hwpx/aift.hwpx").expect("샘플 읽기");
+        let doc1 = parse_hwpx(&bytes).expect("parse 원본");
+        let memo_count = doc1
+            .sections
+            .iter()
+            .flat_map(|s| &s.paragraphs)
+            .flat_map(|p| &p.controls)
+            .filter(|c| {
+                matches!(c, crate::model::control::Control::Field(f)
+                if f.field_type == crate::model::control::FieldType::Memo)
+            })
+            .count();
+        assert_eq!(memo_count, 2, "aift MEMO 2건");
+        let out = serialize_hwpx(&doc1).expect("serialize");
+        let doc2 = parse_hwpx(&out).expect("reparse");
+        let diff = diff_documents(&doc1, &doc2);
+        assert!(diff.is_empty(), "{:?}", diff.differences);
     }
 }

@@ -40,6 +40,9 @@ use super::SerializeError;
 use super::{picture, table};
 
 const EMPTY_SECTION_XML: &str = include_str!("templates/empty_section0.xml");
+
+/// MEMO subList 여는 태그 (#1391) — 실물(aift) 고정 속성.
+const SUB_LIST_OPEN: &str = r#"<hp:subList id="" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">"#;
 const LINESEG_SLOT_OPEN: &str = "<hp:linesegarray>";
 const LINESEG_SLOT_CLOSE: &str = "</hp:linesegarray>";
 const PARA_CLOSE: &str = "</hp:p></hs:sec>";
@@ -659,14 +662,41 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
         }
         Control::Field(f) => {
             // fieldBegin은 <hp:ctrl>...</hp:ctrl>로 감싸야 함 (Table/Picture와 달리)
-            match writer_to_string(|w| write_field_begin(w, f)) {
-                Ok(xml) => {
-                    out.push_str("<hp:ctrl>");
-                    out.push_str(&xml);
-                    out.push_str("</hp:ctrl>");
+            out.push_str("<hp:ctrl>");
+            let has_params = f.raw_parameters_xml.is_some();
+            let has_memo = f.field_type == crate::model::control::FieldType::Memo
+                && !f.memo_paragraphs.is_empty();
+            if has_params || has_memo {
+                // [#1391] 자식(parameters / memo subList)이 있으면 start/end 태그.
+                out.push_str(&super::field::field_begin_open_tag(f));
+                out.push('>');
+                if let Some(params) = &f.raw_parameters_xml {
+                    out.push_str(params);
                 }
-                Err(e) => eprintln!("[hwpx] Field 직렬화 실패: {e}"),
+                if has_memo {
+                    out.push_str(SUB_LIST_OPEN);
+                    let mut vert_cursor: u32 = 0;
+                    for para in &f.memo_paragraphs {
+                        ctx.para_shape_ids.reference(para.para_shape_id);
+                        ctx.style_ids.reference(para.style_id as u16);
+                        let (runs, linesegs, advance) =
+                            render_paragraph_parts(para, vert_cursor, ctx);
+                        vert_cursor = advance;
+                        out.push_str(&render_hp_p_open(para, ctx.next_para_id()));
+                        out.push_str(&runs);
+                        out.push_str(&linesegs);
+                        out.push_str("</hp:p>");
+                    }
+                    out.push_str("</hp:subList>");
+                }
+                out.push_str("</hp:fieldBegin>");
+            } else {
+                match writer_to_string(|w| write_field_begin(w, f)) {
+                    Ok(xml) => out.push_str(&xml),
+                    Err(e) => eprintln!("[hwpx] Field 직렬화 실패: {e}"),
+                }
             }
+            out.push_str("</hp:ctrl>");
         }
         Control::PageHide(ph) => out.push_str(&render_page_hiding(ph)),
         Control::PageNumberPos(pn) => out.push_str(&render_page_num(pn)),
@@ -1825,6 +1855,73 @@ mod tests {
             &xml[..300.min(xml.len())]
         );
         assert!(xml.contains("hello"), "text must still be present");
+    }
+
+    #[test]
+    fn task1391_memo_field_emits_parameters_and_sublist() {
+        // MEMO 필드: parameters verbatim + subList 본문 방출, start/end 태그.
+        let mut f = Field::default();
+        f.field_type = FieldType::Memo;
+        f.field_id = 7;
+        f.raw_parameters_xml =
+            Some(r#"<hp:parameters cnt="1" name=""><hp:stringParam name="ID">memo1</hp:stringParam></hp:parameters>"#.to_string());
+        let mut memo_para = Paragraph::default();
+        memo_para.text = "메모 본문".to_string();
+        f.memo_paragraphs.push(memo_para);
+
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        para.char_count = 18; // fieldBegin(8) + x(1) + fieldEnd(8) + end(1)
+        para.char_offsets = vec![8];
+        para.controls.push(Control::Field(f));
+        para.field_ranges.push(FieldRange {
+            start_char_idx: 0,
+            end_char_idx: 1,
+            control_idx: 0,
+        });
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"<hp:stringParam name="ID">memo1</hp:stringParam>"#),
+            "parameters verbatim 방출: {xml}"
+        );
+        assert!(xml.contains("<hp:t>메모 본문</hp:t>"), "메모 본문 방출");
+        assert!(
+            xml.contains("</hp:fieldBegin>"),
+            "자식 있으면 start/end 태그 (자기닫힘 금지)"
+        );
+        // 순서: parameters → subList
+        let pp = xml.find("<hp:parameters").unwrap();
+        let sl = xml.find("<hp:subList").unwrap();
+        assert!(pp < sl, "parameters 가 subList 보다 먼저");
+    }
+
+    #[test]
+    fn task1391_field_without_params_keeps_empty_tag() {
+        // parameters/memo 없는 필드는 기존 empty_tag 자기닫힘 유지 (회귀 방지).
+        let mut f = Field::default();
+        f.field_type = FieldType::ClickHere;
+        f.field_id = 5;
+        let mut para = Paragraph::default();
+        para.text = "y".to_string();
+        para.char_count = 18;
+        para.char_offsets = vec![8];
+        para.controls.push(Control::Field(f));
+        para.field_ranges.push(FieldRange {
+            start_char_idx: 0,
+            end_char_idx: 1,
+            control_idx: 0,
+        });
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(
+            !xml.contains("</hp:fieldBegin>"),
+            "자식 없으면 자기닫힘 유지: {xml}"
+        );
     }
 
     #[test]
