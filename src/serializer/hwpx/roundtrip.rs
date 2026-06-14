@@ -206,6 +206,16 @@ pub enum IrDifference {
         path: String,
         detail: String,
     },
+    /// 표 `page_break` 불일치 — 표 분할 속성 보존 게이트 (#1393).
+    ///
+    /// 방출(serializer)은 PR #1405 에서 정정됨 — 본 게이트는 회귀 봉인용.
+    /// `path` 는 `…tbl`.
+    TablePageBreak {
+        section: usize,
+        paragraph: usize,
+        path: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for IrDifference {
@@ -338,6 +348,16 @@ impl std::fmt::Display for IrDifference {
             } => write!(
                 f,
                 "section[{}] paragraph[{}]{} pic_size: {}",
+                section, paragraph, path, detail
+            ),
+            TablePageBreak {
+                section,
+                paragraph,
+                path,
+                detail,
+            } => write!(
+                f,
+                "section[{}] paragraph[{}]{} tbl page_break: {}",
                 section, paragraph, path, detail
             ),
         }
@@ -907,6 +927,15 @@ fn diff_paragraph_char_shapes(
     for (ci, (ctrl_a, ctrl_b)) in pa.controls.iter().zip(pb.controls.iter()).enumerate() {
         match (ctrl_a, ctrl_b) {
             (Control::Table(ta), Control::Table(tb)) => {
+                // 표 page_break 비교 (#1393) — 방출은 PR #1405 정정, 게이트 회귀 봉인.
+                if ta.page_break != tb.page_break {
+                    diff.push(IrDifference::TablePageBreak {
+                        section,
+                        paragraph,
+                        path: format!("{path}/ctrl[{ci}]tbl"),
+                        detail: format!("expected={:?} actual={:?}", ta.page_break, tb.page_break),
+                    });
+                }
                 for (cell_i, (cea, ceb)) in ta.cells.iter().zip(tb.cells.iter()).enumerate() {
                     for (k, (qa, qb)) in
                         cea.paragraphs.iter().zip(ceb.paragraphs.iter()).enumerate()
@@ -2224,6 +2253,44 @@ mod tests {
                 if t.cells.iter().flat_map(|ce| &ce.paragraphs).flat_map(|q| &q.controls)
                     .any(|cc| matches!(cc, crate::model::control::Control::Picture(pic) if pic.img_dim.0 > 0))));
         assert!(has_dim, "셀 내 pic img_dim 적재 전제");
+        let out = serialize_hwpx(&doc1).expect("serialize");
+        let doc2 = parse_hwpx(&out).expect("reparse");
+        let diff = diff_documents(&doc1, &doc2);
+        assert!(diff.is_empty(), "{:?}", diff.differences);
+    }
+
+    // ---------- #1393: 표 page_break 게이트 동승 ----------
+
+    #[test]
+    fn task1393_table_page_break_diff_in_gate() {
+        use crate::model::table::TablePageBreak;
+        fn tbl(pb: TablePageBreak) -> crate::model::control::Control {
+            match table_control(&[]) {
+                crate::model::control::Control::Table(mut t) => {
+                    t.page_break = pb;
+                    crate::model::control::Control::Table(t)
+                }
+                _ => unreachable!(),
+            }
+        }
+        let a = doc_with_control(tbl(TablePageBreak::RowBreak));
+        let b = doc_with_control(tbl(TablePageBreak::CellBreak));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::TablePageBreak { path, detail, .. } => {
+                assert_eq!(path, "/ctrl[0]tbl");
+                assert_eq!(detail, "expected=RowBreak actual=CellBreak");
+            }
+            other => panic!("TablePageBreak 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1393_form_002_page_break_roundtrips() {
+        // 실샘플 — form-002 표 page_break(CELL=RowBreak) 보존, roundtrip 게이트 0.
+        let bytes = std::fs::read("samples/hwpx/form-002.hwpx").expect("샘플 읽기");
+        let doc1 = parse_hwpx(&bytes).expect("parse 원본");
         let out = serialize_hwpx(&doc1).expect("serialize");
         let doc2 = parse_hwpx(&out).expect("reparse");
         let diff = diff_documents(&doc1, &doc2);
