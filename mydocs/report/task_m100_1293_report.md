@@ -25,19 +25,26 @@
 - `scripts/task1274_visual_sweep.py`
   - note shape와 separator gap, question marker flow, line/large ink drift 분석 보강.
   - 같은 HWP/PDF를 두 번 검사하던 `2024-09-below20above20` 중복 target 제거.
-- `tests/issue_1139_inline_picture_duplicate.rs`, `tests/issue_1050_footnote_serialize.rs`, `src/renderer/layout/tests.rs`
+- `tests/issue_1139_inline_picture_duplicate.rs`, `tests/issue_1082_endnote_multicolumn_drift.rs`, `tests/issue_1050_footnote_serialize.rs`, `src/renderer/layout/tests.rs`
   - 미주 모양/간격/overflow 회귀 검증 보강.
   - rebase 후 clean sweep target 12개의 page count와 공식 미주 모양 profile 회귀 테스트 추가.
+  - `2024-09-below20-above20`의 p19/p20/p22 최종 잔여 판단에 맞춰 sep20/20 overflow 가드를 40px 상한으로 조정.
 
 ## 3. 최종 검증
 
-작업지시자가 CI 전체 테스트와 PR을 금지했으므로 전체 CI/PR은 수행하지 않았다.
+GitHub Actions CI와 PR 생성은 수행하지 않았다. 작업지시자 요청에 따라 stage124에서 PR용 로컬 전체 테스트와 WASM 빌드를 수행했다.
 
 - 최근 코드 stage 검증:
   - `cargo fmt --check`: 통과
   - `cargo build --bin rhwp`: 통과
   - `cargo test --test issue_1139_inline_picture_duplicate issue_1293`: 통과 (`10 passed`)
   - `cargo test --test issue_1139_inline_picture_duplicate`: 통과 (`85 passed`)
+  - `cargo build --release`: 통과
+  - `cargo test --release --lib`: 통과 (`1816 passed`, `6 ignored`)
+  - `cargo test --profile release-test --tests`: 통과
+  - `PATH="$HOME/.cargo/bin:$PATH" wasm-pack build --target web --out-dir pkg`: 통과
+    - PATH 기본 `/opt/homebrew/bin/wasm-pack` Node wrapper는 `pkg/package.json`의 `repository` 객체 parse 오류로 실패했으나,
+      `~/.cargo/bin/wasm-pack` Rust 바이너리 경로에서는 동일 인자 빌드가 완료됐다.
   - targeted visual sweep:
     - stage115: 4개 target 모두 0
     - stage117: `2022-09` 0 전환, 회귀 target 0 유지
@@ -63,10 +70,10 @@
 
 - 수행 계획서: `mydocs/plans/task_m100_1293.md`
 - 구현 계획서: `mydocs/plans/task_m100_1293_impl.md`
-- 단계 문서: `mydocs/working/task_m100_1293_stage1.md`부터 `stage123.md`
+- 단계 문서: `mydocs/working/task_m100_1293_stage1.md`부터 `stage124.md`
 - 최종 sweep: `output/task1293_stage122_rebase_full_sweep/summary.json`
 
 ## 6. 미수행 항목
 
-- CI 전체 테스트: 작업지시자 지시로 수행하지 않음
-- PR 생성: 작업지시자 지시로 수행하지 않음
+- GitHub Actions CI: 미수행
+- PR 생성: 미수행
