@@ -5784,10 +5784,17 @@ impl TypesetEngine {
                                                 Some(en_col_w),
                                             );
                                             let next_h = next_fmt.height_for_fit;
-                                            st.current_height + h4f + next_h
-                                                <= available
+                                            let title_body_limit = if has_visible_endnote_separator
+                                                && st.current_height > available * 0.95
+                                            {
+                                                available + 2.0
+                                            } else {
+                                                available
                                                     + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
                                                     + 2.0
+                                            };
+                                            st.current_height + fmt.line_advance(0) + next_h
+                                                <= title_body_limit
                                         })
                                         .unwrap_or(true)
                                     && endnote_has_visible_payload;
