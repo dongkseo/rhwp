@@ -3142,6 +3142,16 @@ impl TypesetEngine {
                                                 && continued_endnote_tail_before_new_note
                                                 && st.current_height > st.available_height() * 0.70
                                                 && st.current_height < st.available_height() * 0.75;
+                                        let skip_default_mid_column_between_notes_trailing =
+                                            endnote_flow_profile
+                                                .map(
+                                                    EndnoteFlowProfile::visible_nonzero_default_between_notes,
+                                                )
+                                                .unwrap_or(false)
+                                                && continued_endnote_tail_before_new_note
+                                                && st.current_column + 1 >= st.col_count
+                                                && st.current_height > st.available_height() * 0.25
+                                                && st.current_height < st.available_height() * 0.50;
                                         let skip_absorbed_render_between_notes_trailing = {
                                             let absorbed_visible_profile = endnote_flow_profile
                                                 .map(|profile| {
@@ -3185,6 +3195,7 @@ impl TypesetEngine {
                                         };
                                         let skip_render_between_notes_trailing =
                                             skip_default_render_between_notes_trailing
+                                                || skip_default_mid_column_between_notes_trailing
                                                 || skip_absorbed_render_between_notes_trailing;
                                         if let Some(prev_para) =
                                             st.endnote_paragraphs.get_mut(prev_local_idx)
@@ -3703,9 +3714,21 @@ impl TypesetEngine {
                                 && !suppress_late_question_gap_for_fit
                                 && !large_rewind_equation_tail_new_note_gap_absorbed
                             {
-                                endnote_shape
-                                    .map(endnote_between_notes_margin)
-                                    .map(|gap| hwpunit_to_px(gap as i32, dpi))
+                                endnote_shape.map(|shape| {
+                                    let gap = endnote_between_notes_margin(shape) as i32;
+                                    let default_visible_tail_absorbed_gap =
+                                        default_between_notes_gap
+                                            && has_visible_endnote_separator
+                                            && st.current_column + 1 >= st.col_count
+                                            && st.current_height > available * 0.25
+                                            && st.current_height < available * 0.50;
+                                    let effective_gap = if default_visible_tail_absorbed_gap {
+                                        0
+                                    } else {
+                                        gap
+                                    };
+                                    hwpunit_to_px(effective_gap, dpi)
+                                })
                             } else {
                                 None
                             };
