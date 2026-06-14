@@ -5963,6 +5963,52 @@ impl TypesetEngine {
                             let visible_separator_large_tac_tail_overflows_frame =
                                 visible_separator_large_tac_tail_bottom
                                     .is_some_and(|bottom| bottom > available + 1.0);
+                            let visible_separator_text_after_large_tac_tail_starts_next_page =
+                                !default_between_notes_gap
+                                    && compact_endnote_separator_profile
+                                    && has_visible_endnote_separator
+                                    && visible_large_between_notes_gap
+                                    && st.col_count > 1
+                                    && st.current_column + 1 >= st.col_count
+                                    && ep_idx > 1
+                                    && st.current_height > available * 0.96
+                                    && fmt.line_heights.len() == 1
+                                    && para_has_visible_text(en_para)
+                                    && !para_has_treat_as_char_picture_or_shape(en_para)
+                                    && !para_has_non_tac_picture_or_shape(en_para)
+                                    && en_ctrl
+                                        .paragraphs
+                                        .iter()
+                                        .take(ep_idx)
+                                        .skip(1)
+                                        .any(para_has_visible_text)
+                                    && st
+                                        .current_items
+                                        .iter()
+                                        .rev()
+                                        .filter_map(page_item_para_index)
+                                        .next()
+                                        .and_then(|pi| {
+                                            paragraph_by_global_index(
+                                                paragraphs,
+                                                &st.endnote_paragraphs,
+                                                pi,
+                                            )
+                                            .and_then(
+                                                |prev_para| {
+                                                    prev_para
+                                                        .controls
+                                                        .iter()
+                                                        .filter_map(|ctrl| {
+                                                            tac_picture_or_shape_height_px(
+                                                                ctrl, dpi,
+                                                            )
+                                                        })
+                                                        .reduce(f64::max)
+                                                },
+                                            )
+                                        })
+                                        .is_some_and(|height| height >= 80.0);
                             let zero_equation_text_run_tail_before_next_title_fits =
                                 compact_endnote_separator_profile
                                     && zero_endnote_spacing_profile
@@ -6547,6 +6593,7 @@ impl TypesetEngine {
                                     && !zero_equation_text_run_tail_before_next_title_fits)
                                 || zero_tac_picture_tail_bleeds_frame
                                 || visible_separator_large_tac_tail_overflows_frame
+                                || visible_separator_text_after_large_tac_tail_starts_next_page
                                 || zero_visible_last_column_text_tail_starts_next_page
                                 || zero_between_visible_last_column_text_tail_starts_next_page
                                 || endnote_boundary_gap_tail_overflows_frame
@@ -6578,6 +6625,7 @@ impl TypesetEngine {
                                     || large_between_title_tail_body_advances_page
                                     || large_between_split_head_render_overflows
                                     || visible_separator_large_tac_tail_overflows_frame
+                                    || visible_separator_text_after_large_tac_tail_starts_next_page
                                     || zero_visible_last_column_text_tail_starts_next_page
                                     || zero_between_visible_last_column_text_tail_starts_next_page
                                     || zero_between_large_separator_last_column_title_orphan
@@ -6607,7 +6655,7 @@ impl TypesetEngine {
                                 && !st.current_items.is_empty();
                             if std::env::var("RHWP_ENDNOTE_ADVANCE_DEBUG").is_ok() {
                                 eprintln!(
-                                    "ENDNOTE_ADV phase=fit note={} ep={} col={}/{} cur={:.2} avail={:.2} en_fit={:.2} total={:.2} h4f={:.2} boundary_gap_extra={:.2} boundary_gap_over={} next_head_large_tac={} lines={} first={:?} bottom={:?} content_bottom={:?} local_rewind={} internal_rewind={:?} internal_split={:?} split={:?} visual_split={:?} flow_tail_split={:?} own_span_fit={} late_text_tail={} eq_tail_next_title={} zero_tac_tail={} visible_large_tac_tail={} tac_candidate={} tac_render_y={:?} tac_bottom={:?} zero_intro_tail={} zero_text_tail={} no_sep_visible_tail={} no_sep_multiline_tail={} default_title_body={} split_head_over={} reset_split_head_over={} last_col_new_tail={} large_eq_tail_next_col={} lead_final_tail={} no_sep_tail={} visible_sep_tail={} internal_head_over={} non_visible_tail_bleed={} advance_fit={}",
+                                    "ENDNOTE_ADV phase=fit note={} ep={} col={}/{} cur={:.2} avail={:.2} en_fit={:.2} total={:.2} h4f={:.2} boundary_gap_extra={:.2} boundary_gap_over={} next_head_large_tac={} lines={} first={:?} bottom={:?} content_bottom={:?} local_rewind={} internal_rewind={:?} internal_split={:?} split={:?} visual_split={:?} flow_tail_split={:?} own_span_fit={} late_text_tail={} eq_tail_next_title={} zero_tac_tail={} visible_large_tac_tail={} text_after_tac_tail={} tac_candidate={} tac_render_y={:?} tac_bottom={:?} zero_intro_tail={} zero_text_tail={} no_sep_visible_tail={} no_sep_multiline_tail={} default_title_body={} split_head_over={} reset_split_head_over={} last_col_new_tail={} large_eq_tail_next_col={} lead_final_tail={} no_sep_tail={} visible_sep_tail={} internal_head_over={} non_visible_tail_bleed={} advance_fit={}",
                                     en_ref.number,
                                     ep_idx,
                                     st.current_column + 1,
@@ -6635,6 +6683,7 @@ impl TypesetEngine {
                                     zero_equation_text_run_tail_before_next_title_fits,
                                     zero_tac_picture_tail_bleeds_frame,
                                     visible_separator_large_tac_tail_overflows_frame,
+                                    visible_separator_text_after_large_tac_tail_starts_next_page,
                                     visible_separator_large_tac_tail_candidate,
                                     visible_separator_large_tac_tail_render_y,
                                     visible_separator_large_tac_tail_bottom,
