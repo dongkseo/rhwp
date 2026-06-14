@@ -55,6 +55,10 @@ const TEMPLATE_TEXT_RUN: &str = r#"<hp:run charPrIDRef="0"><hp:t/></hp:run>"#;
 // 템플릿 첫 run(secPr/colPr 전용)의 여는 태그 + secPr 시작 — run id 정비용 anchor (#1378).
 const TEMPLATE_SECPR_RUN_OPEN: &str = r#"<hp:run charPrIDRef="0"><hp:secPr "#;
 
+// [#1407] 템플릿의 하드코딩 본문 colPr(단 정의) — 단일 단 기본값. 첫 문단 IR 에
+// ColumnDef 가 있으면 이 anchor 를 IR 값으로 치환한다 (#1388 secPr 동형).
+const TEMPLATE_BODY_COL_PR: &str = r#"<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>"#;
+
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
 /// 탭 기본 폭 (한컴이 열면서 재계산하지만 초기값으로 필요).
@@ -82,6 +86,20 @@ pub fn write_section(
     // 중첩 linesegarray(각주·머리말 등)가 anchor 탐색을 오염시키지 않도록 한다.
     let mut out = replace_first_linesegs(EMPTY_SECTION_XML, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
+
+    // [#1407] 본문 단 정의(colPr) — 첫 문단 IR 의 ColumnDef 를 템플릿 하드코딩
+    // colPr(colCount=1)에 치환한다. 본문(depth 0) ColumnDef 는 render_runs 인라인
+    // 슬롯에서 제외되므로(#1379) 여기서 받지 않으면 단 정의가 손실된다(2단→1단 →
+    // 페이지 넘침). #1388 secPr 여백 치환과 동형.
+    if let Some(p) = first_para {
+        if let Some(Control::ColumnDef(cd)) = p
+            .controls
+            .iter()
+            .find(|c| matches!(c, Control::ColumnDef(_)))
+        {
+            out = out.replacen(TEMPLATE_BODY_COL_PR, &render_col_pr_ctrl(cd), 1);
+        }
+    }
 
     if let Some(p) = first_para {
         // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
@@ -434,6 +452,9 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
             .get(idx)
             .copied()
             .unwrap_or(expected_utf16_pos);
+        // [#1407] 이 idx 위치에서 닫혀야 할(미방출) fieldEnd 가 있으면, 그 8유닛 갭은
+        // 슬롯이 아니라 fieldEnd 소유다. 슬롯 방출을 양보해 텍스트-끝 슬롯(newNum 등)이
+        // fieldEnd 자리를 가로채지 못하게 한다 (0-length 필드는 아래 pre-char 경로가 처리).
         while slot_idx < slots.len() && char_pos >= expected_utf16_pos.saturating_add(8) {
             flush_text_fragment(
                 &mut splitter.content,
@@ -535,6 +556,10 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
                 );
                 splitter.cut_before(expected_utf16_pos);
                 emit_field_end(&mut splitter.content, para, fr.control_idx);
+                // [#1407] fieldEnd 는 8유닛 슬롯을 소비한다. expected 를 +8 진행하지
+                // 않으면 다음 idx 에서 텍스트-끝 슬롯(newNum 등)이 이 8유닛 갭을
+                // 가로채 텍스트가 +8 밀린다 (143E 문단 0.14: char_offsets[3] 27→35).
+                expected_utf16_pos = expected_utf16_pos.saturating_add(8);
                 field_end_emitted[i] = true;
             }
         }
@@ -1477,6 +1502,52 @@ mod tests {
     }
 
     #[test]
+    fn task1407_body_col_pr_reflects_ir_column_def() {
+        // [#1407] 본문 첫 문단 IR 에 2단 ColumnDef 가 있으면 템플릿 하드코딩
+        // colPr(colCount=1)이 IR 값(colCount=2)으로 치환돼야 한다. 미치환 시
+        // 2단→1단 손실로 페이지 넘침(143E RT 1→2).
+        use crate::model::page::{ColumnDef, ColumnType};
+        let mut cd = ColumnDef::default();
+        cd.column_type = ColumnType::Normal;
+        cd.column_count = 2;
+        cd.same_width = true;
+        cd.spacing = 2268;
+
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        para.controls.push(Control::ColumnDef(cd));
+
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+
+        assert!(
+            xml.contains(r#"colCount="2""#) && xml.contains(r#"sameGap="2268""#),
+            "본문 colPr 이 IR 2단 정의로 치환돼야 함: {}",
+            &xml[..900.min(xml.len())]
+        );
+        assert!(
+            !xml.contains(r#"colCount="1""#),
+            "하드코딩 colCount=1 이 남으면 안 됨 (회귀 가드): {}",
+            &xml[..900.min(xml.len())]
+        );
+    }
+
+    #[test]
+    fn task1407_single_column_doc_unaffected() {
+        // ColumnDef IR 이 없는 문단(단일 단)은 템플릿 colCount=1 유지 — 회귀 없음.
+        let mut para = Paragraph::default();
+        para.text = "x".to_string();
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains(r#"colCount="1""#),
+            "ColumnDef 없으면 템플릿 colCount=1 유지"
+        );
+    }
+
+    #[test]
     fn hp_run_reflects_first_char_shape_id() {
         let mut para = Paragraph::default();
         para.text = "hello".to_string();
@@ -2136,6 +2207,58 @@ mod tests {
             begin_pos < end_pos,
             "빈 문단에서도 fieldBegin이 fieldEnd보다 앞에 와야 한다: {}",
             &xml[..400.min(xml.len())]
+        );
+    }
+
+    // ---------- #1407: newNum(텍스트 끝 슬롯)이 fieldEnd 갭을 가로채지 않음 ----------
+
+    #[test]
+    fn task1407_field_end_not_stolen_by_newnum_slot() {
+        // 143E 문단 0.14 모델: 하이퍼링크 필드가 "ABC"를 래핑하고 그 뒤 " DEF" 텍스트,
+        // newNum 은 텍스트 끝. char_offsets 는 head(secPr) 16유닛 뒤로 시작:
+        // fieldBegin(8) "ABC"(3) fieldEnd(8) " DEF"(4) newNum(8) end(1).
+        // 핵심: fieldEnd(텍스트 중간 갭)가 후속 슬롯(newNum)에 가로채이면 " DEF"가
+        // +8 밀린다. render_runs 방출 XML 의 컨트롤·텍스트 순서로 봉인.
+        let mut f = Field::default();
+        f.field_type = FieldType::Hyperlink;
+        f.field_id = 42;
+
+        let mut nn = NewNumber::default();
+        nn.number = 2;
+        nn.number_type = AutoNumberType::Page;
+
+        let mut para = Paragraph::default();
+        para.text = "ABC DEF".to_string();
+        para.char_count = 8 + 3 + 8 + 4 + 8 + 1;
+        para.char_offsets = vec![8, 9, 10, 19, 20, 21, 22];
+        para.controls.push(Control::Field(f));
+        para.controls.push(Control::NewNumber(nn));
+        para.field_ranges.push(FieldRange {
+            start_char_idx: 0,
+            end_char_idx: 3, // "ABC" 래핑
+            control_idx: 0,
+        });
+
+        let xml = runs_of(&para);
+
+        let begin_pos = xml.find("fieldBegin").expect("fieldBegin");
+        let end_pos = xml.find("fieldEnd").expect("fieldEnd");
+        let newnum_pos = xml.find("newNum").expect("newNum");
+        // " DEF" 텍스트(<hp:t> DEF</hp:t>) 위치 — fieldEnd 닫힘 뒤의 'DEF'.
+        let after_end = end_pos + xml[end_pos..].find('>').unwrap();
+        let def_pos = xml[after_end..]
+            .find("DEF")
+            .map(|p| p + after_end)
+            .expect("DEF");
+
+        assert!(begin_pos < end_pos, "fieldBegin이 fieldEnd보다 앞: {xml}");
+        assert!(
+            end_pos < def_pos,
+            "fieldEnd 가 ' DEF' 텍스트보다 앞 (갭이 가로채이지 않음): {xml}"
+        );
+        assert!(
+            def_pos < newnum_pos,
+            "newNum 은 텍스트 끝 — ' DEF' 뒤에 와야 한다 (#1407 회귀 가드): {xml}"
         );
     }
 
