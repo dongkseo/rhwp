@@ -177,6 +177,16 @@ pub enum IrDifference {
         path: String,
         detail: String,
     },
+    /// 그림/도형/수식/묶음 설명(`hp:shapeComment`) 불일치 — 설명 보존 게이트 (#1392).
+    ///
+    /// `path` 는 `…pic` / `…shape` / `…eq` 등 중첩 경로. `detail` 은
+    /// `"expected={:?} actual={:?}"`.
+    ObjectComment {
+        section: usize,
+        paragraph: usize,
+        path: String,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for IrDifference {
@@ -281,7 +291,26 @@ impl std::fmt::Display for IrDifference {
                 "section[{}] paragraph[{}]{} caption: {}",
                 section, paragraph, path, detail
             ),
+            ObjectComment {
+                section,
+                paragraph,
+                path,
+                detail,
+            } => write!(
+                f,
+                "section[{}] paragraph[{}]{} comment: {}",
+                section, paragraph, path, detail
+            ),
         }
+    }
+}
+
+/// 두 `CommonObjAttr.description` 비교 (#1392). 다르면 detail 문자열, 같으면 None.
+fn diff_object_comment(a: &str, b: &str) -> Option<String> {
+    if a == b {
+        None
+    } else {
+        Some(format!("expected={:?} actual={:?}", a, b))
     }
 }
 
@@ -825,12 +854,37 @@ fn diff_paragraph_char_shapes(
                         detail,
                     });
                 }
+                // 그림 설명 비교 (#1392).
+                if let Some(detail) =
+                    diff_object_comment(&pia.common.description, &pib.common.description)
+                {
+                    diff.push(IrDifference::ObjectComment {
+                        section,
+                        paragraph,
+                        path: format!("{path}/ctrl[{ci}]pic"),
+                        detail,
+                    });
+                }
                 if let (Some(ca), Some(cb)) = (&pia.caption, &pib.caption) {
                     for (k, (qa, qb)) in ca.paragraphs.iter().zip(cb.paragraphs.iter()).enumerate()
                     {
                         let p = format!("{path}/ctrl[{ci}]pic.caption.p[{k}]");
                         diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
                     }
+                }
+            }
+            // 수식 설명 비교 (#1392) — equation 은 본문 텍스트 비교 대상이 아니므로
+            // description 만 동승.
+            (Control::Equation(ea), Control::Equation(eb)) => {
+                if let Some(detail) =
+                    diff_object_comment(&ea.common.description, &eb.common.description)
+                {
+                    diff.push(IrDifference::ObjectComment {
+                        section,
+                        paragraph,
+                        path: format!("{path}/ctrl[{ci}]eq"),
+                        detail,
+                    });
                 }
             }
             (Control::Shape(sa), Control::Shape(sb)) => {
@@ -886,11 +940,39 @@ fn diff_shape_char_shapes(
             diff_paragraph_char_shapes(diff, section, paragraph, &p, qa, qb);
         }
     }
+    // 도형/묶음 설명 비교 (#1392).
+    if let Some(detail) =
+        diff_object_comment(&shape_common(sa).description, &shape_common(sb).description)
+    {
+        diff.push(IrDifference::ObjectComment {
+            section,
+            paragraph,
+            path: path.to_string(),
+            detail,
+        });
+    }
     if let (ShapeObject::Group(ga), ShapeObject::Group(gb)) = (sa, sb) {
         for (k, (c1, c2)) in ga.children.iter().zip(gb.children.iter()).enumerate() {
             let p = format!("{path}.child[{k}]");
             diff_shape_char_shapes(diff, section, paragraph, &p, c1, c2);
         }
+    }
+}
+
+/// ShapeObject 에서 `CommonObjAttr` 참조를 꺼낸다 (#1392 — description 비교용).
+fn shape_common(s: &crate::model::shape::ShapeObject) -> &crate::model::shape::CommonObjAttr {
+    use crate::model::shape::ShapeObject::*;
+    match s {
+        Line(x) => &x.common,
+        Rectangle(x) => &x.common,
+        Ellipse(x) => &x.common,
+        Arc(x) => &x.common,
+        Polygon(x) => &x.common,
+        Curve(x) => &x.common,
+        Chart(x) => &x.common,
+        Ole(x) => &x.common,
+        Group(x) => &x.common,
+        Picture(x) => &x.common,
     }
 }
 
@@ -1844,5 +1926,69 @@ mod tests {
             }
             other => panic!("ObjectCaption 여야 함: {other:?}"),
         }
+    }
+
+    // ---------- #1392: shapeComment(객체 설명) 게이트 동승 ----------
+
+    #[test]
+    fn task1392_pic_comment_loss_in_gate() {
+        let mut pa = crate::model::image::Picture::default();
+        pa.common.description = "그림입니다.".to_string();
+        let pb = crate::model::image::Picture::default();
+        let a = doc_with_control(crate::model::control::Control::Picture(Box::new(pa)));
+        let b = doc_with_control(crate::model::control::Control::Picture(Box::new(pb)));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::ObjectComment { path, detail, .. } => {
+                assert_eq!(path, "/ctrl[0]pic");
+                assert_eq!(detail, "expected=\"그림입니다.\" actual=\"\"");
+            }
+            other => panic!("ObjectComment 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1392_equation_comment_loss_in_gate() {
+        let mut ea = crate::model::control::Equation::default();
+        ea.common.description = "수식 설명".to_string();
+        let eb = crate::model::control::Equation::default();
+        let a = doc_with_control(crate::model::control::Control::Equation(Box::new(ea)));
+        let b = doc_with_control(crate::model::control::Control::Equation(Box::new(eb)));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::ObjectComment { path, .. } => assert_eq!(path, "/ctrl[0]eq"),
+            other => panic!("ObjectComment 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1392_shape_comment_loss_in_gate() {
+        let mut el = crate::model::shape::EllipseShape::default();
+        el.common.description = "타원 설명".to_string();
+        let a = doc_with_control(crate::model::control::Control::Shape(Box::new(
+            crate::model::shape::ShapeObject::Ellipse(el),
+        )));
+        let b = doc_with_control(crate::model::control::Control::Shape(Box::new(
+            crate::model::shape::ShapeObject::Ellipse(crate::model::shape::EllipseShape::default()),
+        )));
+        let diff = diff_documents(&a, &b);
+        assert_eq!(diff.differences.len(), 1, "{:?}", diff.differences);
+        match &diff.differences[0] {
+            IrDifference::ObjectComment { path, .. } => assert_eq!(path, "/ctrl[0]shape"),
+            other => panic!("ObjectComment 여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task1392_equal_comment_no_diff() {
+        let mut pa = crate::model::image::Picture::default();
+        pa.common.description = "동일".to_string();
+        let mut pb = crate::model::image::Picture::default();
+        pb.common.description = "동일".to_string();
+        let a = doc_with_control(crate::model::control::Control::Picture(Box::new(pa)));
+        let b = doc_with_control(crate::model::control::Control::Picture(Box::new(pb)));
+        assert!(diff_documents(&a, &b).is_empty());
     }
 }

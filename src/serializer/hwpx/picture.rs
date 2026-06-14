@@ -96,10 +96,12 @@ pub fn write_picture<W: Write>(
     write_sz(w, &pic.common)?;
     write_pos(w, &pic.common)?;
     write_out_margin(w, &pic.common)?;
-    // 캡션 (#1403) — 한컴 실물(aift.hwpx) 자식 순서: outMargin 뒤, 마지막 자식
+    // 캡션 (#1403) — 한컴 실물(aift.hwpx) 자식 순서: outMargin 뒤
     if let Some(cap) = &pic.caption {
         write_caption(w, cap, ctx)?;
     }
+    // 설명 (#1392) — caption 직후 (aift 실물 공존 9건 전수 caption→shapeComment 순서)
+    super::shape::write_shape_comment(w, &pic.common)?;
 
     end_tag(w, "hp:pic")?;
     Ok(())
@@ -514,6 +516,37 @@ mod tests {
         let mut w: Writer<Vec<u8>> = Writer::new(Vec::new());
         write_picture(&mut w, pic, ctx).expect("write_picture");
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn task1392_pic_shape_comment_emitted_after_caption() {
+        let doc = make_doc_with_bin(1, "png");
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let mut pic = make_picture(1);
+        pic.common.description = "그림입니다.".to_string();
+        let mut para = crate::model::paragraph::Paragraph::default();
+        para.text = "캡션".to_string();
+        let mut cap = crate::model::shape::Caption::default();
+        cap.paragraphs.push(para);
+        pic.caption = Some(cap);
+        let xml = serialize(&pic, &mut ctx);
+        assert!(
+            xml.contains("<hp:shapeComment>그림입니다.</hp:shapeComment>"),
+            "shapeComment 방출: {xml}"
+        );
+        // 순서: caption → shapeComment (aift 실물)
+        let cp = xml.find("<hp:caption").unwrap();
+        let sc = xml.find("<hp:shapeComment").unwrap();
+        assert!(cp < sc, "caption 이 shapeComment 보다 먼저");
+    }
+
+    #[test]
+    fn task1392_pic_no_description_omits_comment() {
+        let doc = make_doc_with_bin(1, "png");
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let pic = make_picture(1); // description 빈 문자열
+        let xml = serialize(&pic, &mut ctx);
+        assert!(!xml.contains("<hp:shapeComment"), "빈 설명은 미방출: {xml}");
     }
 
     #[test]

@@ -210,11 +210,14 @@ pub fn write_container_open<W: Write>(
 pub fn write_container_close<W: Write>(
     w: &mut Writer<W>,
     caption: Option<&crate::model::shape::Caption>,
+    common: &CommonObjAttr,
     ctx: &mut SerializeContext,
 ) -> Result<(), SerializeError> {
     if let Some(cap) = caption {
         write_caption(w, cap, ctx)?;
     }
+    // 설명 (#1392) — caption 직후
+    write_shape_comment(w, common)?;
     end_tag(w, "hp:container")
 }
 
@@ -709,7 +712,10 @@ fn write_rect_pts<W: Write>(
     Ok(())
 }
 
-fn write_shape_comment<W: Write>(
+/// `<hp:shapeComment>` 직렬화 — 도형(rect)·그림(#1392)·수식(#1392)·묶음(#1392) 공유.
+///
+/// 빈 description 은 미방출 (한컴 원본도 설명 부재 시 요소 없음).
+pub(super) fn write_shape_comment<W: Write>(
     w: &mut Writer<W>,
     c: &CommonObjAttr,
 ) -> Result<(), SerializeError> {

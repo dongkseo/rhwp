@@ -1036,8 +1036,10 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> String {
             xml.push_str(&render_shape(child, ctx));
         }
         // 캡션 (#1403) 은 자식 도형 뒤에 방출 — 한컴 실물(aift.hwpx) 순서
-        match writer_to_string(|w| super::shape::write_container_close(w, g.caption.as_ref(), ctx))
-        {
+        // 설명(#1392)은 캡션 직후 (write_container_close 내부)
+        match writer_to_string(|w| {
+            super::shape::write_container_close(w, g.caption.as_ref(), &g.common, ctx)
+        }) {
             Ok(close) => xml.push_str(&close),
             Err(e) => eprintln!("[hwpx] Shape::Group 닫기 실패: {e}"),
         }
@@ -1160,8 +1162,18 @@ fn render_equation(eq: &Equation) -> String {
     let margin_top = c.margin.top.to_string();
     let margin_bottom = c.margin.bottom.to_string();
 
+    // 설명 (#1392) — outMargin 직후, 빈 description 은 미방출
+    let shape_comment = if c.description.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<hp:shapeComment>{}</hp:shapeComment>",
+            xml_escape(&c.description)
+        )
+    };
+
     format!(
-        r#"<hp:equation id="{id}" zOrder="{z_order}" numberingType="EQUATION" textWrap="{}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" instid="{id}" version="{version}" baseLine="{baseline}" textColor="{text_color}" baseUnit="{base_unit}" font="{font}"><hp:script>{script}</hp:script><hp:sz width="{width}" widthRelTo="ABSOLUTE" height="{height}" heightRelTo="ABSOLUTE"/><hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{}" horzRelTo="{}" vertAlign="{}" horzAlign="{}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{margin_left}" right="{margin_right}" top="{margin_top}" bottom="{margin_bottom}"/></hp:equation>"#,
+        r#"<hp:equation id="{id}" zOrder="{z_order}" numberingType="EQUATION" textWrap="{}" textFlow="BOTH_SIDES" lock="0" dropcapstyle="None" instid="{id}" version="{version}" baseLine="{baseline}" textColor="{text_color}" baseUnit="{base_unit}" font="{font}"><hp:script>{script}</hp:script><hp:sz width="{width}" widthRelTo="ABSOLUTE" height="{height}" heightRelTo="ABSOLUTE"/><hp:pos treatAsChar="{treat}" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="{}" horzRelTo="{}" vertAlign="{}" horzAlign="{}" vertOffset="{vert_offset}" horzOffset="{horz_offset}"/><hp:outMargin left="{margin_left}" right="{margin_right}" top="{margin_top}" bottom="{margin_bottom}"/>{shape_comment}</hp:equation>"#,
         text_wrap_to_hwpx(c.text_wrap),
         vert_rel_to_hwpx(c.vert_rel_to),
         horz_rel_to_hwpx(c.horz_rel_to),

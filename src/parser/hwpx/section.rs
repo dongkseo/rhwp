@@ -3719,6 +3719,10 @@ fn parse_container(
             Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"caption" => {
                 caption = Some(parse_table_caption(ce, reader)?);
             }
+            // 묶음 개체 설명 (#1392) — 미적재 시 roundtrip 에서 소실
+            Ok(Event::Start(ref ce)) if local_name(ce.name().as_ref()) == b"shapeComment" => {
+                common.description = read_dutmal_text(reader, b"shapeComment")?;
+            }
             Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
                 let cname = ce.name();
                 let local = local_name(cname.as_ref());
@@ -4874,6 +4878,10 @@ fn parse_equation(
                     }
                     b"script" => {
                         in_script = true;
+                    }
+                    // 수식 설명 (#1392) — 미적재 시 roundtrip 에서 소실
+                    b"shapeComment" => {
+                        common.description = read_dutmal_text(reader, b"shapeComment")?;
                     }
                     _ => {}
                 }
