@@ -18,6 +18,8 @@
   Rust/WASM API를 추가했다.
 - HWPX 직렬화에서 새로 생성한 ClickHere `Field.command`를 `hp:parameters`로 저장해
   HWPX 재파싱 시 안내문/메모가 보존되도록 했다.
+- 누름틀 입력/고치기 대화상자는 바깥 클릭으로 닫히지 않게 했고, 누름틀 삽입 직후에는
+  한컴처럼 안내문이 표시되도록 active field를 즉시 잡지 않게 했다.
 
 ## 2. 검증
 

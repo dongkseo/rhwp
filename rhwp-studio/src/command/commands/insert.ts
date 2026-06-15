@@ -160,7 +160,9 @@ export const insertCommands: CommandDef[] = [
             props.editable,
           );
           if (result.ok) {
-            ih.triggerAfterEdit();
+            services.wasm.clearActiveField();
+            services.eventBus.emit('document-mutated', 'insert-field');
+            services.eventBus.emit('document-changed');
           }
         } catch (err) {
           console.warn('[insert:field] 누름틀 삽입 실패:', err);
