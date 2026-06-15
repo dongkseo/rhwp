@@ -1306,14 +1306,9 @@ fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), 
 ///
 /// 원본 char_offsets에서 컨트롤 배치 패턴을 보존하면서,
 /// 텍스트 길이 변경(필드 값 삽입)에 맞게 오프셋을 재계산한다.
-fn rebuild_char_offsets(para: &mut Paragraph) {
+pub(crate) fn rebuild_char_offsets(para: &mut Paragraph) {
     let text_chars: Vec<char> = para.text.chars().collect();
     let text_len = text_chars.len();
-
-    if text_len == 0 {
-        para.char_offsets = Vec::new();
-        return;
-    }
 
     // 원본 char_offsets에서 첫 문자 이전 컨트롤 수 추정
     // (원본 gap / 8 = 컨트롤 수)
@@ -1340,6 +1335,13 @@ fn rebuild_char_offsets(para: &mut Paragraph) {
         field_end_at[idx] += 1;
     }
 
+    if text_len == 0 {
+        para.char_offsets = Vec::new();
+        para.char_count =
+            ((ctrls_before_text + field_begin_at[0] + field_end_at[0]) * 8 + 1) as u32;
+        return;
+    }
+
     let mut offset: u32 = ctrls_before_text as u32 * 8;
     let mut new_offsets = Vec::with_capacity(text_len);
 
@@ -1362,6 +1364,10 @@ fn rebuild_char_offsets(para: &mut Paragraph) {
         offset += char_size;
     }
 
+    // 텍스트 뒤에 위치한 빈 필드/필드 끝 마커와 문단 끝 마커를 char_count에 반영한다.
+    offset += field_begin_at[text_len] as u32 * 8;
+    offset += field_end_at[text_len] as u32 * 8;
+    para.char_count = offset + 1;
     para.char_offsets = new_offsets;
 }
 

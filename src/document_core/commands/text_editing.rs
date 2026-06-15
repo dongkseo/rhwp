@@ -1,6 +1,7 @@
 //! 텍스트 삽입/삭제/문단 분리·병합/범위 삭제/문단 쿼리 관련 native 메서드
 
 use super::super::helpers::get_textbox_from_shape;
+use super::super::queries::field_query::rebuild_char_offsets;
 use crate::document_core::{ActiveFieldInfo, DocumentCore};
 use crate::error::HwpError;
 use crate::model::control::{Control, FieldType};
@@ -92,6 +93,15 @@ fn keep_inactive_field_end_outside(
     }
 }
 
+fn has_clickhere_field_range(para: &Paragraph) -> bool {
+    para.field_ranges.iter().any(|fr| {
+        matches!(
+            para.controls.get(fr.control_idx),
+            Some(Control::Field(field)) if field.field_type == FieldType::ClickHere
+        )
+    })
+}
+
 impl DocumentCore {
     pub fn insert_text_native(
         &mut self,
@@ -135,6 +145,9 @@ impl DocumentCore {
             let para = &mut self.document.sections[section_idx].paragraphs[para_idx];
             para.insert_text_at(char_offset, text);
             keep_inactive_field_end_outside(para, &outside_insertions, new_chars_count);
+            if has_clickhere_field_range(para) {
+                rebuild_char_offsets(para);
+            }
         }
 
         // line_segs 재계산 (리플로우) → vpos 재계산 → 재구성 → 재페이지네이션
@@ -390,6 +403,9 @@ impl DocumentCore {
         );
         cell_para.insert_text_at(char_offset, text);
         keep_inactive_field_end_outside(cell_para, &outside_insertions, new_chars_count);
+        if has_clickhere_field_range(cell_para) {
+            rebuild_char_offsets(cell_para);
+        }
 
         // 부모 컨트롤 dirty 마킹 (표 또는 글상자)
         self.mark_cell_control_dirty(section_idx, parent_para_idx, control_idx);
@@ -2394,6 +2410,9 @@ impl DocumentCore {
         );
         cell_para.insert_text_at(char_offset, text);
         keep_inactive_field_end_outside(cell_para, &outside_insertions, new_chars_count);
+        if has_clickhere_field_range(cell_para) {
+            rebuild_char_offsets(cell_para);
+        }
 
         // 최외곽 표 dirty 마킹
         let outer_ctrl = path[0].0;

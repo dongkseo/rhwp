@@ -592,6 +592,7 @@ impl DocumentCore {
             node: &RenderNode,
             sec: usize,
             para: usize,
+            render_para: Option<&Paragraph>,
             offset: usize,
             page_index: u32,
             exact_only: bool,
@@ -632,48 +633,86 @@ impl DocumentCore {
                         // 커서가 이 TextRun 범위 안에 있는지 확인
                         // char_start <= offset <= char_start + char_count
                         if offset >= char_start && offset <= char_start + char_count {
-                            let empty_list_anchor = is_list_para
-                                && char_count == 0
-                                && offset == char_start
-                                && text_run.text.is_empty();
-                            // exact_only 모드: zero-width 앵커(bbox.width==0)만 허용
-                            if empty_list_anchor {
-                                // 빈 번호/글머리표 문단의 body anchor 는 marker 앞쪽 x 에
-                                // 놓일 수 있으므로 fallback 에서 marker 오른쪽 끝으로 보정한다.
-                            } else if exact_only
-                                && !(char_count == 0
-                                    && offset == char_start
-                                    && node.bbox.width == 0.0)
+                            if node.bbox.width <= f64::EPSILON
+                                && !text_run.text.is_empty()
+                                && text_run.text.chars().all(|ch| ch == '\u{fffc}')
                             {
-                                // skip: 이 TextRun은 경계 매칭일 뿐 정확한 앵커가 아님
+                                if let Some(render_para) = render_para {
+                                    let visible: String = render_para
+                                        .text
+                                        .chars()
+                                        .skip(char_start)
+                                        .take(char_count)
+                                        .collect();
+                                    if !visible.is_empty()
+                                        && visible.chars().any(|ch| ch != '\u{fffc}')
+                                    {
+                                        let positions =
+                                            compute_char_positions(&visible, &text_run.style);
+                                        let local_offset = offset - char_start;
+                                        let x_in_run = if local_offset < positions.len() {
+                                            positions[local_offset]
+                                        } else if !positions.is_empty() {
+                                            *positions.last().unwrap()
+                                        } else {
+                                            0.0
+                                        };
+                                        let font_size = text_run.style.font_size;
+                                        let ascent = font_size * 0.8;
+                                        let caret_y = node.bbox.y + text_run.baseline - ascent;
+                                        return Some(CursorHit {
+                                            page_index,
+                                            x: node.bbox.x + x_in_run,
+                                            y: caret_y,
+                                            height: font_size,
+                                        });
+                                    }
+                                }
+                                // 실제 문단 텍스트로 복원할 수 없는 placeholder는 cursor hit에서 제외한다.
                             } else {
-                                let local_offset = offset - char_start;
-                                // PUA 다자리 글자겹침: 커서 위치는 [0.0, bbox.width]
-                                let positions =
-                                    if text_run.char_overlap.is_some() && char_count == 1 {
-                                        vec![0.0, node.bbox.width]
-                                    } else {
-                                        compute_char_positions(&text_run.text, &text_run.style)
-                                    };
-                                let x_in_run = if local_offset < positions.len() {
-                                    positions[local_offset]
-                                } else if !positions.is_empty() {
-                                    *positions.last().unwrap()
+                                let empty_list_anchor = is_list_para
+                                    && char_count == 0
+                                    && offset == char_start
+                                    && text_run.text.is_empty();
+                                // exact_only 모드: zero-width 앵커(bbox.width==0)만 허용
+                                if empty_list_anchor {
+                                    // 빈 번호/글머리표 문단의 body anchor 는 marker 앞쪽 x 에
+                                    // 놓일 수 있으므로 fallback 에서 marker 오른쪽 끝으로 보정한다.
+                                } else if exact_only
+                                    && !(char_count == 0
+                                        && offset == char_start
+                                        && node.bbox.width == 0.0)
+                                {
+                                    // skip: 이 TextRun은 경계 매칭일 뿐 정확한 앵커가 아님
                                 } else {
-                                    0.0
-                                };
-                                // 베이스라인 기반 캐럿 y 계산:
-                                // 같은 줄에 서로 다른 글꼴 크기가 혼재할 때
-                                // 각 글자의 ascent 위치에서 캐럿이 시작되어야 함
-                                let font_size = text_run.style.font_size;
-                                let ascent = font_size * 0.8;
-                                let caret_y = node.bbox.y + text_run.baseline - ascent;
-                                return Some(CursorHit {
-                                    page_index,
-                                    x: node.bbox.x + x_in_run,
-                                    y: caret_y,
-                                    height: font_size,
-                                });
+                                    let local_offset = offset - char_start;
+                                    // PUA 다자리 글자겹침: 커서 위치는 [0.0, bbox.width]
+                                    let positions =
+                                        if text_run.char_overlap.is_some() && char_count == 1 {
+                                            vec![0.0, node.bbox.width]
+                                        } else {
+                                            compute_char_positions(&text_run.text, &text_run.style)
+                                        };
+                                    let x_in_run = if local_offset < positions.len() {
+                                        positions[local_offset]
+                                    } else if !positions.is_empty() {
+                                        *positions.last().unwrap()
+                                    } else {
+                                        0.0
+                                    };
+                                    // 베이스라인 기반 캐럿 y 계산:
+                                    // 같은 줄에 서로 다른 글꼴 크기가 혼재할 때
+                                    // 각 글자의 ascent 위치에서 캐럿이 시작되어야 함
+                                    let font_size = text_run.style.font_size;
+                                    let ascent = font_size * 0.8;
+                                    let caret_y = node.bbox.y + text_run.baseline - ascent;
+                                    return Some(CursorHit {
+                                        page_index,
+                                        x: node.bbox.x + x_in_run,
+                                        y: caret_y,
+                                        height: font_size,
+                                    });
+                                }
                             }
                         }
                     }
@@ -716,6 +755,7 @@ impl DocumentCore {
                     child,
                     sec,
                     para,
+                    render_para,
                     offset,
                     page_index,
                     exact_only,
@@ -749,10 +789,12 @@ impl DocumentCore {
                     }
                 }
             }
+            let render_para_for_cursor = self.get_render_paragraph_ref(section_idx, para_idx).ok();
             let exact_hit = find_cursor_in_node(
                 &tree.root,
                 section_idx,
                 para_idx,
+                render_para_for_cursor,
                 char_offset,
                 page_num,
                 true,
@@ -764,6 +806,7 @@ impl DocumentCore {
                     &tree.root,
                     section_idx,
                     para_idx,
+                    render_para_for_cursor,
                     char_offset,
                     page_num,
                     false,

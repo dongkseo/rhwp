@@ -5,6 +5,7 @@ use std::path::Path;
 
 use rhwp::document_core::DocumentCore;
 use rhwp::model::control::FieldType;
+use serde_json::Value;
 
 fn make_doc_with_inserted_clickhere() -> DocumentCore {
     let mut core = DocumentCore::new_empty();
@@ -180,6 +181,55 @@ fn clickhere_end_boundary_insert_respects_active_field_state() {
     assert_eq!((range.start_char_idx, range.end_char_idx), (1, 3));
     assert_eq!(field.value, "값1");
     assert_eq!(para.text, "A값1밖BC");
+}
+
+#[test]
+fn first_input_into_empty_clickhere_is_rendered() {
+    let mut core = DocumentCore::new_empty();
+    core.create_blank_document_native()
+        .expect("create blank document");
+    core.insert_click_here_field_at(0, 0, 0, "입력하세요", "", "name", true)
+        .expect("insert empty clickhere");
+
+    assert!(
+        core.set_active_field(0, 0, 0),
+        "guide click should activate empty clickhere"
+    );
+    core.insert_text_native(0, 0, 0, "123")
+        .expect("first input should fill empty clickhere");
+
+    let fields = core.collect_all_fields();
+    let field = fields
+        .iter()
+        .find(|f| f.field.field_type == FieldType::ClickHere)
+        .expect("clickhere field");
+    assert_eq!(field.value, "123");
+
+    let svg = core.render_page_svg_native(0).expect("render page 1");
+    assert!(
+        svg.contains(">1<") && svg.contains(">2<") && svg.contains(">3<"),
+        "first clickhere input should be visible in render svg: {}",
+        svg
+    );
+
+    let start_rect: Value = serde_json::from_str(
+        &core
+            .get_cursor_rect_native(0, 0, 0)
+            .expect("cursor rect at field start"),
+    )
+    .expect("parse start cursor rect");
+    let end_rect: Value = serde_json::from_str(
+        &core
+            .get_cursor_rect_native(0, 0, 3)
+            .expect("cursor rect at field end"),
+    )
+    .expect("parse end cursor rect");
+    let start_x = start_rect["x"].as_f64().expect("start x");
+    let end_x = end_rect["x"].as_f64().expect("end x");
+    assert!(
+        end_x > start_x,
+        "field end cursor should move after first input: start={start_rect}, end={end_rect}"
+    );
 }
 
 #[test]

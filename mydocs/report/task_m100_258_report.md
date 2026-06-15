@@ -26,6 +26,8 @@
   바로 `123` 같은 값을 입력할 수 있게 했다.
 - 빈 누름틀 첫 입력 직후 active field와 마커를 새 field value 기준으로 다시 계산해,
   Enter 같은 추가 편집 없이도 입력값과 누름틀 마커가 즉시 표시되도록 보정했다.
+- 빈 누름틀 첫 입력 뒤 `getCursorRect()`가 0폭 placeholder가 아니라 실제 입력값 기준
+  caret x를 반환하도록 해 field end 마커가 입력값 끝을 따라가게 했다.
 
 ## 2. 검증
 
@@ -55,6 +57,17 @@ Stage10 추가 검증:
 - 루트 `npm run build`는 스크립트가 없어 실행 불가 확인
 - `cd rhwp-studio && npm run build`
 - `git diff --check`
+
+Stage11 추가 검증:
+
+- `cargo test --test issue_258_clickhere_form_mode first_input_into_empty_clickhere_is_rendered -- --nocapture`
+- `cargo test --test issue_258_clickhere_form_mode`
+- `cargo test --lib rebuild_`
+- `cargo fmt --check`
+- `git diff --check`
+- `wasm-pack build --target web --out-dir pkg`
+- `http://localhost:7700/` Playwright 검증 통과
+  (`value=123`, field range `0..3`, cursor x `113.4→135.4`, `「123」` 표시)
 
 ## 3. 남은 후속
 
