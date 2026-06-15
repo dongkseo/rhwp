@@ -2084,7 +2084,7 @@ impl LayoutEngine {
                             section_index,
                             cp_idx,
                             cell_context.clone(),
-                            false,
+                            !use_top_vpos_anchor,
                             is_last_para,
                             0.0,
                             None,

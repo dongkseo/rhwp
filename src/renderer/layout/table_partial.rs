@@ -881,7 +881,7 @@ impl LayoutEngine {
                         section_index,
                         cp_idx,
                         Some(cell_context.clone()),
-                        false,
+                        !matches!(effective_align, VerticalAlign::Top),
                         is_last_para,
                         0.0,
                         None,

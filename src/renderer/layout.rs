@@ -5507,7 +5507,34 @@ impl LayoutEngine {
                 y_offset = global_y_before.max(lanes.max_bottom());
             }
             if tac_seg_applied {
-                if let Some(seg) = para.line_segs.get(control_index) {
+                // [hwpdf cycle#3 — 폴백 한정] control_index 는 컨트롤 배열 인덱스지 줄
+                // 인덱스가 아니다. 표 앞 비가시 컨트롤(SectionDef/ColumnDef/책갈피 등)은
+                // 줄 seg 를 만들지 않아 get(control_index)=None 이 되며, 이때는 표가 곧
+                // 호스트 줄이므로 마지막(=유일) seg 의 줄간격을 적용해야 후속 본문이
+                // 위로 당겨지지 않는다.
+                //
+                // 단, 표 앞에 가시 개체(그림/그리기/표)가 있으면 그 개체들은 별도
+                // 경로로 배치되고 다음 문단 위치가 파일 lineseg(vpos=lh+sp 포함)로 이미
+                // 확정되므로, 여기서 줄간격을 다시 더하면 이중 적용된다(test_521: 이메일
+                // 박스 TAC 표 앞 그림 2개 → 한컴 간격은 호스트 줄간격 제외, gap≈20px).
+                // → 폴백은 표 앞 컨트롤이 전부 비가시일 때로 한정한다.
+                let only_invisible_before_tac = para.controls
+                    [..control_index.min(para.controls.len())]
+                    .iter()
+                    .all(|c| {
+                        !matches!(
+                            c,
+                            Control::Table(_) | Control::Picture(_) | Control::Shape(_)
+                        )
+                    });
+                let host_seg = para.line_segs.get(control_index).or_else(|| {
+                    if only_invisible_before_tac {
+                        para.line_segs.last()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(seg) = host_seg {
                     if seg.line_spacing > 0 {
                         y_offset += hwpunit_to_px(seg.line_spacing, self.dpi);
                     } else if seg.line_spacing < 0 {
