@@ -95,28 +95,42 @@
   height: 22px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
   padding: 0 4px;
   font-size: var(--font-size-sm);
   text-align: right;
   outline: none;
+  box-sizing: border-box;
 }
 
 .dialog-input:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-focus-border);
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
+}
+
+.dialog-input:read-only {
+  background: var(--ui-surface-muted);
+  color: var(--color-text-secondary);
 }
 
 .dialog-select {
   height: 22px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  color-scheme: inherit;
   padding: 0 4px;
   font-size: var(--font-size-sm);
   outline: none;
-  background: var(--color-surface);
 }
 
 .dialog-select:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-focus-border);
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
 }
 
 .dialog-unit {
@@ -140,6 +154,7 @@
 
 .dialog-radio-group input[type="radio"] {
   margin: 0;
+  accent-color: var(--color-primary);
 }
 
 .dialog-footer {
@@ -155,6 +170,8 @@
   border: 1px solid var(--color-border-dark);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-text);
+  color-scheme: inherit;
   font-size: var(--font-size-base);
   cursor: pointer;
   padding: 0 12px;
@@ -403,6 +420,7 @@
 
 .dialog-checkbox input[type="checkbox"] {
   margin: 0;
+  accent-color: var(--color-primary);
 }
 
 /* 버튼 그룹 (세로정렬 등) */
@@ -416,6 +434,8 @@
   height: 26px;
   border: 1px solid var(--color-border);
   background: var(--color-surface);
+  color: var(--color-text);
+  color-scheme: inherit;
   cursor: pointer;
   font-size: var(--font-size-sm);
   padding: 0 6px;
@@ -456,6 +476,10 @@
   height: 22px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
   padding: 0 4px;
   font-size: var(--font-size-sm);
   outline: none;
@@ -463,7 +487,31 @@
 }
 
 .dialog-text-input:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-focus-border);
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
+}
+
+.dialog-text-input:read-only {
+  background: var(--ui-surface-muted);
+  color: var(--color-text-secondary);
+}
+
+.dialog-input:disabled,
+.dialog-select:disabled,
+.dialog-text-input:disabled,
+.dialog-btn:disabled,
+.dialog-btn-group button:disabled {
+  background: var(--ui-surface-muted);
+  border-color: var(--color-border-lighter);
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.dialog-btn:disabled:hover,
+.dialog-btn-group button:disabled:hover {
+  background: var(--ui-surface-muted);
+  border-color: var(--color-border-lighter);
 }
 
 /* 비활성 섹션/그룹 */
@@ -490,6 +538,8 @@
   border: 1px solid var(--color-border);
   border-radius: 3px;
   background: var(--color-accent-bg);
+  color: var(--color-text);
+  color-scheme: inherit;
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;
@@ -543,6 +593,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-text);
+  color-scheme: inherit;
   cursor: pointer;
   font-size: var(--font-size-base);
   line-height: 24px;
@@ -560,12 +612,17 @@
   padding: 4px 8px;
   border: 1px solid var(--color-border);
   border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
   font-size: var(--font-size-sm);
   box-sizing: border-box;
 }
 .eq-search-input:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-focus-border);
   outline: none;
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
 }
 .eq-search-results {
   position: absolute;
@@ -587,6 +644,7 @@
   padding: 4px 8px;
   border: none;
   background: none;
+  color: var(--color-text);
   cursor: pointer;
   font-size: var(--font-size-sm);
   text-align: left;
@@ -653,14 +711,19 @@
   padding: 6px 8px;
   border: 1px solid var(--color-border-dark);
   border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: var(--font-size-md);
   resize: vertical;
   box-sizing: border-box;
 }
 .eq-script:focus {
-  border-color: var(--color-primary);
+  border-color: var(--color-focus-border);
   outline: none;
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
 }
 .eq-autocomplete {
   position: absolute;
@@ -739,11 +802,15 @@
   border: 1px solid var(--color-border-dark);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
 }
 .field-edit-input:focus,
 .field-edit-textarea:focus {
   border-color: var(--color-focus-border);
   outline: none;
+  box-shadow: 0 0 0 2px var(--ui-focus-soft);
 }
 .field-edit-textarea {
   width: 100%;
@@ -753,6 +820,9 @@
   border: 1px solid var(--color-border-dark);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-text);
+  caret-color: var(--caret-color);
+  color-scheme: inherit;
   resize: vertical;
   font-family: inherit;
 }
@@ -814,9 +884,43 @@
 .formula-dialog-body { padding: 12px 16px; }
 .formula-row { display: flex; align-items: center; margin-bottom: 10px; gap: 8px; }
 .formula-row label { min-width: 90px; font-size: var(--font-size-md); color: var(--color-text); white-space: nowrap; }
-.formula-input { flex: 1; padding: 6px 8px; border: 1px solid var(--ui-border-light); border-radius: 3px; font-family: Consolas, monospace; font-size: var(--font-size-md); background: var(--color-surface); color: var(--color-text); }
+.formula-input { flex: 1; padding: 6px 8px; border: 1px solid var(--ui-border-light); border-radius: 3px; font-family: Consolas, monospace; font-size: var(--font-size-md); background: var(--color-surface); color: var(--color-text); caret-color: var(--caret-color); color-scheme: inherit; }
 .formula-input:focus { border-color: var(--color-focus-border); outline: none; box-shadow: 0 0 0 2px var(--ui-focus-soft); }
-.formula-select { flex: 1; padding: 5px 8px; border: 1px solid var(--ui-border-light); border-radius: 3px; font-size: var(--font-size-md); background: var(--color-surface); color: var(--color-text); }
+.formula-select { flex: 1; padding: 5px 8px; border: 1px solid var(--ui-border-light); border-radius: 3px; font-size: var(--font-size-md); background: var(--color-surface); color: var(--color-text); color-scheme: inherit; }
+
+.eq-search-input::placeholder,
+.eq-script::placeholder,
+.field-edit-input::placeholder,
+.field-edit-textarea::placeholder,
+.formula-input::placeholder,
+.dialog-input::placeholder,
+.dialog-text-input::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.eq-mode-btn:disabled,
+.eq-toolbar-btn:disabled,
+.eq-search-input:disabled,
+.eq-script:disabled,
+.field-edit-input:disabled,
+.field-edit-textarea:disabled,
+.formula-input:disabled,
+.formula-select:disabled {
+  background: var(--ui-surface-muted);
+  border-color: var(--color-border-lighter);
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.eq-search-input:read-only,
+.eq-script:read-only,
+.field-edit-input:read-only,
+.field-edit-textarea:read-only,
+.formula-input:read-only {
+  background: var(--ui-surface-muted);
+  color: var(--color-text-secondary);
+}
 
 /* 계산식 오류 표시 */
 .formula-error { margin-top: 8px; padding: 8px 12px; background: var(--ui-warning-bg); border: 1px solid var(--ui-warning-border); border-radius: 4px; color: var(--ui-warning-text); font-size: var(--font-size-base); }
