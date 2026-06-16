@@ -51,6 +51,7 @@
   --caret-color: #111111;
   --resize-handle: #3f78d8;
   --ui-align-icon-filter: none;
+  --ui-icon-sprite-url: url(/images/icon_small_ko.svg);
   --table-selection-fill: rgba(51, 122, 183, 0.25);
   --table-selection-stroke: #337ab7;
 
@@ -193,6 +194,7 @@
   --caret-color: #111111;
   --resize-handle: #8bb8ff;
   --ui-align-icon-filter: invert(1) brightness(1.6);
+  --ui-icon-sprite-url: url(/images/icon_small_ko_dark.svg);
   --table-selection-fill: rgba(139, 184, 255, 0.28);
   --table-selection-stroke: #8bb8ff;
 

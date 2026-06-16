@@ -81,7 +81,7 @@
   display: block;
   width: 16px;
   height: 16px;
-  background-image: url(/images/icon_small_ko.svg);
+  background-image: var(--ui-icon-sprite-url);
   background-repeat: no-repeat;
 }
 
