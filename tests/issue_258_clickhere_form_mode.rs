@@ -181,6 +181,59 @@ fn removing_clickhere_removes_field_text_and_control() {
 }
 
 #[test]
+fn copying_clickhere_preserves_field_control_after_structural_controls_are_stripped() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bytes = fs::read(repo_root.join("samples/누름틀-2024.hwp")).expect("read clickhere sample");
+    let mut core = DocumentCore::from_bytes(&bytes).expect("parse clickhere sample");
+
+    let before_fields = core.collect_all_fields();
+    let before_click_values: Vec<_> = before_fields
+        .iter()
+        .filter(|f| f.field.field_type == FieldType::ClickHere)
+        .map(|f| f.value.as_str())
+        .collect();
+    assert_eq!(before_click_values, vec!["11223344", "222212212"]);
+
+    core.copy_selection_native(0, 0, 0, 0, 8)
+        .expect("copy first clickhere selection");
+    assert_eq!(core.get_clipboard_text_native(), "11223344");
+    assert!(
+        !core.clipboard_has_control_native(),
+        "ClickHere text selection should use the text/field paste path"
+    );
+
+    core.paste_internal_native(0, 1, 9)
+        .expect("paste copied clickhere after second field");
+
+    let after_fields = core.collect_all_fields();
+    let after_click_values: Vec<_> = after_fields
+        .iter()
+        .filter(|f| f.field.field_type == FieldType::ClickHere)
+        .map(|f| f.value.as_str())
+        .collect();
+    assert_eq!(
+        after_click_values,
+        vec!["11223344", "222212212", "11223344"]
+    );
+
+    let pasted = after_fields
+        .iter()
+        .find(|f| {
+            f.field.field_type == FieldType::ClickHere
+                && f.location.para_index == 1
+                && f.value == "11223344"
+        })
+        .expect("pasted clickhere should be collected as a field");
+    let para = &core.document().sections[pasted.location.section_index].paragraphs
+        [pasted.location.para_index];
+    let range = &para.field_ranges[pasted.field_range_index];
+    assert!(matches!(
+        para.controls.get(range.control_idx),
+        Some(rhwp::model::control::Control::Field(_))
+    ));
+}
+
+#[test]
 fn clickhere_insert_api_creates_empty_editable_field() {
     let core = make_doc_with_inserted_clickhere();
 

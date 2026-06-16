@@ -36,6 +36,8 @@
   대응 `ctrl_data_records`, field range 내부 본문 텍스트까지 함께 제거하도록 고정했다.
 - 누름틀 삭제 후 커서가 삭제된 field 끝 offset에 남지 않고 삭제 전 field 시작 위치로
   돌아가도록 고정했다.
+- 누름틀 전체 선택 복사 시 구조 컨트롤 제거 후 `FieldRange.control_idx`와
+  `ctrl_data_records`가 어긋나 ClickHere 속성이 사라지던 문제를 보정했다.
 
 ## 2. 검증
 
@@ -128,6 +130,13 @@ Stage16 추가 검증:
   - 원인: `Paragraph.char_count`는 문단 끝 마커 포함 기준인데 테스트 기대값이 텍스트 길이만 반영
   - 수정 후 `cargo test --release --lib set_cell_field_text_updates_text_metadata`: 통과
   - 수정 후 `cargo test --release --lib`: 통과
+
+Stage17 추가 검증:
+
+- `cargo fmt`
+- `git diff --check`
+- `cargo test --test issue_258_clickhere_form_mode copying_clickhere_preserves_field_control_after_structural_controls_are_stripped -- --nocapture`
+- `cargo test --test issue_258_clickhere_form_mode`
 
 ## 3. 남은 후속
 

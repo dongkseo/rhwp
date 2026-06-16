@@ -14,6 +14,75 @@ use crate::model::paragraph::{LineSeg, Paragraph};
 /// 약 2mm (1mm = 7200/25.4 ≈ 283.46 HWPUNIT). 한컴 정합은 작업지시자 시각 대조로 미세조정.
 const PASTE_CASCADE_STEP_HU: u32 = 567;
 
+fn clipboard_control_char_code(ctrl: &Control) -> u16 {
+    match ctrl {
+        Control::SectionDef(_) | Control::ColumnDef(_) => 0x0002,
+        Control::Field(_) => 0x0003,
+        Control::Table(_)
+        | Control::Shape(_)
+        | Control::Picture(_)
+        | Control::Hyperlink(_)
+        | Control::Ruby(_)
+        | Control::Equation(_)
+        | Control::Form(_)
+        | Control::Unknown(_) => 0x000B,
+        Control::HiddenComment(_) => 0x000F,
+        Control::Header(_) | Control::Footer(_) => 0x0010,
+        Control::Footnote(_) | Control::Endnote(_) => 0x0011,
+        Control::AutoNumber(_) | Control::NewNumber(_) => 0x0012,
+        Control::PageNumberPos(_) | Control::PageHide(_) => 0x0015,
+        Control::Bookmark(_) => 0x0016,
+        Control::CharOverlap(_) => 0x0017,
+    }
+}
+
+fn recompute_clipboard_control_mask(para: &Paragraph) -> u32 {
+    let mut mask = 0u32;
+    for ctrl in &para.controls {
+        mask |= 1u32 << clipboard_control_char_code(ctrl);
+    }
+    if !para.field_ranges.is_empty() {
+        mask |= 1u32 << 0x0004;
+    }
+    if para.text.contains('\t') {
+        mask |= 1u32 << 0x0009;
+    }
+    if para.text.contains('\n') {
+        mask |= 1u32 << 0x000A;
+    }
+    mask
+}
+
+fn strip_structural_controls_for_text_clipboard(para: &mut Paragraph) {
+    let old_controls = std::mem::take(&mut para.controls);
+    let old_records = std::mem::take(&mut para.ctrl_data_records);
+    let mut index_map = vec![None; old_controls.len()];
+    let mut new_controls = Vec::new();
+    let mut new_records = Vec::new();
+
+    for (old_idx, ctrl) in old_controls.into_iter().enumerate() {
+        if matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_)) {
+            continue;
+        }
+        index_map[old_idx] = Some(new_controls.len());
+        new_records.push(old_records.get(old_idx).cloned().flatten());
+        new_controls.push(ctrl);
+    }
+
+    para.field_ranges = para
+        .field_ranges
+        .drain(..)
+        .filter_map(|mut fr| {
+            let new_idx = index_map.get(fr.control_idx).and_then(|idx| *idx)?;
+            fr.control_idx = new_idx;
+            Some(fr)
+        })
+        .collect();
+    para.controls = new_controls;
+    para.ctrl_data_records = new_records;
+    para.control_mask = recompute_clipboard_control_mask(para);
+}
+
 impl DocumentCore {
     pub fn has_internal_clipboard_native(&self) -> bool {
         self.clipboard.is_some()
@@ -108,8 +177,7 @@ impl DocumentCore {
 
         // 구조적 컨트롤(SectionDef, ColumnDef 등) 제거 — 텍스트 복사에 불필요
         for para in &mut clip_paragraphs {
-            para.controls
-                .retain(|ctrl| !matches!(ctrl, Control::SectionDef(_) | Control::ColumnDef(_)));
+            strip_structural_controls_for_text_clipboard(para);
         }
 
         // 플레인 텍스트 추출
@@ -201,6 +269,10 @@ impl DocumentCore {
                 let _ = last.split_at(end_char_offset);
             }
             clip_paragraphs.push(last);
+        }
+
+        for para in &mut clip_paragraphs {
+            strip_structural_controls_for_text_clipboard(para);
         }
 
         let plain_text: String = clip_paragraphs
