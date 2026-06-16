@@ -100,12 +100,14 @@ target/debug/rhwp dump-pages samples/2026_oss_rst.hwp -p 0
 
 작업지시자 시각 확인 완료.
 
-## 6. 남은 사항
+## 6. 후속 기록
 
-구현, 로컬 검증, SVG 시각 판정, WASM 빌드는 완료했다.
+구현, 로컬 검증, SVG 시각 판정, WASM 빌드, `devel` 반영, 이슈 close를 완료했다.
 
-아직 남은 후속 절차:
+후속 기록:
 
-- 변경사항 커밋
-- 필요 시 `local/devel` 반영 및 `devel` push
-- Issue #1418 close
+- Task commit: `3964c7b5`
+- `local/devel` merge: `bcf90462`
+- `local/devel` → `devel` merge + push: `fbcf0c85`
+- Issue #1418 close: https://github.com/edwardkim/rhwp/issues/1418
+- Closed at: `2026-06-16T06:47:19Z`
