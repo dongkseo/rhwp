@@ -1766,11 +1766,16 @@ export class InputHandler {
     switch (desc.kind) {
       case 'command': {
         const beforePos = this.cursor.getPosition();
+        const keepFieldStartOutside = desc.command.type === 'insertText'
+          && this.isExitedFieldStartPosition(beforePos);
         const newPos = this.history.execute(desc.command, this.wasm);
         // 글자/문단 서식 변경은 문서 구조 불변 → 선택 영역 유지
         if (desc.command.type !== 'applyCharFormat' && desc.command.type !== 'applyParaFormat') {
           this.cursor.moveTo(newPos);
           this.cursor.resetPreferredX();
+        }
+        if (keepFieldStartOutside) {
+          this.markCurrentFieldStartOutside();
         }
         this.refreshAfterOperation(desc.meta?.refresh, 'auto', desc.command.type, beforePos, newPos);
         break;
@@ -2923,6 +2928,17 @@ export class InputHandler {
   isAtExitedFieldStart(pos: DocumentPosition, fi?: { fieldId?: number; startCharIdx?: number }): boolean {
     const start = fi?.startCharIdx ?? pos.charOffset;
     return this.fieldStartExitKey === this.fieldBoundaryKey(pos, fi?.fieldId, start);
+  }
+
+  private isExitedFieldStartPosition(pos: DocumentPosition): boolean {
+    try {
+      const fi = this.wasm.getFieldInfoAt(pos);
+      return fi.inField
+        && fi.fieldType === 'clickhere'
+        && this.isAtExitedFieldStart(pos, fi);
+    } catch {
+      return false;
+    }
   }
 
   isAtExitedFieldEnd(pos: DocumentPosition, fi?: { fieldId?: number; endCharIdx?: number }): boolean {

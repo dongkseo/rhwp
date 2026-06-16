@@ -167,6 +167,16 @@ Stage20 추가 검증:
 - Chrome 자동 검증은 현재 Codex 세션에서 Chrome 확장 백엔드가 노출되지 않아 보류
   - Chrome 실행/확장 설치/Native host manifest는 정상 확인
 
+Stage21 추가 검증:
+
+- `cargo test --test issue_258_clickhere_form_mode`
+- `cd rhwp-studio && npm run build`
+- `git diff --check`
+- `wasm-pack build --target web --out-dir pkg`
+- `http://localhost:7700/` Playwright 검증 통과
+  (`ArrowLeft` 후 `a`, `b` 입력 시 첫 문단 text `ab11223344`,
+  첫 field value `11223344`, field range `2..10`, 커서 `fieldStartExitKey` 유지)
+
 ## 3. 남은 후속
 
 - 사용자 정보, 문서 요약, 작성한 날짜, 파일 이름/경로 등 누름틀 외 필드 탭은 후속 이슈로 분리한다.
