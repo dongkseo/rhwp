@@ -12,6 +12,10 @@
 | 원 PR head | `b916a191` |
 | 처리 기준 | `local/devel` |
 | 통합 방식 | PR 커밋 5개 cherry-pick |
+| 리뷰/처리 문서 커밋 | `a3fc9be5` |
+| devel merge | `a60ea2ad` |
+| PR 처리 코멘트 | https://github.com/edwardkim/rhwp/pull/1416#issuecomment-4713571383 |
+| PR close | `2026-06-16T00:07:07Z` |
 | 처리 판정 | 수용 가능 |
 
 ## 2. 처리 내용
@@ -124,10 +128,10 @@ GitHub checks:
 
 ## 7. 후속 절차
 
-작업지시자 처리 보고서 승인 후:
+처리 완료:
 
-1. 리뷰/처리 보고서와 주문서 갱신 커밋
-2. `local/devel`을 `devel`에 no-ff merge
-3. `origin/devel` push
-4. PR #1416에 cherry-pick 반영 및 검증 결과 코멘트 작성
-5. PR #1416 close
+- [x] 리뷰/처리 보고서와 주문서 갱신 커밋 — `a3fc9be5`
+- [x] `local/devel`을 `devel`에 no-ff merge — `a60ea2ad`
+- [x] `origin/devel` push — `a60ea2ad`
+- [x] PR #1416에 cherry-pick 반영 및 검증 결과 코멘트 작성 — https://github.com/edwardkim/rhwp/pull/1416#issuecomment-4713571383
+- [x] PR #1416 close — `2026-06-16T00:07:07Z`
