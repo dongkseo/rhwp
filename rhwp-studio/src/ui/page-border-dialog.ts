@@ -16,6 +16,9 @@ function mmToHwp(value: number): number {
 
 type Side = 'Left' | 'Right' | 'Top' | 'Bottom';
 
+const DOC_PAPER_COLOR = 'var(--doc-paper)';
+const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
+
 interface TabDef {
   label: string;
   builder: () => HTMLElement;
@@ -155,7 +158,7 @@ export class PageBorderDialog extends ModalDialog {
     previewWrap.style.cssText = 'display:grid;grid-template-columns:28px 142px 28px;grid-template-rows:26px 112px 26px;gap:4px;align-items:center;justify-items:center;';
     this.previewSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this.previewSvg.setAttribute('viewBox', '0 0 142 112');
-    this.previewSvg.style.cssText = 'width:142px;height:112px;grid-column:2;grid-row:2;background:#fff;';
+    this.previewSvg.style.cssText = `width:142px;height:112px;grid-column:2;grid-row:2;background:${DOC_PAPER_COLOR};`;
     previewWrap.append(
       this.sideButton('위쪽', 'Top', '2', '1'),
       this.sideButton('왼쪽', 'Left', '1', '2'),
@@ -327,10 +330,10 @@ export class PageBorderDialog extends ModalDialog {
 
   private group(title: string): HTMLFieldSetElement {
     const fieldset = document.createElement('fieldset');
-    fieldset.style.cssText = 'border:1px solid #d8dce5;padding:10px 12px;margin:0;';
+    fieldset.style.cssText = 'border:1px solid var(--color-border-lighter);padding:10px 12px;margin:0;';
     const legend = document.createElement('legend');
     legend.textContent = title;
-    legend.style.cssText = 'font-size:12px;color:#45506a;padding:0 4px;';
+    legend.style.cssText = 'font-size:12px;color:var(--color-primary-dark);padding:0 4px;';
     fieldset.appendChild(legend);
     return fieldset;
   }
@@ -344,7 +347,7 @@ export class PageBorderDialog extends ModalDialog {
   private label(text: string): HTMLSpanElement {
     const label = document.createElement('span');
     label.textContent = text;
-    label.style.cssText = 'font-size:13px;min-width:42px;';
+    label.style.cssText = 'font-size:13px;min-width:42px;color:var(--color-text);';
     return label;
   }
 
@@ -357,7 +360,7 @@ export class PageBorderDialog extends ModalDialog {
 
   private checkboxRow(input: HTMLInputElement): HTMLLabelElement {
     const label = document.createElement('label');
-    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:12px;';
+    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:12px;color:var(--color-text);';
     label.append(input, document.createTextNode(input.dataset.label || ''));
     return label;
   }
@@ -373,7 +376,7 @@ export class PageBorderDialog extends ModalDialog {
 
   private radioRow(input: HTMLInputElement): HTMLLabelElement {
     const label = document.createElement('label');
-    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:14px;';
+    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:13px;margin-right:14px;color:var(--color-text);';
     label.append(input, document.createTextNode(input.dataset.label || ''));
     return label;
   }
@@ -422,6 +425,7 @@ export class PageBorderDialog extends ModalDialog {
     this.lineColorInput = document.createElement('input');
     this.lineColorInput.type = 'color';
     this.lineColorInput.value = '#000000';
+    this.lineColorInput.style.colorScheme = 'inherit';
     this.lineColorInput.addEventListener('change', () => {
       if (this.immediateCheck.checked) this.applyToSides(['Left', 'Right', 'Top', 'Bottom']);
     });
@@ -435,6 +439,7 @@ export class PageBorderDialog extends ModalDialog {
     input.max = '25';
     input.step = '0.1';
     input.value = String(value);
+    input.className = 'dialog-input';
     input.style.cssText = 'width:76px;padding:3px 5px;';
     return input;
   }
@@ -450,13 +455,8 @@ export class PageBorderDialog extends ModalDialog {
     button.type = 'button';
     button.title = text;
     button.textContent = side === 'All' ? '□' : '▦';
+    button.className = 'page-border-side-btn';
     button.style.cssText = [
-      'width:26px',
-      'height:24px',
-      'padding:0',
-      'border:1px solid #c7ccd8',
-      'background:#fff',
-      'font-size:12px',
       `grid-column:${column}`,
       `grid-row:${row}`,
     ].join(';');
@@ -494,6 +494,7 @@ export class PageBorderDialog extends ModalDialog {
     input.type = 'number';
     input.value = value;
     input.disabled = true;
+    input.className = 'dialog-input';
     input.style.cssText = 'width:74px;padding:3px 5px;';
     return input;
   }
@@ -503,7 +504,7 @@ export class PageBorderDialog extends ModalDialog {
     input.type = 'color';
     input.value = '#999999';
     input.disabled = true;
-    input.style.cssText = 'width:74px;height:24px;';
+    input.style.cssText = 'width:74px;height:24px;color-scheme:inherit;';
     return input;
   }
 
@@ -554,8 +555,8 @@ export class PageBorderDialog extends ModalDialog {
     bg.setAttribute('y', '8');
     bg.setAttribute('width', '118');
     bg.setAttribute('height', '96');
-    bg.setAttribute('fill', '#fff');
-    bg.setAttribute('stroke', '#c8c8c8');
+    bg.style.fill = DOC_PAPER_COLOR;
+    bg.style.stroke = PREVIEW_GUIDE_STROKE;
     this.previewSvg.appendChild(bg);
     if (this.borderNoneCheck.checked) return;
 
