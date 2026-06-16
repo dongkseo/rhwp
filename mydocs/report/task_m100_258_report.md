@@ -267,10 +267,19 @@ Stage28 추가 검증:
 - `cargo fmt --check`: 통과
 - `git diff --check`: 통과
 
+Stage29 추가 검증:
+
+- `Home`/`End`가 일반 본문 키 처리 switch 전에 `handleNavigationShortcut`에서 먼저 처리되어
+  누름틀 경계 밖 상태(`fieldStartExitKey`/`fieldEndExitKey`)가 설정되지 않던 문제를 보정
+- `executeNavigationAction`의 `lineStart`/`lineEnd` 경로에도 각각
+  `markCurrentFieldStartOutside`/`markCurrentFieldEndOutside`를 호출
+- 작업지시자 시각 검증 완료: 인접 누름틀에서 Home/End 후 누름틀 바깥 줄 시작/끝 이동 정상
+- `cd rhwp-studio && npm run build`: 통과
+- `git diff --check`: 통과
+
 ## 3. 남은 후속
 
 - 사용자 정보, 문서 요약, 작성한 날짜, 파일 이름/경로 등 누름틀 외 필드 탭은 후속 이슈로 분리한다.
 - 양식 개체 전체(Edit/CheckBox/RadioButton/ComboBox/PushButton)의 완전 상호작용은 기존
   FormObject 작업과 이어서 별도 처리한다.
-- Home/End 키가 누름틀 경계 밖 첫/끝 컬럼으로 이동하지 않는 문제는 Stage29에서 별도 보정한다.
 - PR 생성과 전체 CI급 검증은 작업지시자 별도 승인 후 진행한다.

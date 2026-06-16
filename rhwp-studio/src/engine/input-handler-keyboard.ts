@@ -108,9 +108,11 @@ function executeNavigationAction(this: any, action: NavigationAction, shiftKey: 
       break;
     case 'lineStart':
       this.cursor.moveToLineStart();
+      this.markCurrentFieldStartOutside?.();
       break;
     case 'lineEnd':
       this.cursor.moveToLineEnd();
+      this.markCurrentFieldEndOutside?.();
       break;
     case 'paragraphBackward':
       this.cursor.moveToParagraphBoundary(-1);
