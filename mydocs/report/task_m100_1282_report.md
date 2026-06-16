@@ -26,6 +26,44 @@ wasm-pack build --target web --out-dir pkg
 cd rhwp-studio && node e2e/table-picture-resize-1282.test.mjs --mode=headless
 ```
 
+## 시각 검증 자료
+
+`build-web-apps:frontend-testing-debugging` 기준으로 Browser plugin 경로를 먼저 시도했다.
+
+- Browser page identity: `http://localhost:7700/`, title `rhwp-studio`
+- 앱 chrome DOM: 파일/편집/입력/서식 메뉴 확인
+- console error/warn: 없음
+- Browser screenshot: `Page.captureScreenshot` timeout으로 headless Chrome/Puppeteer 캡처 경로로 fallback
+
+Headless Chrome 캡처:
+
+- 전체 before: `mydocs/report/assets/task_m100_1282_resize_before.png`
+- 전체 after: `mydocs/report/assets/task_m100_1282_resize_after.png`
+- before crop: `mydocs/report/assets/task_m100_1282_resize_before_crop.png`
+- after crop: `mydocs/report/assets/task_m100_1282_resize_after_crop.png`
+
+확인 수치:
+
+```text
+picture height: 18160 -> 18712
+owner cell height: 17476 -> 20367
+required owner cell height after resize: 20367
+```
+
+Before:
+
+![Task 1282 resize before](assets/task_m100_1282_resize_before_crop.png)
+
+After:
+
+![Task 1282 resize after](assets/task_m100_1282_resize_after_crop.png)
+
+판정:
+
+- 회전된 표 셀 picture의 드래그 리사이즈 전/후가 화면상으로 확인된다.
+- 리사이즈 후 owner cell height가 필요한 높이까지 증가했다.
+- 화면 bbox와 실제 그림이 분리되거나 picture가 사라지는 증상은 재현되지 않았다.
+
 ## 남은 사항
 
 - PR 준비 시 전체 로컬 필수 검증과 clippy는 별도로 수행해야 한다.
