@@ -189,6 +189,15 @@ Stage22 추가 검증:
   (`123` 입력 후 왼쪽 방향키 4회, `abc`, 오른쪽 방향키 1회:
   `abc`는 field 밖 prefix, 오른쪽 방향키 후 같은 `charOffset=3`에서 field 내부 시작으로 진입)
 
+Stage23 추가 검증:
+
+- `cd rhwp-studio && npm run build`
+- `git diff --check`
+- `http://localhost:7700/` Playwright 검증 통과
+  (`123` 입력 후 왼쪽 방향키 4회, `abc`, 오른쪽 방향키 1회:
+  본문 text `abc123`, field value `123`, field range `3..6`,
+  시작 낫표가 field 시작 경계 기준에 표시)
+
 ## 3. 남은 후속
 
 - 사용자 정보, 문서 요약, 작성한 날짜, 파일 이름/경로 등 누름틀 외 필드 탭은 후속 이슈로 분리한다.
