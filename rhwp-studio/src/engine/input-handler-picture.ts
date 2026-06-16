@@ -533,6 +533,15 @@ export function resizeSelectedPicture(this: any, key: ArrowKey): void {
 const PX_TO_HWP = 7200 / 96;
 // MIN_SIZE_HWP 는 picture-resize.ts 에서 import (드래그/키보드 리사이즈 공용 하한)
 
+function isCornerResizeDir(dir: string): boolean {
+  return dir === 'nw' || dir === 'ne' || dir === 'sw' || dir === 'se';
+}
+
+function isRotatedImageCornerResize(state: any, angleDeg: number): boolean {
+  const normalized = ((angleDeg % 360) + 360) % 360;
+  return state.ref?.type === 'image' && isCornerResizeDir(state.dir) && normalized !== 0;
+}
+
 /**
  * 회전각을 반영하여 리사이즈 후 새 bbox(비회전 기준)를 계산한다.
  * - 마우스 delta를 도형 로컬 좌표계로 역변환한다.
@@ -571,6 +580,16 @@ function calcResizedBboxRotated(
 
   // 최종 출력용 크기는 절대값 사용 (최소 크기는 아주 작게만 제한)
   const MIN = 1; 
+  if (isRotatedImageCornerResize(state, angleDeg)) {
+    const signX = dir.includes('e') ? 1 : -1;
+    const signY = dir.includes('s') ? 1 : -1;
+    const diagonal = Math.hypot(w0, h0) || 1;
+    const deltaAlongDiagonal = (signX * localDx * w0 + signY * localDy * h0) / diagonal;
+    const minScale = MIN / Math.max(w0, h0, MIN);
+    const scale = Math.max((diagonal + deltaAlongDiagonal) / diagonal, minScale);
+    valW = w0 * scale;
+    valH = h0 * scale;
+  }
   const newW = Math.max(Math.abs(valW), MIN);
   const newH = Math.max(Math.abs(valH), MIN);
 

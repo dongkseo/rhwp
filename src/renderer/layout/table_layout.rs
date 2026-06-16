@@ -2291,7 +2291,15 @@ impl LayoutEngine {
                                         pic.common.vert_rel_to,
                                         crate::model::shape::VertRelTo::Para
                                     ) {
-                                        para_y_before_compose
+                                        para.line_segs
+                                            .first()
+                                            .filter(|seg| seg.vertical_pos >= 0)
+                                            .map(|seg| {
+                                                cell_y
+                                                    + pad_top
+                                                    + hwpunit_to_px(seg.vertical_pos, self.dpi)
+                                            })
+                                            .unwrap_or(para_y_before_compose)
                                     } else {
                                         para_y
                                     };
@@ -2318,13 +2326,20 @@ impl LayoutEngine {
                                         width: pic_w,
                                         height: pic_h,
                                     };
+                                    let mut pic_for_layout = pic.clone();
+                                    pic_for_layout.common.horizontal_offset = 0;
+                                    pic_for_layout.common.vertical_offset = 0;
+                                    pic_for_layout.common.horz_align =
+                                        crate::model::shape::HorzAlign::Left;
+                                    pic_for_layout.common.vert_align =
+                                        crate::model::shape::VertAlign::Top;
                                     // [Task #1151 v4] 셀 안 non-inline picture (tac=false 자리차지 등):
                                     // outer paragraph idx + inner picture ctrl idx +
                                     // cell_ctx 전달.
                                     self.layout_picture(
                                         tree,
                                         &mut cell_node,
-                                        pic,
+                                        &pic_for_layout,
                                         &pic_area,
                                         bin_data_content,
                                         Alignment::Left,

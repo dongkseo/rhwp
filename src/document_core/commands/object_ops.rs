@@ -336,6 +336,8 @@ impl DocumentCore {
         } else {
             pic.common.width = cur_w;
             pic.common.height = cur_h;
+            pic.common.horizontal_offset = (old_center_x - (cur_w as i64 / 2)) as i32 as u32;
+            pic.common.vertical_offset = (old_center_y - (cur_h as i64 / 2)) as i32 as u32;
         }
 
         pic.shape_attr.rotation_center.x = (pic.common.width / 2) as i32;
@@ -887,13 +889,18 @@ impl DocumentCore {
         pic: &crate::model::image::Picture,
     ) -> u32 {
         let vert_offset = (pic.common.vertical_offset as i32).max(0) as u32;
+        let (_, visual_height) = Self::picture_rotated_bounds(
+            pic.common.width,
+            pic.common.height,
+            pic.shape_attr.rotation_angle,
+        );
         vert_offset
-            .saturating_add(pic.common.height)
+            .saturating_add(visual_height)
             .saturating_add(cell.padding.top as u32)
             .saturating_add(cell.padding.bottom as u32)
     }
 
-    fn grow_direct_owner_cell_for_picture(
+    fn sync_direct_owner_cell_for_picture(
         section: &mut crate::model::document::Section,
         parent_para_idx: usize,
         path: &[(usize, usize, usize)],
@@ -927,8 +934,9 @@ impl DocumentCore {
         };
 
         if let Some(cell) = table.cells.get_mut(cell_idx) {
-            if required_height > cell.height {
-                cell.height = required_height;
+            let synced_height = required_height.max(MIN_SHAPE_SIZE);
+            if cell.height != synced_height {
+                cell.height = synced_height;
                 table.update_ctrl_dimensions();
                 table.dirty = true;
             }
@@ -3549,7 +3557,7 @@ impl DocumentCore {
             Self::apply_picture_props_inner(pic, props_json);
         }
         let section = &mut self.document.sections[section_idx];
-        Self::grow_direct_owner_cell_for_picture(
+        Self::sync_direct_owner_cell_for_picture(
             section,
             parent_para_idx,
             &path,

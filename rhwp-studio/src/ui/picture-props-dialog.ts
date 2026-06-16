@@ -2053,7 +2053,7 @@ export class PicturePropsDialog {
 
       // 회전/대칭
       if (this.rotationInput && !this.rotationInput.disabled) {
-        const rot = (parseInt(this.rotationInput.value) || 0) * 100; // 도→raw
+        const rot = parseInt(this.rotationInput.value) || 0;
         if (rot !== (pp.rotationAngle ?? 0)) updated['rotationAngle'] = rot;
       }
       if (this.horzFlipCheck && !this.horzFlipCheck.disabled) {
@@ -2361,7 +2361,7 @@ export class PicturePropsDialog {
 
       // 기본 탭 — 회전/대칭 활성화
       if (this.rotationInput) {
-        this.rotationInput.value = String(Math.round((pp.rotationAngle ?? 0) / 100));
+        this.rotationInput.value = String(pp.rotationAngle ?? 0);
         this.rotationInput.disabled = false;
       }
       if (this.horzFlipCheck) {

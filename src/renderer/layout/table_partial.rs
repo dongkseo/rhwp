@@ -978,10 +978,30 @@ impl LayoutEngine {
                                     }
                                     inline_x += pic_w;
                                 } else {
-                                    // 비인라인 이미지: 기존 동작
+                                    // 비인라인 이미지: TopAndBottom+Para 는 row height 증가와
+                                    // 무관하게 LINE_SEG 기준 anchor 를 유지한다.
+                                    let anchor_y = if matches!(
+                                        pic.common.text_wrap,
+                                        crate::model::shape::TextWrap::TopAndBottom
+                                    ) && matches!(
+                                        pic.common.vert_rel_to,
+                                        crate::model::shape::VertRelTo::Para
+                                    ) {
+                                        para.line_segs
+                                            .first()
+                                            .filter(|seg| seg.vertical_pos >= 0)
+                                            .map(|seg| {
+                                                cell_y
+                                                    + pad_top
+                                                    + hwpunit_to_px(seg.vertical_pos, self.dpi)
+                                            })
+                                            .unwrap_or(para_y_before_compose)
+                                    } else {
+                                        para_y
+                                    };
                                     let pic_area = LayoutRect {
-                                        y: para_y,
-                                        height: (inner_area.height - (para_y - inner_area.y))
+                                        y: anchor_y,
+                                        height: (inner_area.height - (anchor_y - inner_area.y))
                                             .max(0.0),
                                         ..inner_area
                                     };

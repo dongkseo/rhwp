@@ -51,8 +51,21 @@ runTest('회전 표 셀 picture 리사이즈 드래그 안정성 (#1282)', async
       return found?.ctrl ?? null;
     };
     const centerOf = (bbox) => bbox ? { x: bbox.x + bbox.w / 2, y: bbox.y + bbox.h / 2 } : null;
+    const ratioOf = (props) => props?.height ? props.width / props.height : null;
+    const signed32 = (value) => {
+      const n = Number(value ?? 0);
+      return n > 0x7fffffff ? n - 0x100000000 : n;
+    };
     const requiredCellHeight = (cell, pic) =>
-      (pic.vertOffset ?? 0) + pic.height + cell.paddingTop + cell.paddingBottom;
+      Math.max(0, signed32(pic.vertOffset))
+      + (Math.abs(pic.rotationAngle ?? 0) % 360 === 0
+        ? pic.height
+        : Math.round(
+          pic.width * Math.abs(Math.sin((pic.rotationAngle ?? 0) * Math.PI / 180))
+          + pic.height * Math.abs(Math.cos((pic.rotationAngle ?? 0) * Math.PI / 180)),
+        ))
+      + cell.paddingTop
+      + cell.paddingBottom;
 
     const select = () => {
       cursor.enterPictureObjectSelectionDirect(
@@ -117,29 +130,100 @@ runTest('회전 표 셀 picture 리사이즈 드래그 안정성 (#1282)', async
     const afterBbox = getBbox();
     const afterCenter = centerOf(afterBbox);
     const midCenter = centerOf(drag.midBbox);
+    const rotationInputValue = await new Promise((resolve) => {
+      ih.dispatcher?.dispatch?.('insert:picture-props');
+      requestAnimationFrame(() => {
+        const rows = Array.from(document.querySelectorAll('.pp-dialog .dialog-row'));
+        const rotationRow = rows.find((row) => row.textContent?.includes('회전각'));
+        const rotation = rotationRow?.querySelector('input[type="number"]');
+        const value = rotation?.value ?? null;
+        document.querySelector('.pp-dialog .dialog-close')?.click();
+        resolve(value);
+      });
+    });
 
     ih.handleUndo();
     await nextFrame();
     const undoProps = getProps();
+    const undoCell = getCellProps();
+
+    wasm.setCellPicturePropertiesByPath(0, 0, cellPath, 0, {
+      width: afterProps.width,
+      height: afterProps.height,
+      rotationAngle: afterProps.rotationAngle,
+    });
+    window.__canvasView?.loadDocument?.();
+    await nextFrame();
+    select();
+    await nextFrame();
+    const directGrownCell = getCellProps();
+    const directGrownBbox = getBbox();
+    const directGrownCenter = centerOf(directGrownBbox);
+
+    wasm.setCellPicturePropertiesByPath(0, 0, cellPath, 0, {
+      rotationAngle: 0,
+    });
+    window.__canvasView?.loadDocument?.();
+    await nextFrame();
+    select();
+    await nextFrame();
+    const rotationOnlyProps = getProps();
+    const rotationOnlyCell = getCellProps();
+    const rotationOnlyBbox = getBbox();
+    const rotationOnlyCenter = centerOf(rotationOnlyBbox);
+
+    const shrinkHeight = Math.max(200, Math.round(beforeProps.height * 0.66));
+    wasm.setCellPicturePropertiesByPath(0, 0, cellPath, 0, {
+      width: beforeProps.width,
+      height: shrinkHeight,
+      rotationAngle: 0,
+    });
+    window.__canvasView?.loadDocument?.();
+    await nextFrame();
+    select();
+    await nextFrame();
+    const shrinkProps = getProps();
+    const shrinkCell = getCellProps();
+    const shrinkBbox = getBbox();
 
     return {
       stateCellPath: drag.stateCellPath,
       beforeProps,
       afterProps,
       undoProps,
+      rotationOnlyProps,
+      shrinkProps,
       beforeCell,
       afterCell,
+      undoCell,
+      directGrownCell,
+      rotationOnlyCell,
+      shrinkCell,
       requiredAfter: requiredCellHeight(afterCell, afterProps),
+      requiredUndo: requiredCellHeight(undoCell, undoProps),
+      requiredRotationOnly: requiredCellHeight(rotationOnlyCell, rotationOnlyProps),
+      requiredShrink: requiredCellHeight(shrinkCell, shrinkProps),
+      rotationInputValue,
+      beforeRatio: ratioOf(beforeProps),
+      afterRatio: ratioOf(afterProps),
       beforeBbox,
       afterBbox,
+      directGrownBbox,
+      rotationOnlyBbox,
       beforeCenter,
       midCenter,
       afterCenter,
+      directGrownCenter,
+      rotationOnlyCenter,
+      shrinkBbox,
       centerJumpAfter: beforeCenter && afterCenter
         ? Math.hypot(afterCenter.x - beforeCenter.x, afterCenter.y - beforeCenter.y)
         : null,
       centerJumpMid: beforeCenter && midCenter
         ? Math.hypot(midCenter.x - beforeCenter.x, midCenter.y - beforeCenter.y)
+        : null,
+      centerJumpRotationOnly: directGrownCenter && rotationOnlyCenter
+        ? Math.hypot(rotationOnlyCenter.x - directGrownCenter.x, rotationOnlyCenter.y - directGrownCenter.y)
         : null,
       pxToHwp: PX2HWP,
     };
@@ -152,18 +236,46 @@ runTest('회전 표 셀 picture 리사이즈 드래그 안정성 (#1282)', async
     `드래그 상태 cellPath 보존 실패: ${JSON.stringify(result.stateCellPath)}`);
   assert(result.afterProps.height > result.beforeProps.height,
     `picture height 증가 실패: ${result.beforeProps.height} → ${result.afterProps.height}`);
+  assert(result.afterProps.rotationAngle === result.beforeProps.rotationAngle,
+    `리사이즈 후 회전각 보존 실패: ${result.beforeProps.rotationAngle} → ${result.afterProps.rotationAngle}`);
+  assert(String(result.rotationInputValue) === String(result.afterProps.rotationAngle),
+    `속성창 회전각 표시 불일치: dialog=${result.rotationInputValue}, props=${result.afterProps.rotationAngle}`);
+  assert(result.beforeRatio != null && result.afterRatio != null && Math.abs(result.afterRatio - result.beforeRatio) < 0.02,
+    `회전 picture 코너 리사이즈 비율 보존 실패: ${result.beforeRatio} → ${result.afterRatio}`);
   assert(result.afterCell.height > result.beforeCell.height,
     `owner cell height 증가 실패: ${result.beforeCell.height} → ${result.afterCell.height}`);
   assert(result.afterCell.height >= result.requiredAfter,
     `owner cell height 부족: cell=${result.afterCell.height}, required=${result.requiredAfter}`);
   assert(result.afterBbox && result.afterBbox.h > result.beforeBbox.h,
     `표시 bbox 높이 증가 실패: ${result.beforeBbox?.h} → ${result.afterBbox?.h}`);
-  assert(result.centerJumpMid != null && result.centerJumpMid < 180,
+  assert(result.centerJumpMid != null && result.centerJumpMid < 60,
     `라이브 드래그 중 bbox 중심 과도 이동: ${result.centerJumpMid}`);
-  assert(result.centerJumpAfter != null && result.centerJumpAfter < 180,
+  assert(result.centerJumpAfter != null && result.centerJumpAfter < 60,
     `확정 후 bbox 중심 과도 이동: ${result.centerJumpAfter}`);
   assert(result.undoProps.height === result.beforeProps.height && result.undoProps.width === result.beforeProps.width,
     `Undo picture size 복구 실패: before=${result.beforeProps.width}x${result.beforeProps.height}, undo=${result.undoProps.width}x${result.undoProps.height}`);
+  assert(result.undoCell.height >= result.requiredUndo,
+    `Undo 후 owner cell height 부족: cell=${result.undoCell.height}, required=${result.requiredUndo}`);
+  assert(result.directGrownCell.height > result.undoCell.height,
+    `직접 재확대 owner cell height 증가 실패: undo=${result.undoCell.height}, grown=${result.directGrownCell.height}`);
+  assert(result.rotationOnlyProps.rotationAngle === 0,
+    `회전각 단독 변경 반영 실패: rotationAngle=${result.rotationOnlyProps.rotationAngle}`);
+  assert(result.rotationOnlyProps.width > 0 && result.rotationOnlyProps.height > 0,
+    `회전각 0도 단독 변경 후 picture size 비정상: ${result.rotationOnlyProps.width}x${result.rotationOnlyProps.height}`);
+  assert(result.centerJumpRotationOnly != null && result.centerJumpRotationOnly < 60,
+    `회전각 0도 단독 변경 후 bbox 중심 과도 이동: ${result.centerJumpRotationOnly}`);
+  assert(result.rotationOnlyCell.height < result.directGrownCell.height,
+    `회전각 0도 단독 변경 후 owner cell height 감소 실패: grown=${result.directGrownCell.height}, rotationOnly=${result.rotationOnlyCell.height}`);
+  assert(result.rotationOnlyCell.height >= result.requiredRotationOnly,
+    `회전각 0도 단독 변경 후 owner cell height 부족: cell=${result.rotationOnlyCell.height}, required=${result.requiredRotationOnly}`);
+  assert(result.shrinkProps.rotationAngle === 0,
+    `축소/회전 0도 반영 실패: rotationAngle=${result.shrinkProps.rotationAngle}`);
+  assert(result.shrinkCell.height < result.directGrownCell.height,
+    `축소/회전 0도 후 owner cell height 감소 실패: grown=${result.directGrownCell.height}, shrink=${result.shrinkCell.height}`);
+  assert(result.shrinkCell.height >= result.requiredShrink,
+    `축소/회전 0도 후 owner cell height 부족: cell=${result.shrinkCell.height}, required=${result.requiredShrink}`);
+  assert(result.shrinkBbox && result.shrinkBbox.h < result.afterBbox.h,
+    `축소/회전 0도 후 표시 bbox 높이 감소 실패: grown=${result.afterBbox?.h}, shrink=${result.shrinkBbox?.h}`);
 
-  console.log('✅ #1282 회전 표 셀 picture: 드래그 리사이즈 cellPath/셀높이/bbox 안정성 통과');
+  console.log('✅ #1282 회전 표 셀 picture: 드래그 리사이즈/축소 셀높이/bbox 안정성 통과');
 });
