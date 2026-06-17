@@ -492,12 +492,11 @@ export class PicturePropsDialog {
     const hPosRow = this.row();
     hPosRow.classList.add('pp-pos-detail');
     hPosRow.appendChild(this.label('가로(I):'));
-    // [Task #1151 v8 결함 B] Para 옵션 추가. horz_rel_to 의 valid 값은
-    // Paper/Page/Column/Para 4 개 (스펙 pack_common_attr_bits 의 horz_rel_to_to_bits).
-    // 이전: ['Paper', '종이'], ['Page', '쪽'], ['Column', '단'] 만 → picture.common.horz_rel_to
-    // = Para 시 select 매칭 실패 → "select 없음" 표시. 사용자 한컴 native 시연 시
-    // 글자처럼 해제 후 가로 기준이 "문단" 으로 표시되어야 정합 (한컴 동작).
+    // [Task #1282] 한컴은 자리차지(TopAndBottom) 그림의 가로 기준 칸에
+    // 실제 HorzRelTo 대신 "자리 차지"를 표시한다. 저장값은 textWrap 이므로
+    // OK 시에는 HorzRelTo 로 넘기지 않는다.
     this.horzRelSelect = this.selectEl([
+      ['TakePlace', '자리 차지'],
       ['Paper', '종이'], ['Page', '쪽'], ['Column', '단'], ['Para', '문단'],
     ]);
     hPosRow.appendChild(this.horzRelSelect);
@@ -538,12 +537,10 @@ export class PicturePropsDialog {
     optRow.classList.add('pp-pos-detail');
     const palLabel = this.checkboxLabel('쪽 영역 안으로 제한(B)');
     this.pageAreaLimitCheck = palLabel.querySelector('input') as HTMLInputElement;
-    this.pageAreaLimitCheck.disabled = true;
+    this.pageAreaLimitCheck.addEventListener('change', () => this.updateOverlapOption());
     optRow.appendChild(palLabel);
     const oaLabel = this.checkboxLabel('서로 겹침 허용(L)');
     this.overlapAllowCheck = oaLabel.querySelector('input') as HTMLInputElement;
-    this.overlapAllowCheck.checked = true;
-    this.overlapAllowCheck.disabled = true;
     optRow.appendChild(oaLabel);
     posFs.appendChild(optRow);
     this.posDetailEls.push(optRow);
@@ -1903,10 +1900,11 @@ export class PicturePropsDialog {
     if (tac !== this.props.treatAsChar) updated['treatAsChar'] = tac;
 
     if (!tac) {
-      const tw = this.getSelectedWrap();
-      if (tw !== this.props.textWrap) updated['textWrap'] = tw;
+      let tw = this.getSelectedWrap();
       const hr = this.horzRelSelect.value;
-      if (hr !== this.props.horzRelTo) updated['horzRelTo'] = hr;
+      if (hr === 'TakePlace') tw = 'TopAndBottom';
+      if (tw !== this.props.textWrap) updated['textWrap'] = tw;
+      if (hr !== 'TakePlace' && hr !== this.props.horzRelTo) updated['horzRelTo'] = hr;
       const ha = this.horzAlignSelect.value;
       if (ha !== this.props.horzAlign) updated['horzAlign'] = ha;
       const ho = mmToHwp(parseFloat(this.horzOffsetInput.value) || 0);
@@ -1917,6 +1915,14 @@ export class PicturePropsDialog {
       if (va !== this.props.vertAlign) updated['vertAlign'] = va;
       const vo = mmToHwp(parseFloat(this.vertOffsetInput.value) || 0);
       if (vo !== this.props.vertOffset) updated['vertOffset'] = vo;
+      const restrictInPage = this.pageAreaLimitCheck.checked;
+      if (restrictInPage !== (this.props.restrictInPage ?? true)) {
+        updated['restrictInPage'] = restrictInPage;
+      }
+      const allowOverlap = this.overlapAllowCheck.checked;
+      if (allowOverlap !== (this.props.allowOverlap ?? false)) {
+        updated['allowOverlap'] = allowOverlap;
+      }
     }
 
     // 기타
@@ -2053,7 +2059,7 @@ export class PicturePropsDialog {
 
       // 회전/대칭
       if (this.rotationInput && !this.rotationInput.disabled) {
-        const rot = (parseInt(this.rotationInput.value) || 0) * 100; // 도→raw
+        const rot = parseInt(this.rotationInput.value) || 0;
         if (rot !== (pp.rotationAngle ?? 0)) updated['rotationAngle'] = rot;
       }
       if (this.horzFlipCheck && !this.horzFlipCheck.disabled) {
@@ -2220,16 +2226,21 @@ export class PicturePropsDialog {
     this.heightInput.value = hwpToMm(this.props.height).toFixed(2);
     this.treatAsCharCheck.checked = this.props.treatAsChar;
     this.selectWrap(this.wrapValues.indexOf(this.props.textWrap));
-    this.horzRelSelect.value = this.props.horzRelTo;
+    this.horzRelSelect.value = this.props.textWrap === 'TopAndBottom'
+      ? 'TakePlace'
+      : this.props.horzRelTo;
     this.horzAlignSelect.value = this.props.horzAlign;
     this.horzOffsetInput.value = hwpToMm(this.props.horzOffset).toFixed(2);
     this.vertRelSelect.value = this.props.vertRelTo;
     this.vertAlignSelect.value = this.props.vertAlign;
     this.vertOffsetInput.value = hwpToMm(this.props.vertOffset).toFixed(2);
+    this.pageAreaLimitCheck.checked = this.props.restrictInPage ?? true;
+    this.overlapAllowCheck.checked = this.props.allowOverlap ?? false;
     this.descInput.value = this.props.description;
     this.skewHInput.value = '0';
     this.skewVInput.value = '0';
     this.updatePositionVisibility();
+    this.updateOverlapOption();
 
     // Shape/Line 전용 필드
     if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') && this.shapeProps) {
@@ -2361,7 +2372,7 @@ export class PicturePropsDialog {
 
       // 기본 탭 — 회전/대칭 활성화
       if (this.rotationInput) {
-        this.rotationInput.value = String(Math.round((pp.rotationAngle ?? 0) / 100));
+        this.rotationInput.value = String(pp.rotationAngle ?? 0);
         this.rotationInput.disabled = false;
       }
       if (this.horzFlipCheck) {
@@ -2452,10 +2463,26 @@ export class PicturePropsDialog {
     this.posDetailEls.forEach(el => {
       el.style.display = hidden ? 'none' : '';
     });
+    this.updateOverlapOption();
+  }
+
+  private updateOverlapOption(): void {
+    if (!this.overlapAllowCheck || !this.pageAreaLimitCheck) return;
+    const restricted = this.pageAreaLimitCheck.checked;
+    this.overlapAllowCheck.disabled = restricted || this.treatAsCharCheck.checked;
+    if (restricted) {
+      this.overlapAllowCheck.checked = false;
+    }
   }
 
   private selectWrap(idx: number): void {
     this.wrapBtns.forEach((b, i) => b.classList.toggle('active', i === idx));
+    if (!this.horzRelSelect) return;
+    if (this.wrapValues[idx] === 'TopAndBottom') {
+      this.horzRelSelect.value = 'TakePlace';
+    } else if (this.horzRelSelect.value === 'TakePlace') {
+      this.horzRelSelect.value = this.props?.horzRelTo ?? 'Column';
+    }
   }
 
   private getSelectedWrap(): string {

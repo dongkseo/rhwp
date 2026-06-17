@@ -10,10 +10,10 @@ export function canvaskitClipRightPad(
   if (typeof rightOverflowSlop === 'number' && Number.isFinite(rightOverflowSlop)) {
     return Math.max(0, rightOverflowSlop);
   }
-  // P16 only mirrors the known legacy text overflow case: HWP body/table-cell clips can
+  // P16 only mirrors the known legacy text overflow case: HWP body clips can
   // trim the right edge of glyphs in fast preview. This is not a general clip inflation
   // policy; broader native/browser parity rules belong with the later CanvasKit coverage work.
-  if (renderMode === 'compat' && profile === 'fastPreview' && (clipKind === 'body' || clipKind === 'tableCell')) {
+  if (renderMode === 'compat' && profile === 'fastPreview' && clipKind === 'body') {
     return 4;
   }
   return 0;

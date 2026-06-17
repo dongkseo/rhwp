@@ -396,13 +396,8 @@ impl WebCanvasRenderer {
             RenderNodeType::TableCell(ref tc) if tc.clip => {
                 self.ctx.save();
                 self.ctx.begin_path();
-                // 셀 우측 여유: 레이아웃 반올림 오차로 마지막 글리프 잘림 방지
-                self.ctx.rect(
-                    node.bbox.x,
-                    node.bbox.y,
-                    node.bbox.width + 4.0,
-                    node.bbox.height,
-                );
+                self.ctx
+                    .rect(node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height);
                 self.ctx.clip();
             }
             RenderNodeType::Equation(eq) => {
@@ -1127,7 +1122,7 @@ impl WebCanvasRenderer {
                     self.ctx.rect(
                         node.bounds.x,
                         node.bounds.y,
-                        node.bounds.width + 4.0,
+                        node.bounds.width,
                         node.bounds.height,
                     );
                     self.ctx.clip();

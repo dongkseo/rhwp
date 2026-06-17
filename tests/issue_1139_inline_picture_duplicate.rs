@@ -2714,7 +2714,7 @@ fn issue_1293_2024_no_separator_20mm_page11_question12_tail_stays_in_frame() {
         "문12 마지막 수식 줄은 page12로 넘어가면 안 됨\n{page12}"
     );
     assert!(
-        page12.find("FullParagraph[미주]  pi=539").is_some(),
+        page12.contains("FullParagraph[미주]  pi=539"),
         "page12는 PDF처럼 문13 제목으로 시작해야 함\n{page12}"
     );
 

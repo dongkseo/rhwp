@@ -76,20 +76,50 @@ impl LayoutEngine {
         cell_ctx: Option<&crate::renderer::layout::CellContext>,
     ) {
         // 그림 크기 (HWPUNIT → 픽셀)
-        // CommonObjAttr의 width/height가 개체의 실제 표시 크기
-        let (pic_width_hu, pic_height_hu) = picture_display_size_hu(picture);
+        // 회전 picture에서 common.width/height는 한컴이 저장한 회전 후 외접 프레임이고
+        // current_width/current_height는 실제로 회전시킬 원본 표시 크기다. common 프레임을
+        // 다시 회전시키면 다단/셀 경계를 침범하므로, current 이미지를 common 프레임 중앙에 둔다.
+        let rotation = picture.shape_attr.rotation_angle.rem_euclid(360);
+        let uses_rotated_frame = rotation != 0
+            && picture.shape_attr.current_width > 0
+            && picture.shape_attr.current_height > 0
+            && picture.common.width > 0
+            && picture.common.height > 0;
+        let (pic_width_hu, pic_height_hu) = if uses_rotated_frame {
+            (
+                picture.shape_attr.current_width as i32,
+                picture.shape_attr.current_height as i32,
+            )
+        } else {
+            picture_display_size_hu(picture)
+        };
         let mut pic_width = hwpunit_to_px(pic_width_hu, self.dpi);
         let mut pic_height = hwpunit_to_px(pic_height_hu, self.dpi);
+        let mut frame_width = if uses_rotated_frame {
+            hwpunit_to_px(picture.common.width as i32, self.dpi)
+        } else {
+            pic_width
+        };
+        let mut frame_height = if uses_rotated_frame {
+            hwpunit_to_px(picture.common.height as i32, self.dpi)
+        } else {
+            pic_height
+        };
 
-        // 컨테이너 초과 시 비율 유지하며 축소 (표 셀 등)
-        if container.width > 0.0 && pic_width > container.width {
-            let scale = container.width / pic_width;
-            pic_width = container.width;
+        // 컨테이너 초과 시 비율 유지하며 축소 (표 셀 등). 회전 프레임과 실제 이미지를 같은
+        // 비율로 축소해야 중심/회전축이 유지된다.
+        if container.width > 0.0 && frame_width > container.width {
+            let scale = container.width / frame_width;
+            frame_width = container.width;
+            frame_height *= scale;
+            pic_width *= scale;
             pic_height *= scale;
         }
-        if container.height > 0.0 && pic_height > container.height {
-            let scale = container.height / pic_height;
-            pic_height = container.height;
+        if container.height > 0.0 && frame_height > container.height {
+            let scale = container.height / frame_height;
+            frame_height = container.height;
+            frame_width *= scale;
+            pic_height *= scale;
             pic_width *= scale;
         }
 
@@ -98,30 +128,38 @@ impl LayoutEngine {
         let (pic_x, pic_y) = if !picture.common.treat_as_char {
             let h_offset = hwpunit_to_px(picture.common.horizontal_offset as i32, self.dpi);
             let v_offset = hwpunit_to_px(picture.common.vertical_offset as i32, self.dpi);
-            let x = match picture.common.horz_align {
+            let frame_x = match picture.common.horz_align {
                 HorzAlign::Left | HorzAlign::Inside => container.x + h_offset,
-                HorzAlign::Center => container.x + (container.width - pic_width) / 2.0 + h_offset,
+                HorzAlign::Center => container.x + (container.width - frame_width) / 2.0 + h_offset,
                 HorzAlign::Right | HorzAlign::Outside => {
-                    container.x + container.width - pic_width - h_offset
+                    container.x + container.width - frame_width - h_offset
                 }
             };
-            let y = match picture.common.vert_align {
+            let frame_y = match picture.common.vert_align {
                 VertAlign::Top | VertAlign::Inside => container.y + v_offset,
-                VertAlign::Center => container.y + (container.height - pic_height) / 2.0 + v_offset,
+                VertAlign::Center => {
+                    container.y + (container.height - frame_height) / 2.0 + v_offset
+                }
                 VertAlign::Bottom | VertAlign::Outside => {
-                    container.y + container.height - pic_height - v_offset
+                    container.y + container.height - frame_height - v_offset
                 }
             };
-            (x, y)
+            (
+                frame_x + (frame_width - pic_width) / 2.0,
+                frame_y + (frame_height - pic_height) / 2.0,
+            )
         } else {
-            let x = match alignment {
+            let frame_x = match alignment {
                 Alignment::Center | Alignment::Distribute => {
-                    container.x + (container.width - pic_width).max(0.0) / 2.0
+                    container.x + (container.width - frame_width).max(0.0) / 2.0
                 }
-                Alignment::Right => container.x + (container.width - pic_width).max(0.0),
+                Alignment::Right => container.x + (container.width - frame_width).max(0.0),
                 _ => container.x,
             };
-            (x, container.y)
+            (
+                frame_x + (frame_width - pic_width) / 2.0,
+                container.y + (frame_height - pic_height) / 2.0,
+            )
         };
 
         // BinData에서 이미지 데이터 찾기 (bin_data_id는 1-indexed 순번)

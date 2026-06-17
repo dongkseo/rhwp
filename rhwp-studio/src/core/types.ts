@@ -648,6 +648,10 @@ export interface PictureProperties {
   vertOffset: number;
   horzOffset: number;
   textWrap: string;
+  /** 쪽 영역 안으로 제한 */
+  restrictInPage?: boolean;
+  /** 서로 겹침 허용 */
+  allowOverlap?: boolean;
   brightness: number;
   contrast: number;
   effect: string;

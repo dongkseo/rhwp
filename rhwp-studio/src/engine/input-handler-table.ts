@@ -431,15 +431,15 @@ export function moveSelectedPicture(this: any, key: 'ArrowUp' | 'ArrowDown' | 'A
     for (const r of targets) {
       const props = getObjectProperties.call(this, r);
       if (props.treatAsChar) continue; // treat_as_char 개체는 이동 불가
-      const newHorzOffset = ((props.horzOffset + deltaH) >>> 0);
-      const newVertOffset = ((props.vertOffset + deltaV) >>> 0);
+      const newHorzOffset = props.horzOffset + deltaH;
+      const newVertOffset = props.vertOffset + deltaV;
       setObjectProperties.call(this, r, {
         horzOffset: newHorzOffset,
         vertOffset: newVertOffset,
       });
       const CmdClass = r.type === 'shape' || r.type === 'line' || r.type === 'group' ? MoveShapeCommand : MovePictureCommand;
       this.executeOperation({ kind: 'record', command:
-        new CmdClass(r.sec, r.ppi, r.ci, deltaH, deltaV, props.horzOffset, props.vertOffset),
+        new CmdClass(r.sec, r.ppi, r.ci, deltaH, deltaV, props.horzOffset, props.vertOffset, r.cellPath),
       });
     }
     // 연결선 자동 추적

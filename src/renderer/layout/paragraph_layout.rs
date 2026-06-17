@@ -590,8 +590,6 @@ impl LayoutEngine {
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
         let alignment = para_style.map(|s| s.alignment).unwrap_or(Alignment::Left);
 
-        let y = y_start + spacing_before;
-
         // 2. treat_as_char 표 목록과 폭 수집
         let inline_tables: Vec<(usize, &crate::model::table::Table)> = para
             .controls
@@ -606,6 +604,54 @@ impl LayoutEngine {
                 None
             })
             .collect();
+        let flow_anchor_y = y_start + spacing_before;
+        let has_detached_para_object = inline_tables.iter().any(|(_, table)| {
+            table
+                .cells
+                .iter()
+                .flat_map(|cell| cell.paragraphs.iter())
+                .flat_map(|p| p.controls.iter())
+                .any(|ctrl| match ctrl {
+                    Control::Picture(pic) => {
+                        !pic.common.treat_as_char
+                            && !pic.common.flow_with_text
+                            && matches!(
+                                pic.common.text_wrap,
+                                crate::model::shape::TextWrap::TopAndBottom
+                            )
+                            && matches!(
+                                pic.common.vert_rel_to,
+                                crate::model::shape::VertRelTo::Para
+                            )
+                    }
+                    Control::Shape(shape) => {
+                        let common = shape.common();
+                        !common.treat_as_char
+                            && !common.flow_with_text
+                            && matches!(
+                                common.text_wrap,
+                                crate::model::shape::TextWrap::TopAndBottom
+                            )
+                            && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+                    }
+                    _ => false,
+                })
+        });
+        let inline_table_line_shift = if has_detached_para_object {
+            para.line_segs
+                .first()
+                .filter(|seg| seg.vertical_pos > 0)
+                .map(|seg| hwpunit_to_px(seg.vertical_pos, self.dpi))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let y = flow_anchor_y + inline_table_line_shift;
+        let table_para_y = if inline_table_line_shift > 0.0 {
+            Some(flow_anchor_y)
+        } else {
+            None
+        };
 
         // [Task #517 Stage 1] RHWP_LAYOUT_DEBUG 진단 로깅
         if layout_debug_enabled() {
@@ -1146,7 +1192,7 @@ impl LayoutEngine {
                     0.0,
                     Some(inline_x),
                     None,
-                    None,
+                    table_para_y,
                     false,
                 );
                 if table_bottom > max_table_bottom {
@@ -1190,7 +1236,7 @@ impl LayoutEngine {
                 0.0,
                 Some(inline_x),
                 None,
-                None,
+                table_para_y,
                 false,
             );
             if table_bottom > max_table_bottom {

@@ -115,6 +115,30 @@ fn square_wrap_first_narrow_line_vpos_px(
     Some(hwpunit_to_px(narrow_vpos - base_vpos, dpi))
 }
 
+fn table_has_detached_para_flow_object(table: &crate::model::table::Table) -> bool {
+    table
+        .cells
+        .iter()
+        .flat_map(|cell| cell.paragraphs.iter())
+        .flat_map(|p| p.controls.iter())
+        .any(|ctrl| match ctrl {
+            Control::Picture(pic) => {
+                !pic.common.treat_as_char
+                    && !pic.common.flow_with_text
+                    && matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
+                    && matches!(pic.common.vert_rel_to, VertRelTo::Para)
+            }
+            Control::Shape(shape) => {
+                let common = shape.common();
+                !common.treat_as_char
+                    && !common.flow_with_text
+                    && matches!(common.text_wrap, TextWrap::TopAndBottom)
+                    && matches!(common.vert_rel_to, VertRelTo::Para)
+            }
+            _ => false,
+        })
+}
+
 type ParaFloatLanes = std::collections::HashMap<usize, FloatLaneSet>;
 
 fn render_node_contains_text_for_para(node: &RenderNode, para_index: usize) -> bool {
@@ -5183,6 +5207,16 @@ impl LayoutEngine {
                 } else {
                     None
                 };
+                let tac_detached_line_shift =
+                    if is_tac && inline_pos.is_none() && table_has_detached_para_flow_object(t) {
+                        para.line_segs
+                            .first()
+                            .filter(|seg| seg.vertical_pos > 0)
+                            .map(|seg| hwpunit_to_px(seg.vertical_pos, self.dpi))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                 // vert=Paper로 body_area 위에 배치되는 표
                 // 본문 영역 외부(머리말/꼬리말 자리)에 그려지는 페이지/페이퍼 앵커 TopAndBottom 표는
                 // 본문 흐름의 y_offset을 진행시키지 않고 out-of-flow로 paper_images에 렌더한다.
@@ -5282,6 +5316,8 @@ impl LayoutEngine {
                     } else if let Some(anchor_y) = square_anchor_y {
                         table_visual_shift = (anchor_y - y_offset).max(0.0);
                         anchor_y
+                    } else if tac_detached_line_shift > 0.0 {
+                        y_offset + tac_detached_line_shift
                     } else {
                         y_offset
                     };

@@ -336,6 +336,8 @@ impl DocumentCore {
         } else {
             pic.common.width = cur_w;
             pic.common.height = cur_h;
+            pic.common.horizontal_offset = (old_center_x - (cur_w as i64 / 2)) as i32 as u32;
+            pic.common.vertical_offset = (old_center_y - (cur_h as i64 / 2)) as i32 as u32;
         }
 
         pic.shape_attr.rotation_center.x = (pic.common.width / 2) as i32;
@@ -494,7 +496,7 @@ impl DocumentCore {
                 "\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",",
                 "\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",",
                 "\"vertOffset\":{},\"horzOffset\":{},",
-                "\"textWrap\":\"{}\",",
+                "\"textWrap\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},",
                 "\"brightness\":{},\"contrast\":{},\"effect\":\"{}\",",
                 "\"description\":\"{}\",",
                 // 회전/대칭
@@ -516,8 +518,8 @@ impl DocumentCore {
             c.width, c.height, c.treat_as_char,
             vert_rel, vert_align,
             horz_rel, horz_align,
-            c.vertical_offset, c.horizontal_offset,
-            text_wrap,
+            c.vertical_offset as i32, c.horizontal_offset as i32,
+            text_wrap, c.flow_with_text, c.allow_overlap,
             pic.image_attr.brightness, pic.image_attr.contrast, effect,
             desc_escaped,
             // 회전/대칭
@@ -882,6 +884,204 @@ impl DocumentCore {
         Ok(current_para)
     }
 
+    fn required_cell_height_for_picture(
+        cell: &crate::model::table::Cell,
+        pic: &crate::model::image::Picture,
+    ) -> u32 {
+        Self::required_cell_height_for_picture_padding(cell.padding.top, cell.padding.bottom, pic)
+    }
+
+    fn required_cell_height_for_picture_padding(
+        padding_top: i16,
+        padding_bottom: i16,
+        pic: &crate::model::image::Picture,
+    ) -> u32 {
+        let vert_offset = (pic.common.vertical_offset as i32).max(0) as u32;
+        let visual_height = if pic.shape_attr.rotation_angle.rem_euclid(360) != 0
+            && pic.shape_attr.current_width > 0
+            && pic.shape_attr.current_height > 0
+        {
+            pic.common.height
+        } else {
+            let (_, height) = Self::picture_rotated_bounds(
+                pic.common.width,
+                pic.common.height,
+                pic.shape_attr.rotation_angle,
+            );
+            height
+        };
+        vert_offset
+            .saturating_add(visual_height)
+            .saturating_add(padding_top.max(0) as u32)
+            .saturating_add(padding_bottom.max(0) as u32)
+    }
+
+    fn take_place_picture_flow_offset(pic: &crate::model::image::Picture) -> Option<i32> {
+        if pic.common.treat_as_char
+            || !matches!(
+                pic.common.text_wrap,
+                crate::model::shape::TextWrap::TopAndBottom
+            )
+            || !matches!(pic.common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+        {
+            return None;
+        }
+
+        let visual_height = if pic.shape_attr.rotation_angle.rem_euclid(360) != 0
+            && pic.shape_attr.current_width > 0
+            && pic.shape_attr.current_height > 0
+        {
+            pic.common.height
+        } else {
+            let (_, height) = Self::picture_rotated_bounds(
+                pic.common.width,
+                pic.common.height,
+                pic.shape_attr.rotation_angle,
+            );
+            height
+        };
+        Some(
+            (pic.common.vertical_offset as i32)
+                .saturating_add(visual_height.min(i32::MAX as u32) as i32)
+                .max(0),
+        )
+    }
+
+    fn sync_direct_owner_cell_for_picture(
+        section: &mut crate::model::document::Section,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        inner_control_idx: usize,
+    ) -> Result<(), HwpError> {
+        if path.len() != 1 {
+            return Ok(());
+        }
+
+        let (table_ctrl_idx, cell_idx, cell_para_idx) = path[0];
+        let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+        })?;
+        let existing_line_height = para
+            .line_segs
+            .first()
+            .map(|seg| seg.line_height)
+            .unwrap_or(0);
+        let table = match para.controls.get_mut(table_ctrl_idx) {
+            Some(Control::Table(table)) => table,
+            _ => return Ok(()),
+        };
+        let line_height_extra = (existing_line_height - table.common.height as i32).max(0);
+        let mut line_seg_update: Option<(i32, i32)> = None;
+
+        let required_height = {
+            let cell = table.cells.get(cell_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("경로[0]: cells[{}] 범위 초과", cell_idx))
+            })?;
+            let cell_para = cell.paragraphs.get(cell_para_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("경로[0]: paragraphs[{}] 범위 초과", cell_para_idx))
+            })?;
+            let pic = match cell_para.controls.get(inner_control_idx) {
+                Some(Control::Picture(pic)) => pic,
+                _ => return Ok(()),
+            };
+            let take_place_flow_offset = Self::take_place_picture_flow_offset(pic);
+            if table.common.treat_as_char {
+                if let Some(flow_offset) = take_place_flow_offset {
+                    let vertical_pos = if pic.common.flow_with_text {
+                        0
+                    } else {
+                        flow_offset
+                    };
+                    line_seg_update = Some((vertical_pos, line_height_extra));
+                }
+            }
+            if pic.common.flow_with_text {
+                Some(Self::required_cell_height_for_picture(cell, pic))
+            } else {
+                None
+            }
+        };
+
+        if let (Some(required_height), Some(cell)) =
+            (required_height, table.cells.get_mut(cell_idx))
+        {
+            let synced_height = required_height.max(MIN_SHAPE_SIZE);
+            if cell.height != synced_height {
+                cell.height = synced_height;
+            }
+        }
+        table.update_ctrl_dimensions();
+        table.dirty = true;
+        let new_table_height = table.common.height as i32;
+        if let Some((vertical_pos, line_height_extra)) = line_seg_update {
+            if let Some(seg) = para.line_segs.first_mut() {
+                let line_height = new_table_height
+                    .saturating_add(line_height_extra)
+                    .max(MIN_SHAPE_SIZE as i32);
+                seg.vertical_pos = vertical_pos;
+                seg.line_height = line_height;
+                seg.text_height = line_height;
+                seg.baseline_distance =
+                    ((line_height as i64 * 17 + 10) / 20).min(i32::MAX as i64) as i32;
+            }
+        }
+        Ok(())
+    }
+
+    fn clamp_direct_owner_cell_picture_offsets(
+        section: &mut crate::model::document::Section,
+        parent_para_idx: usize,
+        path: &[(usize, usize, usize)],
+        inner_control_idx: usize,
+        clamp_horz: bool,
+        clamp_vert: bool,
+    ) -> Result<(), HwpError> {
+        if path.len() != 1 || (!clamp_horz && !clamp_vert) {
+            return Ok(());
+        }
+
+        let (table_ctrl_idx, cell_idx, cell_para_idx) = path[0];
+        let para = section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+        })?;
+        let table = match para.controls.get_mut(table_ctrl_idx) {
+            Some(Control::Table(table)) => table,
+            _ => return Ok(()),
+        };
+        let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("경로[0]: cells[{}] 범위 초과", cell_idx))
+        })?;
+
+        let inner_width = cell
+            .width
+            .saturating_sub(cell.padding.left.max(0) as u32)
+            .saturating_sub(cell.padding.right.max(0) as u32) as i64;
+        let cell_para = cell.paragraphs.get_mut(cell_para_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("경로[0]: paragraphs[{}] 범위 초과", cell_para_idx))
+        })?;
+        let pic = match cell_para.controls.get_mut(inner_control_idx) {
+            Some(Control::Picture(pic)) => pic,
+            _ => return Ok(()),
+        };
+
+        if !pic.common.flow_with_text {
+            return Ok(());
+        }
+
+        if clamp_horz {
+            let max_horz = (inner_width - pic.common.width as i64)
+                .max(0)
+                .min(i32::MAX as i64);
+            let horz = (pic.common.horizontal_offset as i32).clamp(0, max_horz as i32);
+            pic.common.horizontal_offset = horz as u32;
+        }
+        if clamp_vert {
+            let vert = (pic.common.vertical_offset as i32).max(0);
+            pic.common.vertical_offset = vert as u32;
+        }
+        Ok(())
+    }
+
     /// path 의 마지막 엔트리가 글상자(Shape text_box)를 가리키는지 판정한다.
     ///
     /// 표 셀 picture 삽입은 한컴 정합상 parent paragraph 의 sibling floating
@@ -1022,11 +1222,33 @@ impl DocumentCore {
                 _ => pic.common.text_wrap,
             };
         }
-        if let Some(v) = json_u32(props_json, "vertOffset") {
-            pic.common.vertical_offset = v;
+        if let Some(v) = json_bool(props_json, "restrictInPage") {
+            pic.common.flow_with_text = v;
+            if v {
+                pic.common.attr |= 1 << 13;
+                pic.common.allow_overlap = false;
+                pic.common.attr &= !(1 << 14);
+            } else {
+                pic.common.attr &= !(1 << 13);
+            }
         }
-        if let Some(v) = json_u32(props_json, "horzOffset") {
-            pic.common.horizontal_offset = v;
+        if let Some(v) = json_bool(props_json, "allowOverlap") {
+            pic.common.allow_overlap = v;
+            if v {
+                pic.common.attr |= 1 << 14;
+            } else {
+                pic.common.attr &= !(1 << 14);
+            }
+        }
+        if pic.common.flow_with_text {
+            pic.common.allow_overlap = false;
+            pic.common.attr &= !(1 << 14);
+        }
+        if let Some(v) = json_i32(props_json, "vertOffset") {
+            pic.common.vertical_offset = v as u32;
+        }
+        if let Some(v) = json_i32(props_json, "horzOffset") {
+            pic.common.horizontal_offset = v as u32;
         }
         if transform_changed {
             pic.shape_attr.raw_rendering.clear();
@@ -2570,7 +2792,8 @@ impl DocumentCore {
              \"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\
              \"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\
              \"vertOffset\":{},\"horzOffset\":{},\
-             \"textWrap\":\"{}\",\"zOrder\":{},\"instanceId\":{},\
+             \"textWrap\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},\
+             \"zOrder\":{},\"instanceId\":{},\
              \"outerMarginLeft\":{},\"outerMarginTop\":{},\
              \"outerMarginRight\":{},\"outerMarginBottom\":{},\
              \"description\":\"{}\"",
@@ -2584,6 +2807,8 @@ impl DocumentCore {
             c.vertical_offset,
             c.horizontal_offset,
             text_wrap,
+            c.flow_with_text,
+            c.allow_overlap,
             c.z_order,
             c.instance_id,
             c.margin.left,
@@ -2658,6 +2883,28 @@ impl DocumentCore {
                 "InFrontOfText" => crate::model::shape::TextWrap::InFrontOfText,
                 _ => c.text_wrap,
             };
+        }
+        if let Some(v) = json_bool(props_json, "restrictInPage") {
+            c.flow_with_text = v;
+            if v {
+                c.attr |= 1 << 13;
+                c.allow_overlap = false;
+                c.attr &= !(1 << 14);
+            } else {
+                c.attr &= !(1 << 13);
+            }
+        }
+        if let Some(v) = json_bool(props_json, "allowOverlap") {
+            c.allow_overlap = v;
+            if v {
+                c.attr |= 1 << 14;
+            } else {
+                c.attr &= !(1 << 14);
+            }
+        }
+        if c.flow_with_text {
+            c.allow_overlap = false;
+            c.attr &= !(1 << 14);
         }
         if let Some(v) = json_u32(props_json, "vertOffset") {
             c.vertical_offset = v;
@@ -3472,7 +3719,15 @@ impl DocumentCore {
         inner_control_idx: usize,
         props_json: &str,
     ) -> Result<String, HwpError> {
+        use super::super::helpers::{json_bool, json_i32};
+
         let path = Self::parse_cell_path_json(cell_path_json)?;
+        let restrict_change = json_bool(props_json, "restrictInPage");
+        let restrict_enabled_by_this_call = restrict_change.unwrap_or(false);
+        let clamp_horz =
+            restrict_enabled_by_this_call || json_i32(props_json, "horzOffset").is_some();
+        let clamp_vert =
+            restrict_enabled_by_this_call || json_i32(props_json, "vertOffset").is_some();
         {
             let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
                 HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
@@ -3495,6 +3750,20 @@ impl DocumentCore {
             Self::apply_picture_props_inner(pic, props_json);
         }
         let section = &mut self.document.sections[section_idx];
+        Self::clamp_direct_owner_cell_picture_offsets(
+            section,
+            parent_para_idx,
+            &path,
+            inner_control_idx,
+            clamp_horz,
+            clamp_vert,
+        )?;
+        Self::sync_direct_owner_cell_for_picture(
+            section,
+            parent_para_idx,
+            &path,
+            inner_control_idx,
+        )?;
         section.raw_stream = None;
         self.recompose_section(section_idx);
         self.paginate_if_needed();

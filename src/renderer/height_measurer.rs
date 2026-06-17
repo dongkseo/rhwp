@@ -9,7 +9,7 @@ use super::{hwpunit_to_px, DEFAULT_DPI};
 use crate::model::control::Control;
 use crate::model::footnote::{Footnote, FootnoteShape};
 use crate::model::paragraph::Paragraph;
-use crate::model::shape::Caption;
+use crate::model::shape::{Caption, CommonObjAttr, TextWrap, VertRelTo};
 use crate::model::table::{Table, TablePageBreak};
 
 /// treat_as_char 표가 인라인(텍스트와 나란히)인지 판별
@@ -189,6 +189,23 @@ impl HeightMeasurer {
 
     pub fn with_default_dpi() -> Self {
         Self::new(DEFAULT_DPI)
+    }
+
+    /// 셀 안 비-TAC 자리차지 개체가 표 흐름에 요구하는 세로 범위.
+    fn non_inline_control_flow_height(&self, common: &CommonObjAttr) -> f64 {
+        if common.treat_as_char || !matches!(common.text_wrap, TextWrap::TopAndBottom) {
+            return 0.0;
+        }
+        let object_height = hwpunit_to_px(common.height as i32, self.dpi);
+        if matches!(common.vert_rel_to, VertRelTo::Para) {
+            if common.flow_with_text {
+                hwpunit_to_px((common.vertical_offset as i32).max(0), self.dpi) + object_height
+            } else {
+                0.0
+            }
+        } else {
+            object_height
+        }
     }
 
     /// 구역의 모든 콘텐츠 높이를 측정한다.
@@ -514,22 +531,15 @@ impl HeightMeasurer {
     /// 문단들 내 비-인라인(treat_as_char가 아닌) 그림/도형의 높이 합계를 측정한다.
     /// LINE_SEG에는 비-인라인 컨트롤 높이가 포함되지 않으므로 별도 합산이 필요하다.
     fn measure_non_inline_controls_height(&self, paragraphs: &[Paragraph]) -> f64 {
-        use crate::model::shape::TextWrap;
         let mut total = 0.0;
         for para in paragraphs {
             for ctrl in &para.controls {
                 match ctrl {
-                    Control::Picture(pic)
-                        if !pic.common.treat_as_char
-                            && matches!(pic.common.text_wrap, TextWrap::TopAndBottom) =>
-                    {
-                        total += hwpunit_to_px(pic.common.height as i32, self.dpi);
+                    Control::Picture(pic) => {
+                        total += self.non_inline_control_flow_height(&pic.common);
                     }
-                    Control::Shape(shape)
-                        if !shape.common().treat_as_char
-                            && matches!(shape.common().text_wrap, TextWrap::TopAndBottom) =>
-                    {
-                        total += hwpunit_to_px(shape.common().height as i32, self.dpi);
+                    Control::Shape(shape) => {
+                        total += self.non_inline_control_flow_height(shape.common());
                     }
                     _ => {}
                 }
