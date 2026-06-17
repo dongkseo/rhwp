@@ -668,6 +668,33 @@ Task #1061 (2026-05-22).
 
 ---
 
+## 31. CommonObjAttr bit 13 — 한컴 UI `쪽 영역 안으로 제한`과 HWPX `flowWithText`
+
+### 현상
+
+한컴 개체 속성 대화상자의 `쪽 영역 안으로 제한` 체크박스는 HWP5 스펙 표 70의
+CommonObjAttr `bit 13`에 대응한다. HWPX에서는 같은 값이 `<hp:pos flowWithText="1|0">`
+속성으로 저장된다.
+
+### 기준 샘플
+
+- `samples/ta-pic-001-r-쪽영역안제한.hwp(x)`: 첫 번째 그림 `flowWithText=true`
+- `samples/ta-pic-001-r-쪽영역안제한no.hwp(x)`: 첫 번째 그림 `flowWithText=false`
+
+HWP5 `hwp5-anchor-trace` 결과도 첫 번째 그림 `CTRL_HEADER`에서 각각
+`properties=0x002a2210`(bit 13 on), `properties=0x002a0210`(bit 13 off)로 갈린다.
+
+### 정정
+
+- `flowWithText`라는 HWPX 이름은 한컴 UI 의미와 직관적으로 맞지 않는다.
+- rhwp 내부 IR은 `CommonObjAttr::flow_with_text`로 저장하되, 사용자-facing JSON/UI에서는
+  한컴 UI 명칭에 맞춰 `restrictInPage`로 노출해야 한다.
+- 이 값이 켜지면 한컴 UI에서 `서로 겹침 허용`은 비활성/false 취급된다.
+- HWPX picture serializer는 `flowWithText`를 고정값으로 쓰지 말고 `CommonObjAttr::flow_with_text`
+  값을 그대로 직렬화해야 한다.
+
+---
+
 ## 검증 원칙
 
 1. **바이너리 우선**: 스펙 문서보다 실제 바이너리 데이터를 신뢰한다
