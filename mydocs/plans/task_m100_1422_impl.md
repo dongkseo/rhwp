@@ -251,13 +251,43 @@ cd rhwp-studio && node e2e/theme-mode.test.mjs --mode=headless
 - Chrome 전역 실험 기능 설정 변경은 요구하지 않는다.
 - Stage 6 완료보고서를 작성하고 승인 요청한다.
 
-## 9. 최종 검증
+## 9. Stage 7 — 초기 테마 bootstrap 보정
+
+목표:
+
+- `어둡게` 테마 저장 후 새로고침할 때 첫 paint 전에 dark token이 적용되도록 한다.
+- 앱 모듈 초기화 전까지 light 기본 토큰이 잠깐 보이는 theme FOUC를 줄인다.
+
+작업:
+
+1. `index.html`의 stylesheet 로드 전에 작은 inline bootstrap script를 추가한다.
+2. bootstrap script는 `localStorage.rhwp-settings`의 theme mode를 읽어 `data-theme-mode`, `data-theme-effective`, `color-scheme`, `theme-color`를 선반영한다.
+3. `theme.ts`의 정식 테마 동기화는 기존처럼 앱 초기화 후 같은 값을 재동기화한다.
+4. 초기 bootstrap 동작을 검증하는 focused e2e를 추가한다.
+
+검증:
+
+```bash
+cd rhwp-studio && npm run build
+cd rhwp-studio && node e2e/theme-bootstrap.test.mjs --mode=headless
+cd rhwp-studio && node e2e/theme-mode.test.mjs --mode=headless
+```
+
+완료 기준:
+
+- 저장된 dark 테마가 DOMContentLoaded 시점부터 root dataset과 color-scheme에 반영된다.
+- menu-bar 등 첫 paint 대상의 computed background가 dark token으로 계산된다.
+- 기존 theme-mode, dialog-theme, auto-dark 회귀 테스트가 깨지지 않는다.
+- Stage 7 완료보고서를 작성하고 승인 요청한다.
+
+## 10. 최종 검증
 
 필수:
 
 ```bash
 cd rhwp-studio && npm run build
 cd rhwp-studio && node e2e/theme-mode.test.mjs --mode=headless
+cd rhwp-studio && node e2e/theme-bootstrap.test.mjs --mode=headless
 ```
 
 신규 focused e2e가 추가된 경우:
@@ -276,7 +306,7 @@ cd rhwp-studio && node e2e/dialog-theme.test.mjs --mode=headless
 - 다크모드 문단 모양/미주 모양
 - Chrome Auto Dark Mode + `밝게` 테마
 
-## 10. 완료 기준
+## 11. 완료 기준
 
 - #1422 이슈 본문에 등록된 대표 화면의 다크모드 대비 문제가 해소된다.
 - 문서 종이, 실제 문서 preview, 색상 견본의 의미가 유지된다.
@@ -284,6 +314,6 @@ cd rhwp-studio && node e2e/dialog-theme.test.mjs --mode=headless
 - Chrome Auto Dark Mode 환경에서 앱의 명시적 light 선택을 보존하려는 조치와 검증 기록이 남는다.
 - 모든 단계 완료 후 최종 보고서 `mydocs/report/task_m100_1422_report.md`를 작성한다.
 
-## 11. 승인 요청
+## 12. 승인 요청
 
 위 계획대로 Stage 1부터 구현한다. 승인 전에는 rhwp-studio 소스 코드를 수정하지 않는다.

@@ -122,6 +122,9 @@ runTest('보기 테마', async ({ page }) => {
   await createNewDocument(page);
   const persisted = await getThemeState(page);
   assert(persisted.mode === 'dark', 'TC3: 새로고침 후 dark 설정이 유지된다');
+  assert(persisted.effective === 'dark', 'TC3: 새로고침 후 effective theme도 dark다');
+  assert(persisted.colorScheme === 'dark only', 'TC3: 새로고침 후 color-scheme도 dark only다');
+  assert(persisted.colorSchemeMeta === 'only dark', 'TC3: 새로고침 후 color-scheme meta도 only dark다');
   assert(persisted.activeModes.length === 1 && persisted.activeModes[0] === 'dark', 'TC3: 새로고침 후에도 dark 메뉴가 active다');
   assert(persisted.canvasBg === 'rgb(255, 255, 255)', 'TC3: 새로고침 후에도 편집 용지는 흰색이다');
 
