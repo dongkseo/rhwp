@@ -463,6 +463,28 @@ fn tac_picture_label_extra_px(
     max_font_size + line_spacing_px.max(0.0)
 }
 
+fn tac_picture_label_extra_for_line(
+    cell_ctx: Option<&CellContext>,
+    runs_all_whitespace: bool,
+    raw_line_height: f64,
+    reserved_picture_height: Option<f64>,
+    max_font_size: f64,
+    line_spacing_px: f64,
+) -> f64 {
+    // #1352: 표 셀 안의 "TAC picture + 실제 텍스트" 줄은 한컴 PDF 기준
+    // picture와 텍스트가 같은 세로 위치에 놓인다. label 보정은 TAC-only 라인에만 남긴다.
+    if cell_ctx.is_some() && !runs_all_whitespace {
+        return 0.0;
+    }
+    tac_picture_label_extra_px(
+        runs_all_whitespace,
+        raw_line_height,
+        reserved_picture_height,
+        max_font_size,
+        line_spacing_px,
+    )
+}
+
 /// run 이 `\t` 로 끝날 때, 그 마지막 `\t` 가 cross-run 우측/가운데 탭으로 동작해야 하는지 판정한다.
 ///
 /// HWP 본문 탭에는 두 가지 정보원이 있다:
@@ -3439,8 +3461,9 @@ impl LayoutEngine {
                                     if raw_lh + 4.0 >= pic_h {
                                         current_line_reserved_tac_picture_height = Some(pic_h);
                                     }
-                                    let label_extra = tac_picture_label_extra_px(
-                                        comp_line.runs.iter().all(|r| r.text.trim().is_empty()),
+                                    let label_extra = tac_picture_label_extra_for_line(
+                                        cell_ctx.as_ref(),
+                                        runs_all_whitespace,
                                         raw_lh,
                                         current_line_reserved_tac_picture_height,
                                         max_fs,
@@ -3524,8 +3547,9 @@ impl LayoutEngine {
                                 if raw_lh + 4.0 >= shape_h {
                                     current_line_reserved_tac_picture_height = Some(shape_h);
                                 }
-                                let label_extra = tac_picture_label_extra_px(
-                                    comp_line.runs.iter().all(|r| r.text.trim().is_empty()),
+                                let label_extra = tac_picture_label_extra_for_line(
+                                    cell_ctx.as_ref(),
+                                    runs_all_whitespace,
                                     raw_lh,
                                     current_line_reserved_tac_picture_height,
                                     max_fs,
@@ -4013,8 +4037,9 @@ impl LayoutEngine {
                                     if raw_lh + 4.0 >= pic_h {
                                         current_line_reserved_tac_picture_height = Some(pic_h);
                                     }
-                                    let label_extra = tac_picture_label_extra_px(
-                                        comp_line.runs.iter().all(|r| r.text.trim().is_empty()),
+                                    let label_extra = tac_picture_label_extra_for_line(
+                                        cell_ctx.as_ref(),
+                                        runs_all_whitespace,
                                         raw_lh,
                                         current_line_reserved_tac_picture_height,
                                         max_fs,
@@ -4761,7 +4786,8 @@ impl LayoutEngine {
                     current_line_reserved_tac_picture_height = Some(raw_lh);
                 }
             }
-            let tac_picture_label_extra = tac_picture_label_extra_px(
+            let tac_picture_label_extra = tac_picture_label_extra_for_line(
+                cell_ctx.as_ref(),
                 runs_all_whitespace,
                 raw_lh,
                 current_line_reserved_tac_picture_height,
