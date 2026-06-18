@@ -194,13 +194,19 @@ export function onClick(this: any, e: MouseEvent): void {
               const combinedH = maxY - minY;
               // 각 개체의 원래 크기/위치/bbox 저장
               const multiResizeRefs: { sec: number; ppi: number; ci: number; type: string; origWidth: number; origHeight: number; origHorzOffset: number; origVertOffset: number; bboxX: number; bboxY: number }[] = [];
+              let hasSizeProtected = false;
               for (const r of refs) {
                 try {
                   const p = this.getObjectProperties(r);
+                  if (p.sizeProtect) {
+                    hasSizeProtected = true;
+                    continue;
+                  }
                   const bb = this.findPictureBbox(r);
                   if (!p.treatAsChar && bb) multiResizeRefs.push({ ...r, origWidth: p.width, origHeight: p.height, origHorzOffset: p.horzOffset, origVertOffset: p.vertOffset, bboxX: bb.x, bboxY: bb.y });
                 } catch { /* skip */ }
               }
+              if (hasSizeProtected) return;
               if (multiResizeRefs.length > 0) {
                 this.isPictureResizeDragging = true;
                 this.pictureResizeState = {
@@ -271,6 +277,8 @@ export function onClick(this: any, e: MouseEvent): void {
           if (ref) {
             const picBbox = this.findPictureBbox(ref);
             if (picBbox) {
+              const props = this.getObjectProperties(ref);
+              if (props.sizeProtect) return;
               // 직선/연결선: 끝점 핸들 드래그 (sw=시작, ne=끝)
               if (ref.type === 'line' && (dir === 'sw' || dir === 'ne')) {
                 const zoom = this.viewportManager.getZoom();
@@ -298,7 +306,6 @@ export function onClick(this: any, e: MouseEvent): void {
                 const objCx = pl + (picBbox.x + picBbox.w / 2) * zoom;
                 const objCy = po + (picBbox.y + picBbox.h / 2) * zoom;
                 // 현재 회전각
-                const props = this.getObjectProperties(ref);
                 const origAngle = props.rotationAngle ?? 0;
                 // 마우스→중심 각도
                 const startAngle = Math.atan2(cy - objCy, cx - objCx);
@@ -316,7 +323,6 @@ export function onClick(this: any, e: MouseEvent): void {
                 return;
               }
               // 리사이즈 드래그 시작
-              const props = this.getObjectProperties(ref);
               this.isPictureResizeDragging = true;
               this.pictureResizeState = {
                 dir,
@@ -1285,12 +1291,21 @@ export function onMouseMove(this: any, e: MouseEvent): void {
     const y = e.clientY - contentRect.top;
     const dir = this.pictureObjectRenderer.getHandleAtPoint(x, y);
     if (dir) {
+      const ref = this.cursor.getSelectedPictureRef();
+      if (ref) {
+        try {
+          const props = this.getObjectProperties(ref);
+          if (props.sizeProtect) {
+            this.container.style.cursor = '';
+            return;
+          }
+        } catch { /* ignore */ }
+      }
       if (dir === 'rotate') {
         this.container.style.cursor = 'grab';
       } else {
         // 회전된 도형의 경우 커서 방향도 회전시켜 표시
         let angleDeg = 0;
-        const ref = this.cursor.getSelectedPictureRef();
         if (ref && ref.type === 'shape') {
           try {
             const props = this.getObjectProperties(ref);

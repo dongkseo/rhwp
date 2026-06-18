@@ -596,6 +596,7 @@ function applyRotationDelta(services: import('../types').CommandServices, delta:
   const ref = ih.getSelectedPictureRef();
   if (!ref || ref.type === 'equation' || ref.type === 'group' || ref.type === 'line') return;
   const props = getProps(services, ref);
+  if (props.sizeProtect) return;
   const cur = ((props.rotationAngle as number) ?? 0);
   let next = cur + delta;
   // -180 ~ 180 범위로 정규화
@@ -612,6 +613,7 @@ function toggleFlip(services: import('../types').CommandServices, key: 'horzFlip
   const ref = ih.getSelectedPictureRef();
   if (!ref || ref.type === 'equation' || ref.type === 'group' || ref.type === 'line') return;
   const props = getProps(services, ref);
+  if (props.sizeProtect) return;
   const cur = !!props[key];
   setProps(services, ref, { [key]: !cur });
   services.eventBus.emit('document-changed');

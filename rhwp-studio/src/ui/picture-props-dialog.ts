@@ -84,6 +84,7 @@ export class PicturePropsDialog {
   private heightInput!: HTMLInputElement;
   private sizeFixedCheck!: HTMLInputElement;
   private keepRatioCheck!: HTMLInputElement;
+  private sizeLockControls: Array<HTMLInputElement | HTMLSelectElement | HTMLButtonElement> = [];
   private syncingBasicSize = false;
   private originalWidth = 0;
   private originalHeight = 0;
@@ -365,6 +366,7 @@ export class PicturePropsDialog {
     this.body.replaceChildren();
     this.tabs = [];
     this.panels = [];
+    this.sizeLockControls = [];
 
     const tabNames = this.objectType === 'line' ? LINE_TAB_NAMES
       : (this.objectType === 'shape' || this.objectType === 'group') ? SHAPE_TAB_NAMES
@@ -414,8 +416,11 @@ export class PicturePropsDialog {
     // 너비
     const wRow = this.row();
     wRow.appendChild(this.label('너비(W)'));
-    wRow.appendChild(this.sizeTypeSelect());
+    const widthTypeSelect = this.sizeTypeSelect();
+    this.sizeLockControls.push(widthTypeSelect);
+    wRow.appendChild(widthTypeSelect);
     this.widthInput = this.numberInput(0);
+    this.sizeLockControls.push(this.widthInput);
     wRow.appendChild(this.widthInput);
     wRow.appendChild(this.unit('mm'));
     sizeFs.appendChild(wRow);
@@ -423,8 +428,11 @@ export class PicturePropsDialog {
     // 높이
     const hRow = this.row();
     hRow.appendChild(this.label('높이(H)'));
-    hRow.appendChild(this.sizeTypeSelect());
+    const heightTypeSelect = this.sizeTypeSelect();
+    this.sizeLockControls.push(heightTypeSelect);
+    hRow.appendChild(heightTypeSelect);
     this.heightInput = this.numberInput(0);
+    this.sizeLockControls.push(this.heightInput);
     hRow.appendChild(this.heightInput);
     hRow.appendChild(this.unit('mm'));
     // 크기 고정
@@ -434,8 +442,11 @@ export class PicturePropsDialog {
     const krLabel = this.checkboxLabel('비율 유지');
     this.keepRatioCheck = krLabel.querySelector('input') as HTMLInputElement;
     this.keepRatioCheck.checked = userSettings.getPicturePropsKeepRatio();
+    this.sizeLockControls.push(this.keepRatioCheck);
     hRow.appendChild(krLabel);
     sizeFs.appendChild(hRow);
+
+    this.sizeFixedCheck.addEventListener('change', () => this.updateSizeProtectControls());
 
     // 비율 유지 이벤트
     this.keepRatioCheck.addEventListener('change', () => {
@@ -1510,6 +1521,7 @@ export class PicturePropsDialog {
           this.picScaleYInput.value = String(p.pct);
         }
       });
+      this.sizeLockControls.push(btn);
       sxRow.appendChild(btn);
     }
     scaleFs.appendChild(sxRow);
@@ -1518,6 +1530,7 @@ export class PicturePropsDialog {
     syRow.appendChild(this.label('세로'));
     this.picScaleYInput = this.numberInput(1, 1000, 0.01);
     this.picScaleYInput.style.width = '70px';
+    this.sizeLockControls.push(this.picScaleXInput, this.picScaleYInput);
     syRow.appendChild(this.picScaleYInput);
     syRow.appendChild(this.unit('%'));
     scaleFs.appendChild(syRow);
@@ -1525,6 +1538,7 @@ export class PicturePropsDialog {
     const ratioRow = this.row();
     const ratioLabel = this.checkboxLabel('가로 세로 같은 비율 유지');
     this.picKeepRatioCheck = ratioLabel.querySelector('input') as HTMLInputElement;
+    this.sizeLockControls.push(this.picKeepRatioCheck);
     ratioRow.appendChild(ratioLabel);
     const resetBtn = document.createElement('button');
     resetBtn.className = 'dialog-btn';
@@ -1542,6 +1556,7 @@ export class PicturePropsDialog {
       this.picBrightnessInput.value = '0';
       this.picContrastInput.value = '0';
     });
+    this.sizeLockControls.push(resetBtn);
     ratioRow.appendChild(resetBtn);
     scaleFs.appendChild(ratioRow);
 
@@ -1905,12 +1920,19 @@ export class PicturePropsDialog {
   private handleOk(): void {
     if (!this.props) { this.hide(); return; }
     const updated: Record<string, unknown> = {};
+    const sizeProtect = this.sizeFixedCheck.checked;
+
+    if (sizeProtect !== (this.props.sizeProtect ?? false)) {
+      updated['sizeProtect'] = sizeProtect;
+    }
 
     // 크기
-    const newW = mmToHwp(parseFloat(this.widthInput.value) || 0);
-    const newH = mmToHwp(parseFloat(this.heightInput.value) || 0);
-    if (newW !== this.props.width) updated['width'] = newW;
-    if (newH !== this.props.height) updated['height'] = newH;
+    if (!sizeProtect) {
+      const newW = mmToHwp(parseFloat(this.widthInput.value) || 0);
+      const newH = mmToHwp(parseFloat(this.heightInput.value) || 0);
+      if (newW !== this.props.width) updated['width'] = newW;
+      if (newH !== this.props.height) updated['height'] = newH;
+    }
 
     // 위치
     const tac = this.treatAsCharCheck.checked;
@@ -2132,7 +2154,7 @@ export class PicturePropsDialog {
       }
 
       // 그림 탭 — 확대/축소 → 크기 변환
-      if (this.picScaleXInput && pp.originalWidth > 0) {
+      if (!sizeProtect && this.picScaleXInput && pp.originalWidth > 0) {
         const scaleX = parseFloat(this.picScaleXInput.value) || 100;
         const scaleY = parseFloat(this.picScaleYInput.value) || 100;
         const newW = Math.round(pp.originalWidth * scaleX / 100);
@@ -2241,6 +2263,7 @@ export class PicturePropsDialog {
     }
     this.widthInput.value = hwpToMm(this.props.width).toFixed(2);
     this.heightInput.value = hwpToMm(this.props.height).toFixed(2);
+    this.sizeFixedCheck.checked = this.props.sizeProtect ?? false;
     this.treatAsCharCheck.checked = this.props.treatAsChar;
     this.selectWrap(this.wrapValues.indexOf(this.props.textWrap));
     this.horzRelSelect.value = this.props.textWrap === 'TopAndBottom'
@@ -2473,6 +2496,20 @@ export class PicturePropsDialog {
         this.picWatermarkCheck.checked = (pp.brightness === 70 && pp.contrast === -50);
       }
     }
+    this.updateSizeProtectControls();
+  }
+
+  private updateSizeProtectControls(): void {
+    if (!this.sizeFixedCheck) return;
+    const locked = this.sizeFixedCheck.checked;
+    this.sizeLockControls.forEach((control) => {
+      control.disabled = locked;
+    });
+    if (this.rotationInput) this.rotationInput.disabled = locked;
+    if (this.horzFlipCheck) this.horzFlipCheck.disabled = locked;
+    if (this.vertFlipCheck) this.vertFlipCheck.disabled = locked;
+    if (this.skewHInput) this.skewHInput.disabled = true;
+    if (this.skewVInput) this.skewVInput.disabled = true;
   }
 
   private updatePositionVisibility(): void {
