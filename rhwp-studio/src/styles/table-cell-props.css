@@ -4,8 +4,43 @@
    ================================================================ */
 
 /* ── 탭 패널 내부 공통 패딩 ── */
+.dialog-wrap.tcp-dialog {
+  width: min(670px, calc(100vw - 32px)) !important;
+  height: min(720px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-wrap.tcp-dialog .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+}
+
+.dialog-wrap.tcp-dialog .dialog-footer {
+  flex: 0 0 auto;
+}
+
+.tcp-dialog-body {
+  min-height: 0;
+}
+
+.tcp-panel-container {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dialog-wrap.tcp-dialog .dialog-tab-panel {
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
 .tcp-tab-content {
   padding: 12px;
+  box-sizing: border-box;
 }
 
 /* ── "모두" 일괄 조정 스피너 ── */

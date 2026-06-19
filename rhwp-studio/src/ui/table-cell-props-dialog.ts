@@ -144,6 +144,7 @@ export class TableCellPropsDialog extends ModalDialog {
 
   show(): void {
     super.show();
+    this.dialog.classList.add('tcp-dialog');
     // 속성 조회
     const { sec, ppi, ci } = this.tableCtx;
     this.cellProps = this.wasm.getCellProperties(sec, ppi, ci, this.cellIdx);
@@ -153,6 +154,7 @@ export class TableCellPropsDialog extends ModalDialog {
 
   protected createBody(): HTMLElement {
     const body = document.createElement('div');
+    body.className = 'tcp-dialog-body';
 
     // 탭 정의: mode에 따라 테두리/배경 탭 포함 여부 결정
     const tabDefs: TabDef[] = [
@@ -172,6 +174,7 @@ export class TableCellPropsDialog extends ModalDialog {
     tabBar.className = 'dialog-tabs';
 
     const panelContainer = document.createElement('div');
+    panelContainer.className = 'tcp-panel-container';
 
     for (let i = 0; i < tabDefs.length; i++) {
       const def = tabDefs[i];
