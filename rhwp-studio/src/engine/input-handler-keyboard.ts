@@ -939,6 +939,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.dispatcher?.dispatch('table:cell-split');
       return;
     }
+    if (this.cursor.isProtectedCellSelectionMode()) {
+      e.preventDefault();
+      this.textarea.focus();
+      return;
+    }
     // 수정자 키(Shift/Ctrl/Alt/Meta)만 누른 경우 무시
     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
       return;

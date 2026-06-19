@@ -1,6 +1,8 @@
 import type { DocumentPosition, CursorRect, LineInfo, CellPathEntry, NavContextEntry, CellBbox } from '@/core/types';
 import { WasmBridge } from '@/core/wasm-bridge';
 
+type CellSelectionReason = 'manual' | 'protected';
+
 type PictureSelectionRef = {
   sec: number;
   ppi: number;
@@ -62,6 +64,7 @@ export class CursorState {
   private _cellSelectionMode = false;
   /** 셀 선택 단계: 1=단일셀, 2=범위선택, 3=전체선택 */
   private _cellSelectionPhase = 1;
+  private _cellSelectionReason: CellSelectionReason = 'manual';
   private cellAnchor: { row: number; col: number } | null = null;
   private cellFocus: { row: number; col: number } | null = null;
   /** Ctrl+클릭으로 제외된 셀 ("row,col" 문자열 Set) */
@@ -1000,7 +1003,7 @@ export class CursorState {
   // ─── F5 셀 블록 선택 모드 ─────────────────────────────────
 
   /** 셀 선택 모드에 진입한다. 현재 셀의 row/col이 anchor/focus가 된다. */
-  enterCellSelectionMode(): boolean {
+  enterCellSelectionMode(reason: CellSelectionReason = 'manual'): boolean {
     if (!this.isInCell() || this.isInTextBox()) return false;
     const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellIndex: cei, cellPath } = this.position;
     if (ppi === undefined || ci === undefined || cei === undefined) return false;
@@ -1021,6 +1024,7 @@ export class CursorState {
       this.cellTableCtx = { sec, ppi, ci, rowCount: dims.rowCount, colCount: dims.colCount, cellPath };
       this._cellSelectionMode = true;
       this._cellSelectionPhase = 1;
+      this._cellSelectionReason = reason;
       return true;
     } catch (e) {
       console.warn('[CursorState] enterCellSelectionMode 실패:', e);
@@ -1032,6 +1036,7 @@ export class CursorState {
   exitCellSelectionMode(): void {
     this._cellSelectionMode = false;
     this._cellSelectionPhase = 1;
+    this._cellSelectionReason = 'manual';
     this.cellAnchor = null;
     this.cellFocus = null;
     this.excludedCells.clear();
@@ -1075,6 +1080,11 @@ export class CursorState {
   /** 셀 선택 모드인가? */
   isInCellSelectionMode(): boolean {
     return this._cellSelectionMode;
+  }
+
+  /** 보호 셀 클릭으로 진입한 셀 선택 모드인가? */
+  isProtectedCellSelectionMode(): boolean {
+    return this._cellSelectionMode && this._cellSelectionReason === 'protected';
   }
 
   // ─── F5 본문 블록 선택 (#220) ──────────────────────

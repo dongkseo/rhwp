@@ -6,6 +6,25 @@
   pointer-events: none;
 }
 
+.protected-cell-hover-guard {
+  position: fixed;
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #d54f33;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
 /* ================================================================
    표 객체 선택 (외곽선 + 리사이즈 핸들)
    ================================================================ */

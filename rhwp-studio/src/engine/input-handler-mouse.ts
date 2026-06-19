@@ -4,6 +4,112 @@
 import type { ContextMenuItem } from '@/ui/context-menu';
 import * as _connector from './input-handler-connector';
 
+function protectedCellKey(hit: any): string | null {
+  if (!hit || hit.isTextBox) return null;
+  if (
+    hit.parentParaIndex === undefined ||
+    hit.controlIndex === undefined ||
+    hit.cellIndex === undefined
+  ) return null;
+  if ((hit.cellPath?.length ?? 0) > 1) return null;
+  return `${hit.sectionIndex}:${hit.parentParaIndex}:${hit.controlIndex}:${hit.cellIndex}`;
+}
+
+function isProtectedCellHit(self: any, hit: any): boolean {
+  const key = protectedCellKey(hit);
+  if (!key) return false;
+  if (self.protectedCellHitCache?.key === key) {
+    return self.protectedCellHitCache.protected === true;
+  }
+
+  let protectedCell = false;
+  try {
+    protectedCell = self.wasm.getCellProperties(
+      hit.sectionIndex,
+      hit.parentParaIndex,
+      hit.controlIndex,
+      hit.cellIndex,
+    ).cellProtect === true;
+  } catch { /* 보호 셀 판별 실패 시 일반 셀로 처리 */ }
+  self.protectedCellHitCache = { key, protected: protectedCell };
+  return protectedCell;
+}
+
+function showProtectedCellHover(self: any, e: MouseEvent): void {
+  if (!self.protectedCellHoverEl) {
+    const el = document.createElement('div');
+    el.className = 'protected-cell-hover-guard';
+    el.setAttribute('aria-hidden', 'true');
+    el.textContent = '×';
+    document.body.appendChild(el);
+    self.protectedCellHoverEl = el;
+  }
+  self.protectedCellHoverEl.style.left = `${e.clientX + 12}px`;
+  self.protectedCellHoverEl.style.top = `${e.clientY + 12}px`;
+  self.protectedCellHoverEl.style.display = 'flex';
+  self.container.style.cursor = 'not-allowed';
+}
+
+function hideProtectedCellHover(self: any): void {
+  if (self.protectedCellHoverEl) {
+    self.protectedCellHoverEl.style.display = 'none';
+  }
+  if (self.container.style.cursor === 'not-allowed') {
+    self.container.style.cursor = '';
+  }
+}
+
+function isOuterTableBorderEdge(self: any, edge: any, pageBboxes: any[]): boolean {
+  try {
+    const { rowLines, colLines } = self.tableResizeRenderer.computeBorderLines(pageBboxes);
+    if (edge.type === 'row') {
+      return edge.index === 0 || edge.index === rowLines.length - 1;
+    }
+    return edge.index === 0 || edge.index === colLines.length - 1;
+  } catch {
+    return false;
+  }
+}
+
+function selectTableObject(this: any, tableRef: { sec: number; ppi: number; ci: number }): void {
+  hideProtectedCellHover(this);
+  this.cursor.clearSelection();
+  this.cursor.exitCellSelectionMode();
+  this.cellSelectionRenderer?.clear();
+  this.exitPictureObjectSelectionIfNeeded();
+  this.cursor.enterTableObjectSelectionDirect(tableRef.sec, tableRef.ppi, tableRef.ci);
+  this.active = true;
+  this.caret.hide();
+  this.fieldMarker.hide();
+  this.selectionRenderer.clear();
+  this.tableResizeRenderer?.clear();
+  this.renderTableObjectSelection();
+  this.eventBus.emit('table-object-selection-changed', true);
+  this.eventBus.emit('command-state-changed');
+  this.textarea.focus();
+}
+
+function selectProtectedCell(this: any, hit: any): void {
+  hideProtectedCellHover(this);
+  this.cursor.clearSelection();
+  this.exitPictureObjectSelectionIfNeeded();
+  if (this.cursor.isInTableObjectSelection()) {
+    this.cursor.exitTableObjectSelection();
+    this.tableObjectRenderer?.clear();
+    this.eventBus.emit('table-object-selection-changed', false);
+  }
+  this.cursor.moveTo(hit);
+  this.cursor.resetPreferredX();
+  if (!this.cursor.enterCellSelectionMode('protected')) return;
+  this.active = true;
+  this.caret.hide();
+  this.fieldMarker.hide();
+  this.selectionRenderer.clear();
+  this.updateCellSelection();
+  this.eventBus.emit('command-state-changed');
+  this.textarea.focus();
+}
+
 export function onClick(this: any, e: MouseEvent): void {
   // 연결선 드로잉 모드: 연결점 클릭으로 시작/끝
   if (this.connectorDrawingMode && e.button === 0) {
@@ -441,6 +547,10 @@ export function onClick(this: any, e: MouseEvent): void {
             const edge = this.tableResizeRenderer.hitTestBorder(pageX, pageY, pageBboxes);
             if (edge) {
               e.preventDefault();
+              if (isOuterTableBorderEdge(this, edge, pageBboxes)) {
+                selectTableObject.call(this, ctx);
+                return;
+              }
               this.startResizeDrag(edge, pageX, pageY, pageBboxes);
               this.textarea.focus();
               return;
@@ -490,6 +600,10 @@ export function onClick(this: any, e: MouseEvent): void {
     const edge = this.tableResizeRenderer.hitTestBorder(pageX, pageY, pageBboxes);
     if (edge) {
       e.preventDefault();
+      if (isOuterTableBorderEdge(this, edge, pageBboxes)) {
+        selectTableObject.call(this, this.cachedTableRef);
+        return;
+      }
       this.startResizeDrag(edge, pageX, pageY, pageBboxes);
       this.textarea.focus();
       return;
@@ -661,7 +775,7 @@ export function onClick(this: any, e: MouseEvent): void {
 
     // 표 외곽 클릭 감지 → 표 객체 선택 (셀 바깥에서 외곽 근처 클릭)
     if (hit.parentParaIndex === undefined || hit.controlIndex === undefined) {
-      const tableHit = this.findTableByOuterClick(pageX, pageY, hit.sectionIndex, hit.paragraphIndex);
+      const tableHit = this.findTableByOuterClick(pageIdx, pageX, pageY, hit.sectionIndex, hit.paragraphIndex);
       if (tableHit) {
         this.cursor.clearSelection();
         this.cursor.enterTableObjectSelectionDirect(tableHit.sec, tableHit.ppi, tableHit.ci);
@@ -675,6 +789,12 @@ export function onClick(this: any, e: MouseEvent): void {
         this.textarea.focus();
         return;
       }
+    }
+
+    // 보호 셀은 텍스트 커서를 넣지 않고 셀 선택 상태로 전환한다.
+    if (isProtectedCellHit(this, hit)) {
+      selectProtectedCell.call(this, hit);
+      return;
     }
 
     // [Task #919] 글상자 객체 선택 중 글상자 내부 클릭 → 텍스트 편집 진입.
@@ -1411,6 +1531,7 @@ export function onMouseMove(this: any, e: MouseEvent): void {
 
 export function handleResizeHover(this: any, e: MouseEvent): void {
   if (!this.tableResizeRenderer) return;
+  hideProtectedCellHover(this);
 
   const zoom = this.viewportManager.getZoom();
   const scrollContent = this.container.querySelector('#scroll-content');
@@ -1427,9 +1548,11 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
 
   // hitTest로 표 셀 위인지 확인
   let tableRef: { sec: number; ppi: number; ci: number } | null = null;
+  let tableHit: any = null;
   try {
     const hit = this.wasm.hitTest(pageIdx, pageX, pageY);
     if (hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && !hit.isTextBox) {
+      tableHit = hit;
       tableRef = { sec: hit.sectionIndex, ppi: hit.parentParaIndex, ci: hit.controlIndex };
     }
   } catch { /* hitTest 실패 시 표 밖 */ }
@@ -1438,6 +1561,7 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
     this.tableResizeRenderer.clear();
     this.cachedTableRef = null;
     this.cachedCellBboxes = null;
+    hideProtectedCellHover(this);
     // 개체(도형/연결선) hover 감지: 커서 변경
     const picHit = this.findPictureAtClick(pageIdx, pageX, pageY);
     this.container.style.cursor = picHit ? 'pointer' : '';
@@ -1460,6 +1584,7 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
 
   if (!this.cachedCellBboxes || this.cachedCellBboxes.length === 0) {
     this.tableResizeRenderer.clear();
+    hideProtectedCellHover(this);
     if (this.container.style.cursor) {
       this.container.style.cursor = '';
     }
@@ -1470,6 +1595,7 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
   const pageBboxes = this.cachedCellBboxes.filter((b: any) => b.pageIndex === pageIdx);
   if (pageBboxes.length === 0) {
     this.tableResizeRenderer.clear();
+    hideProtectedCellHover(this);
     if (this.container.style.cursor) {
       this.container.style.cursor = '';
     }
@@ -1479,10 +1605,15 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
   // 경계선 감지
   const edge = this.tableResizeRenderer.hitTestBorder(pageX, pageY, pageBboxes);
   if (edge) {
+    hideProtectedCellHover(this);
     this.container.style.cursor = edge.type === 'row' ? 'row-resize' : 'col-resize';
     this.tableResizeRenderer.showMarker(edge, pageBboxes, zoom);
+  } else if (tableHit && isProtectedCellHit(this, tableHit)) {
+    this.tableResizeRenderer.clear();
+    showProtectedCellHover(this, e);
   } else {
     this.tableResizeRenderer.clear();
+    hideProtectedCellHover(this);
     if (this.container.style.cursor) {
       this.container.style.cursor = '';
     }

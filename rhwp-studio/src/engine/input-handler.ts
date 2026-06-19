@@ -130,6 +130,8 @@ export class InputHandler {
   private resizeHoverRafId = 0;
   private cachedTableRef: { sec: number; ppi: number; ci: number } | null = null;
   private cachedCellBboxes: CellBbox[] | null = null;
+  private protectedCellHitCache: { key: string; protected: boolean } | null = null;
+  private protectedCellHoverEl: HTMLDivElement | null = null;
 
   // 표 경계선 리사이즈 드래그 상태
   private isResizeDragging = false;
@@ -412,6 +414,9 @@ export class InputHandler {
 
     // 문서 변경 후 그림/표 선택 마커 재렌더링
     eventBus.on('document-changed', () => {
+      this.protectedCellHitCache = null;
+      this.protectedCellHoverEl?.remove();
+      this.protectedCellHoverEl = null;
       requestAnimationFrame(() => {
         if (this.cursor.isInPictureObjectSelection()) {
           this.renderPictureObjectSelection();
@@ -1251,21 +1256,49 @@ export class InputHandler {
 
   /**
    * 클릭 좌표 근처에 표가 있는지 확인한다 (표 바깥에서 클릭한 경우).
-   * hitTest 결과의 문단과 인접 문단을 검사하여 표 외곽 근처인지 판별한다.
+   * 페이지 레이아웃의 실제 표 컨트롤 인덱스를 우선 사용하고, 보조로 주변 문단을 검사한다.
    */
   private findTableByOuterClick(
+    pageIdx: number,
     pageX: number, pageY: number,
     sec: number, paragraphIndex: number,
   ): { sec: number; ppi: number; ci: number } | null {
-    // 현재 문단 및 인접 문단 (±2) 검사
+    try {
+      const layout = this.wasm.getPageControlLayout(pageIdx);
+      const tolerance = 5;
+      const isNearBorder = (x: number, y: number, w: number, h: number): boolean => {
+        const nearLeft = Math.abs(pageX - x) <= tolerance;
+        const nearRight = Math.abs(pageX - (x + w)) <= tolerance;
+        const nearTop = Math.abs(pageY - y) <= tolerance;
+        const nearBottom = Math.abs(pageY - (y + h)) <= tolerance;
+        const inVertRange = pageY >= y - tolerance && pageY <= y + h + tolerance;
+        const inHorzRange = pageX >= x - tolerance && pageX <= x + w + tolerance;
+        return (nearLeft && inVertRange) || (nearRight && inVertRange) ||
+               (nearTop && inHorzRange) || (nearBottom && inHorzRange);
+      };
+
+      for (const item of layout.controls) {
+        if (item.type !== 'table') continue;
+        if (item.paraIdx === undefined || item.controlIdx === undefined) continue;
+        if ((item.secIdx ?? sec) !== sec) continue;
+        if (Math.abs(item.paraIdx - paragraphIndex) > 2) continue;
+        if (isNearBorder(item.x, item.y, item.w, item.h)) {
+          return { sec: item.secIdx ?? sec, ppi: item.paraIdx, ci: item.controlIdx };
+        }
+      }
+    } catch { /* 레이아웃 조회 실패 시 주변 문단 스캔으로 보조 */ }
+
+    // 현재 문단 및 인접 문단 (±2) 검사. 컨트롤 인덱스는 0 고정이 아니므로 일부 범위를 시도한다.
     for (let offset = 0; offset <= 2; offset++) {
       const candidates = offset === 0
         ? [paragraphIndex]
         : [paragraphIndex - offset, paragraphIndex + offset];
       for (const ppi of candidates) {
         if (ppi < 0) continue;
-        if (this.isTableBorderClick(pageX, pageY, sec, ppi, 0)) {
-          return { sec, ppi, ci: 0 };
+        for (let ci = 0; ci < 10; ci++) {
+          if (this.isTableBorderClick(pageX, pageY, sec, ppi, ci)) {
+            return { sec, ppi, ci };
+          }
         }
       }
     }
@@ -1864,6 +1897,7 @@ export class InputHandler {
   /** 편집 후 처리: 재렌더링 + 캐럿 갱신 */
   private afterEdit(): void {
     this.lastCellKey = null; // 편집 후 셀 bbox 캐시 무효화
+    this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
     this.eventBus.emit('document-changed');
     this.updateCaret();
@@ -1872,6 +1906,7 @@ export class InputHandler {
   /** 셀 내부 단일 텍스트 편집 후 처리: 현재 페이지 canvas만 갱신한다. */
   private afterPageLocalEdit(): void {
     this.lastCellKey = null;
+    this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
     const pageIndex = this.cursor.getRect()?.pageIndex;
     if (typeof pageIndex === 'number' && Number.isInteger(pageIndex) && pageIndex >= 0) {
@@ -2514,6 +2549,7 @@ export class InputHandler {
     this.cellSelectionRenderer?.dispose();
     this.tableObjectRenderer?.dispose();
     this.tableResizeRenderer?.dispose();
+    this.protectedCellHoverEl?.remove();
     this.contextMenu?.dispose();
   }
 

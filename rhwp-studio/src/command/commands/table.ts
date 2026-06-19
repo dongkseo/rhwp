@@ -108,16 +108,23 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:cell-props',
     label: '표/셀 속성',
-    canExecute: inTable,
+    canExecute: (ctx) => ctx.inTable || ctx.inCellSelectionMode || ctx.inTableObjectSelection,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
+      if (ih.isInTableObjectSelection()) {
+        const ref = ih.getSelectedTableRef();
+        if (!ref) return;
+        const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
+        const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table');
+        dialog.show();
+        return;
+      }
+
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
-      const ih2 = services.getInputHandler();
-      const mode = ih2?.isInTableObjectSelection() ? 'table' as const : 'cell' as const;
-      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, mode);
+      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell');
       dialog.show();
     },
   },
