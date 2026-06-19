@@ -1,4 +1,4 @@
-import type { CommandDef, EditorContext } from '../types';
+import type { CommandDef, CommandServices, EditorContext } from '../types';
 import { TableCellPropsDialog } from '@/ui/table-cell-props-dialog';
 import { TableCreateDialog } from '@/ui/table-create-dialog';
 import { CellSplitDialog } from '@/ui/cell-split-dialog';
@@ -8,8 +8,30 @@ import { FormulaDialog } from '@/ui/formula-dialog';
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
 
+type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
+type TableDimensions = { rowCount: number; colCount: number; cellCount: number };
+
 function safeTableOp(fn: () => void, label: string): void {
   try { fn(); } catch (e) { console.error(`[table] ${label} 실패:`, e); }
+}
+
+function equalizeTargetRange(ih: ReturnType<CommandServices['getInputHandler']>, dims: TableDimensions): CellRange {
+  const range = ih?.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() : null;
+  return range ?? {
+    startRow: 0,
+    startCol: 0,
+    endRow: Math.max(0, dims.rowCount - 1),
+    endCol: Math.max(0, dims.colCount - 1),
+  };
+}
+
+function hasNonRectangularCellSelection(ih: ReturnType<CommandServices['getInputHandler']>): boolean {
+  return Boolean(ih?.isInCellSelectionMode?.() && ih.hasExcludedCellSelection?.());
+}
+
+function isCellInRange(cell: { row: number; col: number }, range: CellRange): boolean {
+  return cell.row >= range.startRow && cell.row <= range.endRow &&
+    cell.col >= range.startCol && cell.col <= range.endCol;
 }
 
 function stub(id: string, label: string, icon?: string, shortcut?: string): CommandDef {
@@ -441,11 +463,14 @@ export const tableCommands: CommandDef[] = [
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex;
       try {
+        if (hasNonRectangularCellSelection(ih)) return;
         const dims = services.wasm.getTableDimensions(sec, ppi, ci);
+        const range = equalizeTargetRange(ih, dims);
         const cells: Array<{ idx: number; row: number; height: number }> = [];
         const rowHeights = new Map<number, { sum: number; count: number }>();
         for (let i = 0; i < dims.cellCount; i++) {
           const info = services.wasm.getCellInfo(sec, ppi, ci, i);
+          if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
           const h = services.wasm.getCellProperties(sec, ppi, ci, i).height;
           cells.push({ idx: i, row: info.row, height: h });
@@ -482,11 +507,14 @@ export const tableCommands: CommandDef[] = [
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const sec = pos.sectionIndex, ppi = pos.parentParaIndex, ci = pos.controlIndex;
       try {
+        if (hasNonRectangularCellSelection(ih)) return;
         const dims = services.wasm.getTableDimensions(sec, ppi, ci);
+        const range = equalizeTargetRange(ih, dims);
         const cells: Array<{ idx: number; col: number; width: number }> = [];
         const colWidths = new Map<number, { sum: number; count: number }>();
         for (let i = 0; i < dims.cellCount; i++) {
           const info = services.wasm.getCellInfo(sec, ppi, ci, i);
+          if (!isCellInRange(info, range)) continue;
           if (info.colSpan > 1) continue;
           const w = services.wasm.getCellProperties(sec, ppi, ci, i).width;
           cells.push({ idx: i, col: info.col, width: w });

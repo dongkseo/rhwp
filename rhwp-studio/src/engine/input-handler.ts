@@ -3398,6 +3398,9 @@ export class InputHandler {
   /** 셀 선택 중인 표의 컨텍스트 반환 */
   getCellTableContext() { return this.cursor.getCellTableContext(); }
 
+  /** 제외 셀이 있는 비직사각형 셀 선택인가? */
+  hasExcludedCellSelection(): boolean { return this.cursor.getExcludedCells().size > 0; }
+
   /** 셀 선택 모드 종료 */
   exitCellSelectionMode(): void {
     this.cursor.exitCellSelectionMode();
