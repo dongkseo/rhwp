@@ -4,6 +4,52 @@ This document records the major changes of the rhwp project.
 
 > 한국어 버전은 [CHANGELOG.md](CHANGELOG.md) 를 참조하세요.
 
+## [0.7.16] — 2026-06-19
+
+> Patch following v0.7.15 — refines the HWPX save contract (serializer fidelity), fixes
+> ClickHere guide-text binding in the Hancom editor, adds a drag-and-drop security gate to
+> rhwp-studio, and lands many rendering/table/picture fixes plus external contributor PRs.
+> Public APIs remain backward-compatible — PATCH.
+
+### HWPX save contract (serializer fidelity)
+- Preserve controls inside cell/text-box subLists, original linesegs, and table/picture/group captions (#1379/#1380/#1387/#1403).
+- Emit secPr page margins and body column (colPr) definitions from the IR instead of template hardcoding (#1388/#1407).
+- Preserve picture size elements (curSz/imgRect/imgDim), MEMO field parameters, shapeComment, borderFill/numbering registration axis, and table pageBreak (#1389/#1391/#1392/#1384/#1409/#1393).
+- Make parser autoNum width consistent, fix newNum slot position (#1382/#1407); add an enum-token surface-format check (#1402).
+- Lossless roundtrip for DocInfo, numbering paraHead, cellzoneList, useKerning/useFontSpace (#1405/#1350), and hp:tc cell field-name parsing (#1401).
+
+### Hancom compatibility
+- Fix the ClickHere guide-text (Direction) command format to match Hancom's reference output — resolves guide text not binding in the Hancom editor (#1434).
+
+### rhwp-studio security & UX
+- Exclude drag-and-drop local file loading from default behavior; require explicit opt-in via a modal confirm dialog before loading (#1439). Works in both extension and web modes.
+- ClickHere form-mode/boundary editing, edit caret/focus, object aspect-ratio lock / size protection, table-cell TAC picture vertical alignment (#1419/#1428/#1430/#1436/#1352/#258).
+- Dark theme support and residual UI contrast cleanup (#1420/#1422). Fix replaceAll save loss, image Shift resize, post table-create F5 handling (#1398/#1400/#1404).
+
+### Rendering
+- Native PDF export API (DocumentCore) + report-only PDF visual diff (#1359). Text IR v2 font-proof gates, exact font replay proof, glyph orientation/transform authority (#1421/#1429/#1312).
+- Endnote height-model measurement SSOT / gate recalibration, official endnote shape model normalization, integral glyph (#1363/#1370/#1410/#1314/#1377); page-area-limited table-cell / rotated-cell picture placement (#1282).
+
+### Other
+- Add a 27-sample chart corpus (OOXML + legacy) verification fixture (#1431, P-1); split endnote dump / sweep verification infra (#1395).
+- Preserve mixed page sizes when printing (#1383); Onsamiro picture wrap / paragraph border alignment (#1441).
+
+### Contributors
+
+External contributor PRs merged in this cycle (after v0.7.15; GitHub handles, alphabetical):
+
+- @Martinel2 — useFontSpace IR field + HWP5/HWPX parser & serializer (#1350)
+- @Mireutale — HWPX table-cell tab/line-break inline serialization, picture effects/shadow roundtrip (#1360/#1349)
+- @jangster77 (Taesup Jang) — endnote shape model normalization, ClickHere form/edit, dark theme, table-cell picture / size protection, Onsamiro alignment (#1410/#1419/#1420/#1427/#1430/#1435/#1437/#1441), verification infra (#1395)
+- @johndoekim — 27-sample chart corpus (#1431 / PR #1432)
+- @msjang (Minseok Jang) — preserve mixed page sizes when printing (#1383)
+- @mrshinds — TAC table host-line spacing (#1376)
+- @oksure (Hyunwoo Park) — replaceAll save loss, createEmpty default section, image resize, hp:tc cell name, post-create F5, caption parse/serialize (#1398/#1399/#1400/#1401/#1404/#1406)
+- @physwkim (Sang Woo Kim) — HWPX lossless roundtrip (DocInfo/cellzoneList/useKerning, etc.) (#1405)
+- @planet6897 (Jaeuk Ryu) — endnote height SSOT/gate, integral glyph, endnote divergence diagnosis/closure (#1314/#1371/#1374/#1377 / PR #1390)
+- @postmelee — rhwp-studio dark-mode residual UI contrast (#1422 / PR #1424)
+- @seo-rii (Seohyun Lee) — renderer baseline sweep, native PDF export API, Text IR v2 font-proof gates (#1312/#1359/#1421/#1429)
+
 ## [0.7.15] — 2026-06-06
 
 > Security patch following v0.7.14 — hardens browser-extension service-worker fetch paths,

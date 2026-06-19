@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.16] - 2026-06-19
+
+라이브러리 버전 동기화. v0.7.15 후속 사이클 (6/6~6/19) patch 릴리즈.
+
+핵심 변경:
+
+- HWPX 저장 계약(serializer fidelity): 셀·글상자 컨트롤·lineseg·캡션 보존, secPr 여백·본문 단(colPr) IR 치환, 그림 크기·MEMO·shapeComment·등록 축·표 pageBreak 보존, 무손실 라운드트립 보강.
+- 한컴 호환: 누름틀 안내문(Direction) command 포맷 정정 — 한컴 에디터 안내문 바인딩 해소.
+- rhwp-studio: 드래그&드롭 로컬 파일 로딩 보안 게이트(모달 확인), 누름틀 편집·다크테마·표 셀 그림 정합.
+- 렌더링: native PDF export API, Text IR v2 폰트 증명 게이트, 미주 높이 SSOT, 회전 셀 그림 배치.
+- 외부 기여자 PR 다수 반영(@seo-rii/@planet6897/@oksure/@physwkim/@mrshinds/@postmelee/@msjang/@johndoekim/@Martinel2/@Mireutale/@jangster77).
+
 ## [0.7.14] - 2026-06-05
 
 라이브러리 버전 동기화. v0.7.13 후속 사이클 (5/26~6/5) — 미주 흐름·간격 정합, 수식 렌더링/배치 정밀화, 표 셀 안 그림 편집 한컴 정합, HWPX 저장 계약 확장, 외부 기여자 PR 다수 반영 중심의 patch 릴리즈.

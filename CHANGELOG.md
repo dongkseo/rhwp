@@ -2,6 +2,51 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다.
 
+## [0.7.16] — 2026-06-19
+
+> v0.7.15 후속 patch — HWPX 저장 계약(serializer fidelity) 정밀화, 누름틀 안내문 한컴 호환,
+> rhwp-studio 드래그&드롭 보안 게이트, 렌더·표·그림 정합과 외부 기여자 PR 다수 반영.
+> 공개 API 하위 호환 유지 — PATCH.
+
+### HWPX 저장 계약 (serializer fidelity)
+- 셀·글상자 subList 내부 컨트롤 보존, lineseg 원본 보존, 표/그림/묶음 캡션 직렬화 (#1379/#1380/#1387/#1403).
+- secPr 페이지 여백·본문 단(colPr) 정의를 IR 값으로 치환 — 템플릿 하드코딩 제거 (#1388/#1407).
+- 그림 크기 요소(curSz/imgRect/imgDim), MEMO 필드 parameters, shapeComment, borderFill/numbering 등록 축, 표 pageBreak 보존 (#1389/#1391/#1392/#1384/#1409/#1393).
+- 파서 autoNum 폭 일관화, newNum 슬롯 위치 정정 (#1382/#1407). 열거 속성 표면 표기 정합 검사 추가 (#1402).
+- DocInfo·numbering paraHead·cellzoneList·useKerning·useFontSpace 등 무손실 라운드트립 보강 (#1405/#1350), hp:tc 셀 필드 이름 파싱 (#1401).
+
+### 한컴 호환
+- 누름틀(ClickHere) 안내문(Direction) command 포맷을 한컴 정답지 동형으로 정정 — 한컴 에디터에서 안내문이 바인딩되지 않던 문제 해소 (#1434).
+
+### rhwp-studio 보안·UX
+- 드래그&드롭 로컬 파일 로딩을 기본 동작에서 제외하고, 드롭 시 모달 확인 대화상자로 명시적 동의(opt-in) 후에만 로딩 (#1439). 확장/웹 공통.
+- 누름틀 양식 모드·경계 편집, 편집 커서/포커스, 개체 속성 비율 유지·크기 고정, 표 셀 TAC 그림 세로 정렬 (#1419/#1428/#1430/#1436/#1352/#258).
+- 다크테마 지원 + 잔여 UI 대비 정리 (#1420/#1422). replaceAll 저장 유실 정정, 이미지 Shift 크기 조절, 표 생성 직후 F5 처리 (#1398/#1400/#1404).
+
+### 렌더링
+- native PDF export API(DocumentCore) + report-only PDF visual diff (#1359). Text IR v2 폰트 증명 게이트, exact font replay proof, glyph orientation/transform authority 정밀화 (#1421/#1429/#1312).
+- 미주 높이 모델 측정 SSOT·게이트 재보정, 공식 미주 모양 모델 정규화, 적분기호 글리프 (#1363/#1370/#1410/#1314/#1377). 쪽 영역 제한 표 셀/회전 셀 그림 배치 정합 (#1282).
+
+### 기타
+- 차트 샘플 코퍼스 27종(OOXML+레거시) 검증 fixture 추가 (#1431 P-1). 미주 덤프·sweep 검증 인프라 분리 (#1395).
+- 인쇄 시 혼합 용지 크기 보존 (#1383). 온새미로 그림 어울림·문단 테두리 정합 (#1441).
+
+### 기여자
+
+이번 사이클(v0.7.15 이후)에 머지된 외부 기여자 PR (GitHub 핸들, 가나다·알파벳순):
+
+- @Martinel2 — useFontSpace IR 필드 + HWP5/HWPX 파서·직렬화 (#1350)
+- @Mireutale — HWPX 표 셀 탭/줄바꿈 인라인 직렬화, 그림 effects/shadow roundtrip 보존 (#1360/#1349)
+- @jangster77 (Taesup Jang) — 미주 모양 모델 정규화, 누름틀 양식·편집, 다크테마, 표 셀 그림·크기 고정, 온새미로 정합 (#1410/#1419/#1420/#1427/#1430/#1435/#1437/#1441), 검증 인프라 (#1395)
+- @johndoekim — 차트 샘플 코퍼스 27종 (#1431/PR #1432)
+- @msjang (Minseok Jang) — 인쇄 시 혼합 용지 크기 보존 (#1383)
+- @mrshinds — TAC 표 host-line spacing (#1376)
+- @oksure (Hyunwoo Park) — replaceAll 저장 유실, createEmpty 기본 구역, 이미지 크기 조절, hp:tc 셀 이름, 표 생성 후 F5, 캡션 파싱·직렬화 (#1398/#1399/#1400/#1401/#1404/#1406)
+- @physwkim (Sang Woo Kim) — HWPX 무손실 라운드트립(DocInfo·cellzoneList·useKerning 등) (#1405)
+- @planet6897 (Jaeuk Ryu) — 미주 높이 SSOT·게이트, 적분기호 글리프, 미주 발산 진단·종결 (#1314/#1371/#1374/#1377/PR #1390)
+- @postmelee — rhwp-studio 다크모드 잔여 UI 대비 (#1422/PR #1424)
+- @seo-rii (Seohyun Lee) — 렌더러 baseline sweep, native PDF export API, Text IR v2 폰트 증명 게이트 (#1312/#1359/#1421/#1429)
+
 ## [0.7.15] — 2026-06-06
 
 > v0.7.14 후속 security patch — 브라우저 확장 service worker fetch 경로 보안 강화,
