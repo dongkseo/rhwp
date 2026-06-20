@@ -73,13 +73,38 @@ pub(crate) fn build_row_col_x(
                 Some(hwpunit_to_px(cell.width as i32, dpi));
         }
     }
-    // 열 너비는 col_widths(전체 행 최대값)로 균일 적용 (한컴 동작)
     let mut base_rx = vec![0.0f64; col_count + 1];
     for c in 0..col_count {
         base_rx[c + 1] =
             base_rx[c] + col_widths[c] + if c + 1 < col_count { cell_spacing } else { 0.0 };
     }
-    vec![base_rx; row_count]
+
+    if table.common.treat_as_char {
+        return vec![base_rx; row_count];
+    }
+
+    let has_independent_widths = cell_width_grid.iter().any(|row| {
+        row.iter().enumerate().any(|(c, w)| {
+            w.map(|actual| (actual - col_widths.get(c).copied().unwrap_or(actual)).abs() > 0.01)
+                .unwrap_or(false)
+        })
+    });
+    if !has_independent_widths {
+        return vec![base_rx; row_count];
+    }
+
+    let fallback_w = hwpunit_to_px(1800, dpi);
+    let mut row_col_x = vec![vec![0.0f64; col_count + 1]; row_count];
+    for r in 0..row_count {
+        for c in 0..col_count {
+            let w = cell_width_grid[r][c]
+                .or_else(|| col_widths.get(c).copied())
+                .unwrap_or(fallback_w);
+            row_col_x[r][c + 1] =
+                row_col_x[r][c] + w + if c + 1 < col_count { cell_spacing } else { 0.0 };
+        }
+    }
+    row_col_x
 }
 
 /// 셀 테두리를 엣지 그리드에 수집

@@ -466,22 +466,17 @@ export const tableCommands: CommandDef[] = [
         if (hasNonRectangularCellSelection(ih)) return;
         const dims = services.wasm.getTableDimensions(sec, ppi, ci);
         const range = equalizeTargetRange(ih, dims);
-        const cells: Array<{ idx: number; row: number; height: number }> = [];
-        const rowHeights = new Map<number, number>();
-        const targetRows = new Set<number>();
-        for (let row = range.startRow; row <= range.endRow; row++) targetRows.add(row);
+        const cells: Array<{ idx: number; height: number }> = [];
         for (let i = 0; i < dims.cellCount; i++) {
           const info = services.wasm.getCellInfo(sec, ppi, ci, i);
-          if (!targetRows.has(info.row)) continue;
+          if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
           const h = services.wasm.getCellProperties(sec, ppi, ci, i).height;
-          cells.push({ idx: i, row: info.row, height: h });
-          rowHeights.set(info.row, Math.max(rowHeights.get(info.row) ?? 0, h));
+          cells.push({ idx: i, height: h });
         }
-        if (rowHeights.size < 2) return;
-        let totalHeight = 0;
-        for (const h of rowHeights.values()) totalHeight += h;
-        const avgHeight = Math.round(totalHeight / rowHeights.size);
+        if (cells.length < 2) return;
+        const totalHeight = cells.reduce((sum, c) => sum + c.height, 0);
+        const avgHeight = Math.round(totalHeight / cells.length);
         const updates: Array<{ cellIdx: number; heightDelta: number }> = [];
         for (const c of cells) {
           const delta = avgHeight - c.height;
