@@ -87,7 +87,12 @@ copy(resolve(__dirname, '_locales'), resolve(DIST, '_locales'));
 
 // rhwp-studio 리소스 (CSS에서 참조)
 mkdirSync(resolve(DIST, 'images'), { recursive: true });
+// [#1444] 다크테마 FOUC 방지 스크립트 (vite publicDir:false 라 개별 복사). 확장 CSP('self')
+// 가 인라인을 금지하므로 viewer.html 의 <script src="/theme-init.js"> 대상 파일을 둔다.
+copy(resolve(ROOT, 'rhwp-studio', 'public', 'theme-init.js'), resolve(DIST, 'theme-init.js'));
 copy(resolve(ROOT, 'rhwp-studio', 'public', 'images', 'icon_small_ko.svg'), resolve(DIST, 'images', 'icon_small_ko.svg'));
+// [#1444] 다크 모드 아이콘 스프라이트 (base.css 다크 테마에서 참조). 누락 시 viewer 404.
+copy(resolve(ROOT, 'rhwp-studio', 'public', 'images', 'icon_small_ko_dark.svg'), resolve(DIST, 'images', 'icon_small_ko_dark.svg'));
 copy(resolve(ROOT, 'rhwp-studio', 'public', 'favicon.ico'), resolve(DIST, 'favicon.ico'));
 
 // 3. WASM 복사
