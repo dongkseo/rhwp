@@ -3030,21 +3030,10 @@ impl LayoutEngine {
         for cell in &table.cells {
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
-                let (pad_top, pad_bottom) = if !cell.apply_inner_margin {
-                    (table.padding.top as u32, table.padding.bottom as u32)
+                let (pad_top, pad_bottom) = if cell.apply_inner_margin {
+                    (cell.padding.top as u32, cell.padding.bottom as u32)
                 } else {
-                    (
-                        if cell.padding.top != 0 {
-                            cell.padding.top as u32
-                        } else {
-                            table.padding.top as u32
-                        },
-                        if cell.padding.bottom != 0 {
-                            cell.padding.bottom as u32
-                        } else {
-                            table.padding.bottom as u32
-                        },
-                    )
+                    (table.padding.top as u32, table.padding.bottom as u32)
                 };
                 let content_h: i32 = cell
                     .paragraphs

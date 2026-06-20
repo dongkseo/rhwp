@@ -376,3 +376,44 @@ fn set_cell_properties_reflows_text_after_inner_margin_change() {
         "안 여백 지정 플래그가 켜져 있어야 함"
     );
 }
+
+#[test]
+fn set_cell_properties_reflows_text_after_inner_margin_turns_off() {
+    let bytes = sample_bytes("samples/셀보호2.hwp");
+    let parsed = parse_document(&bytes).expect("parse 셀보호2.hwp");
+    let pos = find_first_table(&parsed);
+    let mut doc = HwpDocument::from_bytes(&bytes).expect("load HwpDocument");
+
+    doc.set_cell_properties(
+        pos.section as u32,
+        pos.para as u32,
+        pos.control as u32,
+        20,
+        r#"{"applyInnerMargin":false}"#,
+    )
+    .expect("turn applyInnerMargin off");
+
+    let Control::Table(table) =
+        &doc.document().sections[pos.section].paragraphs[pos.para].controls[pos.control]
+    else {
+        panic!("expected table control");
+    };
+    let cell = &table.cells[20];
+    assert!(
+        !cell.apply_inner_margin,
+        "안 여백 지정 플래그가 꺼져 있어야 함"
+    );
+    assert_eq!(
+        cell.padding.left, 2834,
+        "체크 해제는 좌측 padding 원값을 보존"
+    );
+    assert_eq!(
+        cell.padding.right, 2834,
+        "체크 해제는 우측 padding 원값을 보존"
+    );
+    assert_eq!(
+        cell.paragraphs[0].line_segs.len(),
+        1,
+        "안 여백 지정 off 후에는 보존된 10mm 값이 아니라 표 기본 여백 기준으로 한 줄 reflow"
+    );
+}

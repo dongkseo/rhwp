@@ -737,31 +737,24 @@ impl HeightMeasurer {
                 let r = cell.row as usize;
                 // 셀 패딩 — layout 의 resolve_cell_padding 과 일관성:
                 //   aim=true  → cell.padding (0 도 명시값으로 존중)
-                //   aim=false → 기본은 table.padding, 단 cell > table 인 비대칭 축만 cell 우선
-                let prefer_cell_axis = |c: i16, t: i16| -> bool {
-                    if cell.apply_inner_margin {
-                        c != 0
-                    } else {
-                        (c as i32) > (t as i32)
-                    }
-                };
-                let pad_top = if prefer_cell_axis(cell.padding.top, table.padding.top) {
+                //   aim=false → table.padding
+                let pad_top = if cell.apply_inner_margin {
                     hwpunit_to_px(cell.padding.top as i32, self.dpi)
                 } else {
                     hwpunit_to_px(table.padding.top as i32, self.dpi)
                 };
-                let pad_bottom = if prefer_cell_axis(cell.padding.bottom, table.padding.bottom) {
+                let pad_bottom = if cell.apply_inner_margin {
                     hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
                 } else {
                     hwpunit_to_px(table.padding.bottom as i32, self.dpi)
                 };
                 // [Task #671] 좌우 패딩 — recompose_for_cell_width 의 inner_width 계산용
-                let pad_left = if prefer_cell_axis(cell.padding.left, table.padding.left) {
+                let pad_left = if cell.apply_inner_margin {
                     hwpunit_to_px(cell.padding.left as i32, self.dpi)
                 } else {
                     hwpunit_to_px(table.padding.left as i32, self.dpi)
                 };
-                let pad_right = if prefer_cell_axis(cell.padding.right, table.padding.right) {
+                let pad_right = if cell.apply_inner_margin {
                     hwpunit_to_px(cell.padding.right as i32, self.dpi)
                 } else {
                     hwpunit_to_px(table.padding.right as i32, self.dpi)
@@ -982,43 +975,27 @@ impl HeightMeasurer {
             let r = cell.row as usize;
             let span = cell.row_span as usize;
             if span > 1 && r + span <= row_count {
-                let (pad_top, pad_bottom) = if !cell.apply_inner_margin {
+                let (pad_top, pad_bottom) = if cell.apply_inner_margin {
+                    (
+                        hwpunit_to_px(cell.padding.top as i32, self.dpi),
+                        hwpunit_to_px(cell.padding.bottom as i32, self.dpi),
+                    )
+                } else {
                     (
                         hwpunit_to_px(table.padding.top as i32, self.dpi),
                         hwpunit_to_px(table.padding.bottom as i32, self.dpi),
                     )
-                } else {
-                    (
-                        if cell.padding.top != 0 {
-                            hwpunit_to_px(cell.padding.top as i32, self.dpi)
-                        } else {
-                            hwpunit_to_px(table.padding.top as i32, self.dpi)
-                        },
-                        if cell.padding.bottom != 0 {
-                            hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
-                        } else {
-                            hwpunit_to_px(table.padding.bottom as i32, self.dpi)
-                        },
-                    )
                 };
                 // [Task #671] 좌우 패딩 (recompose_for_cell_width inner_width 계산용)
-                let (pad_left, pad_right) = if !cell.apply_inner_margin {
+                let (pad_left, pad_right) = if cell.apply_inner_margin {
+                    (
+                        hwpunit_to_px(cell.padding.left as i32, self.dpi),
+                        hwpunit_to_px(cell.padding.right as i32, self.dpi),
+                    )
+                } else {
                     (
                         hwpunit_to_px(table.padding.left as i32, self.dpi),
                         hwpunit_to_px(table.padding.right as i32, self.dpi),
-                    )
-                } else {
-                    (
-                        if cell.padding.left != 0 {
-                            hwpunit_to_px(cell.padding.left as i32, self.dpi)
-                        } else {
-                            hwpunit_to_px(table.padding.left as i32, self.dpi)
-                        },
-                        if cell.padding.right != 0 {
-                            hwpunit_to_px(cell.padding.right as i32, self.dpi)
-                        } else {
-                            hwpunit_to_px(table.padding.right as i32, self.dpi)
-                        },
                     )
                 };
                 let cell_w_px = if cell.width < 0x80000000 {
@@ -1227,12 +1204,12 @@ impl HeightMeasurer {
                 .iter()
                 .filter(|cell| (cell.row as usize) < row_count)
                 .map(|cell| {
-                    let pad_top = if cell.padding.top != 0 {
+                    let pad_top = if cell.apply_inner_margin {
                         hwpunit_to_px(cell.padding.top as i32, self.dpi)
                     } else {
                         hwpunit_to_px(table.padding.top as i32, self.dpi)
                     };
-                    let pad_bottom = if cell.padding.bottom != 0 {
+                    let pad_bottom = if cell.apply_inner_margin {
                         hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
                     } else {
                         hwpunit_to_px(table.padding.bottom as i32, self.dpi)

@@ -1412,7 +1412,7 @@ impl LayoutEngine {
         }
     }
 
-    /// 셀 패딩 계산 (cell.padding이 0이면 table.padding fallback)
+    /// 셀 패딩 계산
     pub(crate) fn resolve_cell_padding(
         &self,
         cell: &crate::model::table::Cell,
@@ -1420,31 +1420,24 @@ impl LayoutEngine {
     ) -> (f64, f64, f64, f64) {
         // HWP 스펙: aim(apply_inner_margin)=true → cell.padding,
         //           aim=false → table.padding 우선.
-        // Task #347: 단, aim=false에서도 cell.padding이 table.padding보다
-        // 큰 비대칭 값이면 작성자 의도(예: KTX 목차 R=1417 HU)로 보고 그 축만 cell 사용.
-        // (Task #279의 "전 축에서 cell 우선" 휴리스틱은 일반 박스 셀에서 표 padding을
-        // 무시해 텍스트가 왼쪽으로 붙어버리는 부작용이 있어 축소 적용.)
-        let prefer_cell_axis = |c: i16, t: i16| -> bool {
-            // aim=true: 0mm도 사용자가 지정한 셀 고유 안 여백이다.
-            // aim=false: cell이 table보다 명백히 큰 경우만 cell 우선 (의도된 비대칭)
-            cell.apply_inner_margin || (c as i32) > (t as i32)
-        };
-        let pad_left = if prefer_cell_axis(cell.padding.left, table.padding.left) {
+        // 한컴은 aim=false일 때 cell.padding 원값을 파일에 보존하더라도 렌더에는 쓰지 않는다.
+        // aim=true에서는 0mm도 사용자가 지정한 셀 고유 안 여백으로 존중한다.
+        let pad_left = if cell.apply_inner_margin {
             hwpunit_to_px(cell.padding.left as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.left as i32, self.dpi)
         };
-        let pad_right = if prefer_cell_axis(cell.padding.right, table.padding.right) {
+        let pad_right = if cell.apply_inner_margin {
             hwpunit_to_px(cell.padding.right as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.right as i32, self.dpi)
         };
-        let pad_top = if prefer_cell_axis(cell.padding.top, table.padding.top) {
+        let pad_top = if cell.apply_inner_margin {
             hwpunit_to_px(cell.padding.top as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.top as i32, self.dpi)
         };
-        let pad_bottom = if prefer_cell_axis(cell.padding.bottom, table.padding.bottom) {
+        let pad_bottom = if cell.apply_inner_margin {
             hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.bottom as i32, self.dpi)
