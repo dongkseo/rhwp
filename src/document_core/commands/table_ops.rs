@@ -1046,6 +1046,7 @@ impl DocumentCore {
             );
             let nv = cur_v.wrapping_add(delta_v);
             table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&nv.to_le_bytes());
+            table.common.vertical_offset = nv as u32;
             nv
         } else {
             i32::from_le_bytes(
@@ -1064,6 +1065,7 @@ impl DocumentCore {
             );
             let new_h = cur_h.wrapping_add(delta_h);
             table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&new_h.to_le_bytes());
+            table.common.horizontal_offset = new_h as u32;
         }
 
         // treat_as_char 표: 문단 경계를 넘으면 문단 이동 (다중 경계 루프)
@@ -1107,6 +1109,7 @@ impl DocumentCore {
                 let tbl = self.get_table_mut(section_idx, result_ppi, control_idx)?;
                 tbl.raw_ctrl_data[common_obj_offsets::V_OFFSET]
                     .copy_from_slice(&new_v.to_le_bytes());
+                tbl.common.vertical_offset = new_v as u32;
             }
         }
 
@@ -1328,6 +1331,7 @@ impl DocumentCore {
             } else {
                 table.attr &= !0x01;
             }
+            table.common.treat_as_char = v;
         }
 
         // 위치 속성: attr 비트 필드
@@ -1340,6 +1344,12 @@ impl DocumentCore {
                 _ => 0,
             };
             table.attr = (table.attr & !(0x07 << 21)) | (bits << 21);
+            table.common.text_wrap = match bits {
+                1 => crate::model::shape::TextWrap::TopAndBottom,
+                2 => crate::model::shape::TextWrap::BehindText,
+                3 => crate::model::shape::TextWrap::InFrontOfText,
+                _ => crate::model::shape::TextWrap::Square,
+            };
         }
         if let Some(v) = json_str(json, "vertRelTo") {
             let bits: u32 = match v.as_str() {
@@ -1349,6 +1359,11 @@ impl DocumentCore {
                 _ => 0,
             };
             table.attr = (table.attr & !(0x03 << 3)) | (bits << 3);
+            table.common.vert_rel_to = match bits {
+                1 => crate::model::shape::VertRelTo::Page,
+                2 => crate::model::shape::VertRelTo::Para,
+                _ => crate::model::shape::VertRelTo::Paper,
+            };
         }
         if let Some(v) = json_str(json, "vertAlign") {
             let bits: u32 = match v.as_str() {
@@ -1360,6 +1375,13 @@ impl DocumentCore {
                 _ => 0,
             };
             table.attr = (table.attr & !(0x07 << 5)) | (bits << 5);
+            table.common.vert_align = match bits {
+                1 => crate::model::shape::VertAlign::Center,
+                2 => crate::model::shape::VertAlign::Bottom,
+                3 => crate::model::shape::VertAlign::Inside,
+                4 => crate::model::shape::VertAlign::Outside,
+                _ => crate::model::shape::VertAlign::Top,
+            };
         }
         if let Some(v) = json_str(json, "horzRelTo") {
             let bits: u32 = match v.as_str() {
@@ -1370,6 +1392,12 @@ impl DocumentCore {
                 _ => 0,
             };
             table.attr = (table.attr & !(0x03 << 8)) | (bits << 8);
+            table.common.horz_rel_to = match bits {
+                1 => crate::model::shape::HorzRelTo::Page,
+                2 => crate::model::shape::HorzRelTo::Column,
+                3 => crate::model::shape::HorzRelTo::Para,
+                _ => crate::model::shape::HorzRelTo::Paper,
+            };
         }
         if let Some(v) = json_str(json, "horzAlign") {
             let bits: u32 = match v.as_str() {
@@ -1381,32 +1409,48 @@ impl DocumentCore {
                 _ => 0,
             };
             table.attr = (table.attr & !(0x07 << 10)) | (bits << 10);
+            table.common.horz_align = match bits {
+                1 => crate::model::shape::HorzAlign::Center,
+                2 => crate::model::shape::HorzAlign::Right,
+                3 => crate::model::shape::HorzAlign::Inside,
+                4 => crate::model::shape::HorzAlign::Outside,
+                _ => crate::model::shape::HorzAlign::Left,
+            };
         }
+        table.common.attr = table.attr;
         // 위치 오프셋: CommonObjAttr [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset
         while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
             table.raw_ctrl_data.push(0);
         }
         if let Some(v) = json_i32(json, "vertOffset") {
             table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&v.to_le_bytes());
+            table.common.vertical_offset = v as u32;
         }
         if let Some(v) = json_i32(json, "horzOffset") {
             table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&v.to_le_bytes());
+            table.common.horizontal_offset = v as u32;
         }
         // restrictInPage → attr bit 13
         if let Some(v) = json_bool(json, "restrictInPage") {
             if v {
                 table.attr |= 1 << 13;
+                table.common.flow_with_text = true;
             } else {
                 table.attr &= !(1 << 13);
+                table.common.flow_with_text = false;
             }
+            table.common.attr = table.attr;
         }
         // allowOverlap → attr bit 14
         if let Some(v) = json_bool(json, "allowOverlap") {
             if v {
                 table.attr |= 1 << 14;
+                table.common.allow_overlap = true;
             } else {
                 table.attr &= !(1 << 14);
+                table.common.allow_overlap = false;
             }
+            table.common.attr = table.attr;
         }
         // keepWithAnchor → prevent_page_break
         // CommonObjAttr::PREVENT_PAGE_BREAK (parse_common_obj_attr 정합)
@@ -1417,6 +1461,7 @@ impl DocumentCore {
             let val: i32 = if v { 1 } else { 0 };
             table.raw_ctrl_data[common_obj_offsets::PREVENT_PAGE_BREAK]
                 .copy_from_slice(&val.to_le_bytes());
+            table.common.prevent_page_break = val;
         }
 
         // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합)
@@ -1424,18 +1469,22 @@ impl DocumentCore {
             if let Some(v) = json_i16(json, "outerLeft") {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_LEFT]
                     .copy_from_slice(&v.to_le_bytes());
+                table.common.margin.left = v;
             }
             if let Some(v) = json_i16(json, "outerRight") {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
                     .copy_from_slice(&v.to_le_bytes());
+                table.common.margin.right = v;
             }
             if let Some(v) = json_i16(json, "outerTop") {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_TOP]
                     .copy_from_slice(&v.to_le_bytes());
+                table.common.margin.top = v;
             }
             if let Some(v) = json_i16(json, "outerBottom") {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
                     .copy_from_slice(&v.to_le_bytes());
+                table.common.margin.bottom = v;
             }
         }
 

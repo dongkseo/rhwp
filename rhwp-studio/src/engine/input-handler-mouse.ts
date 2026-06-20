@@ -324,7 +324,7 @@ export function onClick(this: any, e: MouseEvent): void {
     // 우클릭 → 표 객체 선택 유지 (컨텍스트 메뉴에서 처리)
     if (e.button === 2) return;
 
-    let enterSelectedTableCell = false;
+    let clickedInsideSelectedTable = false;
 
     // 좌클릭이 표 내부이면 → 이동 드래그 시작
     const ref = this.cursor.getSelectedTableRef();
@@ -343,6 +343,7 @@ export function onClick(this: any, e: MouseEvent): void {
         const py = (cy - po) / zoom;
         try {
           const handleDir = this.tableObjectRenderer?.getHandleAtPoint(cx, cy);
+          let enterCellHit: any = null;
           if (!handleDir) {
             const hit = this.wasm.hitTest(pi, px, py);
             if (!hit.isTextBox &&
@@ -350,17 +351,13 @@ export function onClick(this: any, e: MouseEvent): void {
                 hit.parentParaIndex === ref.ppi &&
                 hit.controlIndex === ref.ci &&
                 !this.isTableBorderClick(px, py, hit.sectionIndex, hit.parentParaIndex, hit.controlIndex)) {
-              // 표 객체 선택 상태에서 내부 셀을 다시 클릭하면 편집 진입으로 넘긴다.
-              this.cursor.exitTableObjectSelection();
-              this.eventBus.emit('table-object-selection-changed', false);
-              this.container.style.cursor = '';
-              enterSelectedTableCell = true;
+              enterCellHit = hit;
             }
           }
           const bbox = this.wasm.getTableBBox(ref.sec, ref.ppi, ref.ci);
-          if (!enterSelectedTableCell &&
-              px >= bbox.x && px <= bbox.x + bbox.width &&
+          if (px >= bbox.x && px <= bbox.x + bbox.width &&
               py >= bbox.y && py <= bbox.y + bbox.height) {
+            clickedInsideSelectedTable = true;
             e.preventDefault();
             this.isMoveDragging = true;
             this.moveDragState = {
@@ -369,6 +366,7 @@ export function onClick(this: any, e: MouseEvent): void {
               startPageX: px, startPageY: py,
               lastPageX: px, lastPageY: py,
               totalDeltaH: 0, totalDeltaV: 0,
+              pendingEnterCellHit: enterCellHit,
             };
             this.container.style.cursor = 'move';
             document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
@@ -379,7 +377,7 @@ export function onClick(this: any, e: MouseEvent): void {
       }
     }
 
-    if (!enterSelectedTableCell) {
+    if (!clickedInsideSelectedTable) {
       // 표 밖 좌클릭 → 표 객체 선택 해제
       this.cursor.exitTableObjectSelection();
       this.eventBus.emit('table-object-selection-changed', false);

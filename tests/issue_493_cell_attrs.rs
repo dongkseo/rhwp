@@ -127,6 +127,18 @@ fn assert_inner_margin_sample_attrs(doc: &Document, pos: TablePos) {
     );
 }
 
+fn table_common_offsets(doc: &HwpDocument, pos: TablePos) -> (i32, i32) {
+    let Control::Table(table) =
+        &doc.document().sections[pos.section].paragraphs[pos.para].controls[pos.control]
+    else {
+        panic!("expected table control");
+    };
+    (
+        table.common.horizontal_offset as i32,
+        table.common.vertical_offset as i32,
+    )
+}
+
 fn hwpx_section0_xml(bytes: &[u8]) -> String {
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).expect("open hwpx zip");
@@ -158,6 +170,75 @@ fn cell_protect_field_name_and_form_editable_are_parsed_from_hwp_and_hwpx() {
         assert_cell_attrs(&doc, pos);
         assert_api_attrs(&bytes, pos);
     }
+}
+
+#[test]
+fn table_properties_for_cellprotect2_match_hancom_common_object_attrs() {
+    let bytes = sample_bytes("samples/셀보호2.hwp");
+    let parsed = parse_document(&bytes).expect("parse 셀보호2.hwp");
+    let pos = find_first_table(&parsed);
+    let doc = HwpDocument::from_bytes(&bytes).expect("load HwpDocument");
+
+    let json = doc
+        .get_table_properties(pos.section as u32, pos.para as u32, pos.control as u32)
+        .expect("get table properties");
+    let props: Value = serde_json::from_str(&json).expect("parse table properties");
+
+    assert_eq!(props["tableWidth"].as_u64(), Some(43190), "{json}");
+    assert_eq!(props["tableHeight"].as_u64(), Some(17932), "{json}");
+    assert_eq!(props["horzOffset"].as_i64(), Some(4), "{json}");
+    assert_eq!(props["vertOffset"].as_i64(), Some(22133), "{json}");
+    assert_eq!(props["horzRelTo"].as_str(), Some("Column"), "{json}");
+    assert_eq!(props["vertRelTo"].as_str(), Some("Para"), "{json}");
+    assert_eq!(props["textWrap"].as_str(), Some("TopAndBottom"), "{json}");
+    assert_eq!(props["treatAsChar"].as_bool(), Some(false), "{json}");
+}
+
+#[test]
+fn table_move_keeps_raw_and_common_offsets_in_sync() {
+    let bytes = sample_bytes("samples/셀보호2.hwp");
+    let parsed = parse_document(&bytes).expect("parse 셀보호2.hwp");
+    let pos = find_first_table(&parsed);
+    let mut doc = HwpDocument::from_bytes(&bytes).expect("load HwpDocument");
+
+    let before_json = doc
+        .get_table_properties(pos.section as u32, pos.para as u32, pos.control as u32)
+        .expect("get before table properties");
+    let before: Value = serde_json::from_str(&before_json).expect("parse before table properties");
+    let before_horz = before["horzOffset"].as_i64().expect("before horzOffset") as i32;
+    let before_vert = before["vertOffset"].as_i64().expect("before vertOffset") as i32;
+
+    doc.move_table_offset(
+        pos.section as u32,
+        pos.para as u32,
+        pos.control as u32,
+        750,
+        -375,
+    )
+    .expect("move table offset");
+
+    let after_json = doc
+        .get_table_properties(pos.section as u32, pos.para as u32, pos.control as u32)
+        .expect("get after table properties");
+    let after: Value = serde_json::from_str(&after_json).expect("parse after table properties");
+    let expected_horz = before_horz + 750;
+    let expected_vert = before_vert - 375;
+
+    assert_eq!(
+        after["horzOffset"].as_i64(),
+        Some(expected_horz as i64),
+        "{after_json}"
+    );
+    assert_eq!(
+        after["vertOffset"].as_i64(),
+        Some(expected_vert as i64),
+        "{after_json}"
+    );
+    assert_eq!(
+        table_common_offsets(&doc, pos),
+        (expected_horz, expected_vert),
+        "렌더링이 참조하는 table.common 위치도 raw_ctrl_data와 동기화되어야 함"
+    );
 }
 
 #[test]

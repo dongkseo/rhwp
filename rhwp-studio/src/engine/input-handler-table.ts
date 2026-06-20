@@ -878,6 +878,14 @@ export function updateMoveDrag(this: any, e: MouseEvent): void {
   const px = (cx - pl) / zoom;
   const py = (cy - po) / zoom;
 
+  if (!this.moveDragState.hasMoved) {
+    const threshold = 3 / Math.max(zoom, 0.1);
+    const dxFromStart = px - this.moveDragState.startPageX;
+    const dyFromStart = py - this.moveDragState.startPageY;
+    if (Math.hypot(dxFromStart, dyFromStart) < threshold) return;
+    this.moveDragState.hasMoved = true;
+  }
+
   // 이전 위치와의 차이를 HWPUNIT으로 변환 (1px = 7200/96 = 75 HWPUNIT)
   const deltaXpx = px - this.moveDragState.lastPageX;
   const deltaYpx = py - this.moveDragState.lastPageY;
@@ -905,9 +913,11 @@ export function updateMoveDrag(this: any, e: MouseEvent): void {
 }
 
 export function finishMoveDrag(this: any): void {
+  const state = this.moveDragState;
+
   // Undo 기록: 드래그 전체를 하나의 명령으로 기록
-  if (this.moveDragState) {
-    const { totalDeltaH, totalDeltaV, startPpi, tableRef } = this.moveDragState;
+  if (state) {
+    const { totalDeltaH, totalDeltaV, startPpi, tableRef } = state;
     if (totalDeltaH !== 0 || totalDeltaV !== 0) {
       this.executeOperation({ kind: 'record', command:
         new MoveTableCommand(
@@ -925,6 +935,19 @@ export function finishMoveDrag(this: any): void {
     this.dragRafId = 0;
   }
   this.container.style.cursor = '';
+
+  if (state?.pendingEnterCellHit && !state.hasMoved && state.totalDeltaH === 0 && state.totalDeltaV === 0) {
+    this.cursor.exitTableObjectSelection();
+    this.tableObjectRenderer?.clear();
+    this.eventBus.emit('table-object-selection-changed', false);
+    this.cursor.clearSelection();
+    this.cursor.moveTo(state.pendingEnterCellHit);
+    this.cursor.resetPreferredX();
+    this.cursor.setAnchor();
+    this.active = true;
+    this.updateCaret();
+    this.textarea.focus();
+  }
 }
 
 export function resizeCellByKeyboard(this: any, key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight'): void {
