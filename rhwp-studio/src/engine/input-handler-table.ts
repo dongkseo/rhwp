@@ -6,6 +6,8 @@ import { getObjectProperties, setObjectProperties } from './input-handler-pictur
 import type { CellBbox } from '@/core/types';
 import type { BorderEdge } from './table-resize-renderer';
 
+const MIN_TABLE_CELL_SIZE_HWP = 200;
+
 function isOuterResizeEdge(self: any, edge: BorderEdge, pageBboxes: CellBbox[]): boolean {
   try {
     const { rowLines, colLines } = self.tableResizeRenderer.computeBorderLines(pageBboxes);
@@ -83,6 +85,250 @@ function findSingleCellResizeTarget(
   return { cellIdx: fallback.cellIdx, side: fallback.side };
 }
 
+function findSingleCellResizeNeighbor(
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): number | null {
+  const targetBox = bboxes.find(b => b.cellIdx === target.cellIdx);
+  if (!targetBox) return null;
+
+  if (edge.type === 'col') {
+    const neighbor = target.side === 'end'
+      ? bboxes.find(b => b.row === targetBox.row && b.col === targetBox.col + targetBox.colSpan)
+      : bboxes.find(b => b.row === targetBox.row && b.col + b.colSpan === targetBox.col);
+    return neighbor?.cellIdx ?? null;
+  }
+
+  const neighbor = target.side === 'end'
+    ? bboxes.find(b => b.col === targetBox.col && b.row === targetBox.row + targetBox.rowSpan)
+    : bboxes.find(b => b.col === targetBox.col && b.row + b.rowSpan === targetBox.row);
+  return neighbor?.cellIdx ?? null;
+}
+
+function findAlignedLogicalResizeAffectedCells(
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): number[] {
+  const targetBox = bboxes.find(b => b.cellIdx === target.cellIdx);
+  if (!targetBox) return [];
+  const tolerance = 1.0;
+  const rounded = (v: number) => Math.round(v / tolerance) * tolerance;
+
+  if (edge.type === 'col') {
+    const boundaryCol = target.side === 'end'
+      ? targetBox.col + targetBox.colSpan
+      : targetBox.col;
+    const targetCoord = rounded(target.side === 'end' ? targetBox.x + targetBox.w : targetBox.x);
+    return [...new Set(
+      bboxes
+        .filter(b =>
+          b.col + b.colSpan === boundaryCol &&
+          Math.abs(rounded(b.x + b.w) - targetCoord) <= tolerance)
+        .map(b => b.cellIdx),
+    )];
+  }
+
+  const boundaryRow = target.side === 'end'
+    ? targetBox.row + targetBox.rowSpan
+    : targetBox.row;
+  const targetCoord = rounded(target.side === 'end' ? targetBox.y + targetBox.h : targetBox.y);
+  return [...new Set(
+    bboxes
+      .filter(b =>
+        b.row + b.rowSpan === boundaryRow &&
+        Math.abs(rounded(b.y + b.h) - targetCoord) <= tolerance)
+      .map(b => b.cellIdx),
+  )];
+}
+
+function localResizeSegmentKey(
+  tableRef: { sec: number; ppi: number; ci: number },
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): string | null {
+  const targetBox = bboxes.find(b => b.cellIdx === target.cellIdx);
+  if (!targetBox) return null;
+
+  if (edge.type === 'col') {
+    const boundaryCol = target.side === 'end'
+      ? targetBox.col + targetBox.colSpan
+      : targetBox.col;
+    return [
+      tableRef.sec,
+      tableRef.ppi,
+      tableRef.ci,
+      'col',
+      boundaryCol,
+      targetBox.row,
+      targetBox.rowSpan,
+    ].join(':');
+  }
+
+  const boundaryRow = target.side === 'end'
+    ? targetBox.row + targetBox.rowSpan
+    : targetBox.row;
+  return [
+    tableRef.sec,
+    tableRef.ppi,
+    tableRef.ci,
+    'row',
+    boundaryRow,
+    targetBox.col,
+    targetBox.colSpan,
+  ].join(':');
+}
+
+function isSegmentSeparatedFromLogicalBoundary(
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): boolean {
+  const targetBox = bboxes.find(b => b.cellIdx === target.cellIdx);
+  if (!targetBox) return false;
+  const tolerance = 1.0;
+  const rounded = (v: number) => Math.round(v / tolerance) * tolerance;
+
+  if (edge.type === 'col') {
+    const boundaryCol = target.side === 'end'
+      ? targetBox.col + targetBox.colSpan
+      : targetBox.col;
+    const boundaryCells = bboxes.filter(b => b.col + b.colSpan === boundaryCol);
+    if (boundaryCells.length <= 1) return true;
+    const counts = new Map<number, number>();
+    for (const b of boundaryCells) {
+      const coord = rounded(b.x + b.w);
+      counts.set(coord, (counts.get(coord) ?? 0) + 1);
+    }
+    const targetCoord = rounded(target.side === 'end' ? targetBox.x + targetBox.w : targetBox.x);
+    const targetCount = counts.get(targetCoord) ?? 0;
+    const maxCount = Math.max(...counts.values());
+    return targetCount < maxCount;
+  }
+
+  const boundaryRow = target.side === 'end'
+    ? targetBox.row + targetBox.rowSpan
+    : targetBox.row;
+  const boundaryCells = bboxes.filter(b => b.row + b.rowSpan === boundaryRow);
+  if (boundaryCells.length <= 1) return true;
+  const counts = new Map<number, number>();
+  for (const b of boundaryCells) {
+    const coord = rounded(b.y + b.h);
+    counts.set(coord, (counts.get(coord) ?? 0) + 1);
+  }
+  const targetCoord = rounded(target.side === 'end' ? targetBox.y + targetBox.h : targetBox.y);
+  const targetCount = counts.get(targetCoord) ?? 0;
+  const maxCount = Math.max(...counts.values());
+  return targetCount < maxCount;
+}
+
+function isKnownLocalResizeSegment(
+  self: any,
+  tableRef: { sec: number; ppi: number; ci: number },
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): boolean {
+  const key = localResizeSegmentKey(tableRef, edge, target, bboxes);
+  if (!key) return false;
+  return self.tableLocalResizeSegments?.has(key) === true &&
+    isSegmentSeparatedFromLogicalBoundary(edge, target, bboxes);
+}
+
+function rememberLocalResizeSegment(
+  self: any,
+  tableRef: { sec: number; ppi: number; ci: number },
+  edge: BorderEdge,
+  target: { cellIdx: number; side: 'start' | 'end' },
+  bboxes: CellBbox[],
+): void {
+  const key = localResizeSegmentKey(tableRef, edge, target, bboxes);
+  if (!key) return;
+  if (!self.tableLocalResizeSegments) self.tableLocalResizeSegments = new Set<string>();
+  self.tableLocalResizeSegments.add(key);
+}
+
+function clampSingleCellResizeDelta(
+  wasm: any,
+  tableRef: { sec: number; ppi: number; ci: number },
+  edge: BorderEdge,
+  targetCellIdx: number,
+  neighborCellIdx: number | null,
+  requestedDelta: number,
+): number {
+  if (neighborCellIdx === null || requestedDelta === 0) return requestedDelta;
+
+  try {
+    const targetProps = wasm.getCellProperties(tableRef.sec, tableRef.ppi, tableRef.ci, targetCellIdx);
+    const neighborProps = wasm.getCellProperties(tableRef.sec, tableRef.ppi, tableRef.ci, neighborCellIdx);
+    const targetSize = edge.type === 'col' ? targetProps.width : targetProps.height;
+    const neighborSize = edge.type === 'col' ? neighborProps.width : neighborProps.height;
+    if (!Number.isFinite(targetSize) || !Number.isFinite(neighborSize)) return requestedDelta;
+
+    if (requestedDelta > 0) {
+      const maxDelta = Math.max(0, Math.round(neighborSize - MIN_TABLE_CELL_SIZE_HWP));
+      return Math.min(requestedDelta, maxDelta);
+    }
+
+    const maxDelta = Math.max(0, Math.round(targetSize - MIN_TABLE_CELL_SIZE_HWP));
+    return -Math.min(Math.abs(requestedDelta), maxDelta);
+  } catch {
+    return requestedDelta;
+  }
+}
+
+function findResizeCompensationNeighbor(
+  edge: BorderEdge,
+  bbox: CellBbox,
+  bboxes: CellBbox[],
+): number | null {
+  if (edge.type === 'col') {
+    const neighbor = bboxes.find(b => b.row === bbox.row && b.col === bbox.col + bbox.colSpan);
+    return neighbor?.cellIdx ?? null;
+  }
+
+  const neighbor = bboxes.find(b => b.col === bbox.col && b.row === bbox.row + bbox.rowSpan);
+  return neighbor?.cellIdx ?? null;
+}
+
+function clampCompensatedResizeDelta(
+  wasm: any,
+  tableRef: { sec: number; ppi: number; ci: number },
+  edge: BorderEdge,
+  pairs: Array<{ targetCellIdx: number; neighborCellIdx: number | null }>,
+  requestedDelta: number,
+): number {
+  if (requestedDelta === 0) return 0;
+  const finiteLimits: number[] = [];
+
+  for (const pair of pairs) {
+    try {
+      const targetProps = wasm.getCellProperties(tableRef.sec, tableRef.ppi, tableRef.ci, pair.targetCellIdx);
+      const targetSize = edge.type === 'col' ? targetProps.width : targetProps.height;
+      if (requestedDelta < 0 && Number.isFinite(targetSize)) {
+        finiteLimits.push(Math.max(0, Math.round(targetSize - MIN_TABLE_CELL_SIZE_HWP)));
+      }
+
+      if (pair.neighborCellIdx !== null) {
+        const neighborProps = wasm.getCellProperties(tableRef.sec, tableRef.ppi, tableRef.ci, pair.neighborCellIdx);
+        const neighborSize = edge.type === 'col' ? neighborProps.width : neighborProps.height;
+        if (requestedDelta > 0 && Number.isFinite(neighborSize)) {
+          finiteLimits.push(Math.max(0, Math.round(neighborSize - MIN_TABLE_CELL_SIZE_HWP)));
+        }
+      }
+    } catch {
+      // 조회 실패 셀은 기존 동작처럼 clamp 대상에서 제외한다.
+    }
+  }
+
+  if (finiteLimits.length === 0) return requestedDelta;
+  const limit = Math.min(...finiteLimits);
+  if (requestedDelta > 0) return Math.min(requestedDelta, limit);
+  return -Math.min(Math.abs(requestedDelta), limit);
+}
+
 export function startResizeDrag(this: any,
   edge: BorderEdge,
   pageX: number, pageY: number,
@@ -107,23 +353,37 @@ export function startResizeDrag(this: any,
   // 영향받는 셀: 경계선에 해당하는 edge에 맞닿은 셀
   const tolerance = 1.0;
   const ry = (v: number) => Math.round(v * 10) / 10;
-  const affectedCellIndices: number[] = [];
+  const coordinateAffectedCellIndices: number[] = [];
 
   for (const b of this.cachedCellBboxes) {
     if (edge.type === 'col') {
       if (Math.abs(ry(b.x + b.w) - ry(borderOriginalPos)) <= tolerance) {
-        affectedCellIndices.push(b.cellIdx);
+        coordinateAffectedCellIndices.push(b.cellIdx);
       }
     } else {
       if (Math.abs(ry(b.y + b.h) - ry(borderOriginalPos)) <= tolerance) {
-        affectedCellIndices.push(b.cellIdx);
+        coordinateAffectedCellIndices.push(b.cellIdx);
       }
     }
   }
 
-  const singleCellTarget = shiftResize
-    ? findSingleCellResizeTarget(edge, pageX, pageY, this.cachedCellBboxes, borderOriginalPos)
-    : null;
+  const resizeTarget = findSingleCellResizeTarget(
+    edge,
+    pageX,
+    pageY,
+    this.cachedCellBboxes,
+    borderOriginalPos,
+  );
+  if (!resizeTarget) return;
+  const shouldResizeSingleCell = shiftResize ||
+    isKnownLocalResizeSegment(this, this.cachedTableRef, edge, resizeTarget, this.cachedCellBboxes);
+  const singleCellTarget = shouldResizeSingleCell ? resizeTarget : null;
+  const logicalAffectedCellIndices = !shouldResizeSingleCell
+    ? findAlignedLogicalResizeAffectedCells(edge, resizeTarget, this.cachedCellBboxes)
+    : [];
+  const affectedCellIndices = logicalAffectedCellIndices.length > 0
+    ? logicalAffectedCellIndices
+    : coordinateAffectedCellIndices;
   if (affectedCellIndices.length === 0 && !singleCellTarget) return;
 
   this.isResizeDragging = true;
@@ -135,6 +395,7 @@ export function startResizeDrag(this: any,
     affectedCellIndices,
     borderOriginalPos,
     singleCellTarget,
+    shiftResize,
   };
 
   // mouseup 리스너 등록 (document 레벨)
@@ -217,10 +478,32 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
   const range = inCellSel ? this.cursor.getSelectedCellRange() : null;
 
   if (state.singleCellTarget) {
-    const delta = state.singleCellTarget.side === 'end' ? deltaHwpUnit : -deltaHwpUnit;
+    const neighborIdx = findSingleCellResizeNeighbor(
+      state.edge,
+      state.singleCellTarget,
+      state.bboxes,
+    );
+    const requestedDelta = state.singleCellTarget.side === 'end' ? deltaHwpUnit : -deltaHwpUnit;
+    const delta = clampSingleCellResizeDelta(
+      this.wasm,
+      state.tableRef,
+      state.edge,
+      state.singleCellTarget.cellIdx,
+      neighborIdx,
+      requestedDelta,
+    );
+    if (delta === 0) {
+      this.cleanupResizeDrag();
+      return;
+    }
     updates = state.edge.type === 'col'
       ? [{ cellIdx: state.singleCellTarget.cellIdx, widthDelta: delta }]
       : [{ cellIdx: state.singleCellTarget.cellIdx, heightDelta: delta }];
+    if (neighborIdx !== null) {
+      updates.push(state.edge.type === 'col'
+        ? { cellIdx: neighborIdx, widthDelta: -delta }
+        : { cellIdx: neighborIdx, heightDelta: -delta });
+    }
   } else if (inCellSel && range) {
     // 선택 셀만 추출
     const selectedBboxes = state.affectedCellIndices
@@ -261,18 +544,46 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
       return;
     }
   } else {
-    // 일반 모드: 경계선에 맞닿은 모든 셀 (열/행 전체 크기 변경)
+    // 일반 모드: 균일한 내부 경계 전체를 움직이되, 반대편 이웃 셀을 보상해 표 외곽을 유지
     if (state.affectedCellIndices.length === 0) {
       this.cleanupResizeDrag();
       return;
     }
-    updates = state.affectedCellIndices.map((cellIdx: any) => {
+    const targetBboxes = state.affectedCellIndices
+      .map((cellIdx: any) => state.bboxes.find((b: any) => b.cellIdx === cellIdx))
+      .filter((b: any): b is CellBbox => b !== undefined);
+    const pairs = targetBboxes.map((bbox: CellBbox) => ({
+      targetCellIdx: bbox.cellIdx,
+      neighborCellIdx: findResizeCompensationNeighbor(state.edge, bbox, state.bboxes),
+    }));
+    const delta = clampCompensatedResizeDelta(
+      this.wasm,
+      state.tableRef,
+      state.edge,
+      pairs,
+      deltaHwpUnit,
+    );
+    if (delta === 0) {
+      this.cleanupResizeDrag();
+      return;
+    }
+    updates = [];
+    const addedNeighbors = new Set<number>();
+    for (const pair of pairs) {
       if (state.edge.type === 'col') {
-        return { cellIdx, widthDelta: deltaHwpUnit };
+        updates.push({ cellIdx: pair.targetCellIdx, widthDelta: delta });
+        if (pair.neighborCellIdx !== null && !addedNeighbors.has(pair.neighborCellIdx)) {
+          updates.push({ cellIdx: pair.neighborCellIdx, widthDelta: -delta });
+          addedNeighbors.add(pair.neighborCellIdx);
+        }
       } else {
-        return { cellIdx, heightDelta: deltaHwpUnit };
+        updates.push({ cellIdx: pair.targetCellIdx, heightDelta: delta });
+        if (pair.neighborCellIdx !== null && !addedNeighbors.has(pair.neighborCellIdx)) {
+          updates.push({ cellIdx: pair.neighborCellIdx, heightDelta: -delta });
+          addedNeighbors.add(pair.neighborCellIdx);
+        }
       }
-    });
+    }
   }
 
   // WASM 배치 API 호출 (복합 셀 보상 변경은 스냅샷으로 Undo 기록)
@@ -290,6 +601,15 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
         return this.cursor.getPosition();
       },
     });
+    if (state.shiftResize && state.singleCellTarget) {
+      rememberLocalResizeSegment(
+        this,
+        state.tableRef,
+        state.edge,
+        state.singleCellTarget,
+        state.bboxes,
+      );
+    }
     if (inCellSel) this.updateCellSelection();
   } catch (err) {
     console.warn('[InputHandler] resizeTableCells 실패:', err);

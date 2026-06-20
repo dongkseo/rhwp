@@ -91,20 +91,39 @@ export class TableResizeRenderer {
 
     const { rowLines, colLines } = this.computeBorderLines(bboxes);
     const pageIndex = bboxes[0].pageIndex;
+    const rounded = (v: number) => Math.round(v * 10) / 10;
+    const rowIndexByY = new Map(rowLines.map(line => [rounded(line.y), line.index]));
+    const colIndexByX = new Map(colLines.map(line => [rounded(line.x), line.index]));
 
-    // 행 경계선 검사 (수평선)
-    for (const line of rowLines) {
-      if (Math.abs(pageY - line.y) <= tolerance &&
-          pageX >= line.xStart - tolerance && pageX <= line.xEnd + tolerance) {
-        return { type: 'row', index: line.index, pageIndex };
+    // 행 경계선 검사 (수평선): 실제 셀 segment 위에서만 잡는다.
+    for (const b of bboxes) {
+      if (pageX < b.x - tolerance || pageX > b.x + b.w + tolerance) continue;
+
+      const topIndex = rowIndexByY.get(rounded(b.y));
+      if (topIndex !== undefined && Math.abs(pageY - b.y) <= tolerance) {
+        return { type: 'row', index: topIndex, pageIndex };
+      }
+
+      const bottomY = b.y + b.h;
+      const bottomIndex = rowIndexByY.get(rounded(bottomY));
+      if (bottomIndex !== undefined && Math.abs(pageY - bottomY) <= tolerance) {
+        return { type: 'row', index: bottomIndex, pageIndex };
       }
     }
 
-    // 열 경계선 검사 (수직선)
-    for (const line of colLines) {
-      if (Math.abs(pageX - line.x) <= tolerance &&
-          pageY >= line.yStart - tolerance && pageY <= line.yEnd + tolerance) {
-        return { type: 'col', index: line.index, pageIndex };
+    // 열 경계선 검사 (수직선): 실제 셀 segment 위에서만 잡는다.
+    for (const b of bboxes) {
+      if (pageY < b.y - tolerance || pageY > b.y + b.h + tolerance) continue;
+
+      const leftIndex = colIndexByX.get(rounded(b.x));
+      if (leftIndex !== undefined && Math.abs(pageX - b.x) <= tolerance) {
+        return { type: 'col', index: leftIndex, pageIndex };
+      }
+
+      const rightX = b.x + b.w;
+      const rightIndex = colIndexByX.get(rounded(rightX));
+      if (rightIndex !== undefined && Math.abs(pageX - rightX) <= tolerance) {
+        return { type: 'col', index: rightIndex, pageIndex };
       }
     }
 

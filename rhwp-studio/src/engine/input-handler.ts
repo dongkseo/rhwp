@@ -263,7 +263,10 @@ export class InputHandler {
     pageBboxes: CellBbox[];
     affectedCellIndices: number[];
     borderOriginalPos: number;
+    singleCellTarget?: { cellIdx: number; side: 'start' | 'end' } | null;
+    shiftResize?: boolean;
   } | null = null;
+  private tableLocalResizeSegments = new Set<string>();
 
   // 표 이동 드래그 상태
   private isMoveDragging = false;
@@ -546,6 +549,12 @@ export class InputHandler {
           this.renderTableObjectSelection();
         }
       });
+    });
+    eventBus.on('create-new-document', () => {
+      this.tableLocalResizeSegments.clear();
+    });
+    eventBus.on('open-document-bytes', () => {
+      this.tableLocalResizeSegments.clear();
     });
 
     // [Task #394] 셀 진입 자동 ON 로직 비활성화 — manual 추적 불필요.
