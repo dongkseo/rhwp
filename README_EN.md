@@ -71,6 +71,29 @@ Foundation  Typeset   Collab    Complete
 - Web editor + hwpctl-compatible API (30 Actions, Field API)
 - 1,100+ tests
 
+#### v0.7.16 Cycle (2026-06-19)
+
+> Patch after v0.7.15 — HWPX save-contract (serializer fidelity) refinements, ClickHere
+> guide-text Hancom compatibility, rhwp-studio drag-and-drop security gate, and rendering/
+> table/picture fixes with many external contributor PRs
+
+**HWPX Save Contract (serializer fidelity)**
+- Preserved cell/text-box controls, linesegs, and captions; emit secPr margins and body
+  column (colPr) from the IR instead of template hardcoding
+- Preserved picture sizes, MEMO, shapeComment, registration axis, table pageBreak; lossless
+  roundtrip for DocInfo/numbering and more
+- Made parser autoNum width consistent, fixed newNum slot position, added enum-token surface check
+
+**Hancom Compatibility · rhwp-studio**
+- Fixed ClickHere (click-to-type) guide-text command format — resolves guide text not binding
+  in the Hancom editor
+- Drag-and-drop local file loading security gate (modal opt-in, extension/web common); ClickHere
+  editing and dark theme
+
+**Rendering · Other**
+- Native PDF export API, Text IR v2 font-proof gates, endnote height SSOT, rotated-cell picture placement
+- 27-sample chart corpus verification fixture; preserve mixed page sizes when printing
+
 #### v0.7.15 Cycle (2026-06-06)
 
 > Security patch — browser-extension service-worker fetch hardening, equation TAC flow/caret fixes,
@@ -334,7 +357,7 @@ See the [roadmap document](mydocs/eng/report/rhwp-milestone.md) for details.
 
 ## npm Packages — Use in Your Web Project
 
-Current release: `@rhwp/core` / `@rhwp/editor` v0.7.15.
+Current release: `@rhwp/core` / `@rhwp/editor` v0.7.16.
 
 ### Embed a Full Editor (3 lines)
 
