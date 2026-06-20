@@ -22185,3 +22185,85 @@ fn task1413_insert_picture_ex_optional_keys_default() {
         "삽입 성공: {res}"
     );
 }
+
+// ---------- #1413 2단계: 고인자(9~11) *Ex 동치 ----------
+
+/// splitTableCellInto vs splitTableCellIntoEx 동치.
+#[test]
+fn task1413_split_table_cell_into_ex_equivalent() {
+    let mut doc_pos = create_doc_with_table();
+    let res_pos = doc_pos
+        .split_table_cell_into(0, 0, 0, 0, 0, 2, 2, true, false)
+        .expect("positional splitTableCellInto");
+
+    let mut doc_ex = create_doc_with_table();
+    let res_ex = doc_ex
+        .split_table_cell_into_ex(
+            r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"row":0,"col":0,
+                "nRows":2,"mCols":2,"equalRowHeight":true,"mergeFirst":false}"#,
+        )
+        .expect("splitTableCellIntoEx");
+    assert_eq!(res_pos, res_ex, "*Ex 가 positional 과 동일 반환");
+}
+
+/// splitTableCellsInRange vs splitTableCellsInRangeEx 동치.
+#[test]
+fn task1413_split_table_cells_in_range_ex_equivalent() {
+    let mut doc_pos = create_doc_with_table();
+    let res_pos = doc_pos
+        .split_table_cells_in_range(0, 0, 0, 0, 0, 0, 0, 2, 2, true)
+        .expect("positional splitTableCellsInRange");
+
+    let mut doc_ex = create_doc_with_table();
+    let res_ex = doc_ex
+        .split_table_cells_in_range_ex(
+            r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"startRow":0,"startCol":0,
+                "endRow":0,"endCol":0,"nRows":2,"mCols":2,"equalRowHeight":true}"#,
+        )
+        .expect("splitTableCellsInRangeEx");
+    assert_eq!(res_pos, res_ex, "*Ex 가 positional 과 동일 반환");
+}
+
+/// insertClickHereFieldInCell vs insertClickHereFieldInCellEx 동치.
+#[test]
+fn task1413_insert_click_here_field_in_cell_ex_equivalent() {
+    let mut doc_pos = create_doc_with_table();
+    let res_pos = doc_pos
+        .insert_click_here_field_in_cell_api(0, 0, 0, 0, 0, 0, false, "안내", "메모", "이름", true)
+        .expect("positional insertClickHereFieldInCell");
+
+    let mut doc_ex = create_doc_with_table();
+    let res_ex = doc_ex
+        .insert_click_here_field_in_cell_ex(
+            r#"{"sectionIdx":0,"parentParaIdx":0,"controlIdx":0,"cellIdx":0,"cellParaIdx":0,
+                "charOffset":0,"isTextbox":false,"guide":"안내","memo":"메모","name":"이름","editable":true}"#,
+        )
+        .expect("insertClickHereFieldInCellEx");
+    assert_eq!(res_pos, res_ex, "*Ex 가 positional 과 동일 반환");
+}
+
+/// moveVertical vs moveVerticalEx 동치 (본문 — parentParaIdx 생략 = MAX).
+#[test]
+fn task1413_move_vertical_ex_equivalent() {
+    let mut doc_pos = HwpDocument::create_empty();
+    doc_pos
+        .insert_text_native(0, 0, 0, "첫째 줄\n둘째 줄\n셋째 줄")
+        .expect("텍스트 삽입");
+    let res_pos = doc_pos
+        .move_vertical(0, 0, 2, 1, 10.0, u32::MAX, 0, 0, 0)
+        .expect("positional moveVertical");
+
+    let mut doc_ex = HwpDocument::create_empty();
+    doc_ex
+        .insert_text_native(0, 0, 0, "첫째 줄\n둘째 줄\n셋째 줄")
+        .expect("텍스트 삽입");
+    let res_ex = doc_ex
+        .move_vertical_ex(
+            r#"{"sectionIdx":0,"paraIdx":0,"charOffset":2,"delta":1,"preferredX":10.0}"#,
+        )
+        .expect("moveVerticalEx");
+    assert_eq!(
+        res_pos, res_ex,
+        "*Ex 가 positional 과 동일 반환 (본문 이동)"
+    );
+}
