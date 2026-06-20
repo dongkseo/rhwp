@@ -86,6 +86,16 @@ rhwp-studio의 미저장 문서 자동 백업과 복구 흐름을 추가했다.
 
 ### 3.3 실행한 검증
 
+- `cargo build --release`
+  - 통과
+- `cargo test --release --lib`
+  - 통과: 1879 passed, 0 failed, 6 ignored
+- `cargo test --profile release-test --tests`
+  - 통과
+- `cargo fmt --check`
+  - 통과
+- `cargo clippy --all-targets -- -D warnings`
+  - 통과
 - `cd rhwp-studio && npm test`
   - 통과: 84 passed
 - `cd rhwp-studio && npx tsc --noEmit`
@@ -96,16 +106,6 @@ rhwp-studio의 미저장 문서 자동 백업과 복구 흐름을 추가했다.
   - 통과
 - `git diff --check`
   - 통과
-
-### 3.4 미실행 검증
-
-- 전체 cargo CI 성격의 긴 검증은 이번 변경 범위가 rhwp-studio TypeScript/브라우저 기능에 국한되어 있어 PR 준비 단계에서는 실행하지 않았다.
-- 필요 시 PR 생성 전 별도 승인 후 다음을 실행한다.
-  - `cargo build --release`
-  - `cargo test --release --lib`
-  - `cargo test --profile release-test --tests`
-  - `cargo fmt --check`
-  - `cargo clippy --all-targets -- -D warnings`
 
 ## 4. 수용 기준 판정
 

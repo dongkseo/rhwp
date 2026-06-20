@@ -26,12 +26,13 @@ Closes #1448
 
 ## 검증
 
+- `cargo build --release`
+- `cargo test --release --lib`
+- `cargo test --profile release-test --tests`
+- `cargo fmt --check`
+- `cargo clippy --all-targets -- -D warnings`
 - `cd rhwp-studio && npm test`
 - `cd rhwp-studio && npx tsc --noEmit`
 - `cd rhwp-studio && npm run build`
 - `cd rhwp-studio && CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" VITE_URL=http://localhost:7700 node e2e/autosave-recovery.test.mjs --mode=headless`
 - `git diff --check`
-
-## 참고
-
-- 전체 cargo CI 검증은 PR 생성 전 별도 승인 후 실행 가능합니다.
