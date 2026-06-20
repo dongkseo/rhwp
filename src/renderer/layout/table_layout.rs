@@ -340,6 +340,10 @@ impl LayoutEngine {
                 return 0.0;
             }
         }
+        let header_footer_padding_compat = matches!(
+            col_node.node_type,
+            RenderNodeType::Header | RenderNodeType::Footer | RenderNodeType::MasterPage
+        );
         // 1x1 래퍼 표 감지: 외곽 표를 무시하고 내부 표를 직접 렌더링.
         // (Task #688) 셀 paragraphs 가 2개 이상이면 첫 nested 표만 unwrap 시 나머지
         // paragraph 의 nested 표가 누락되므로 paragraphs.len() == 1 가드를 둔다.
@@ -789,6 +793,7 @@ impl LayoutEngine {
             row_y_shift,
             clamp_header_negative_para_offset,
             inline_table_flow_y_shift,
+            header_footer_padding_compat,
         );
 
         // ── 5-1. 표 전체 외곽 테두리 보충 ──
@@ -1096,10 +1101,49 @@ impl LayoutEngine {
         measured_table: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
     ) -> Vec<f64> {
+        self.resolve_row_heights_with_common_fit(
+            table,
+            col_count,
+            row_count,
+            measured_table,
+            styles,
+            true,
+        )
+    }
+
+    fn resolve_row_heights_for_content(
+        &self,
+        table: &crate::model::table::Table,
+        col_count: usize,
+        row_count: usize,
+        measured_table: Option<&MeasuredTable>,
+        styles: &ResolvedStyleSet,
+    ) -> Vec<f64> {
+        self.resolve_row_heights_with_common_fit(
+            table,
+            col_count,
+            row_count,
+            measured_table,
+            styles,
+            false,
+        )
+    }
+
+    fn resolve_row_heights_with_common_fit(
+        &self,
+        table: &crate::model::table::Table,
+        col_count: usize,
+        row_count: usize,
+        measured_table: Option<&MeasuredTable>,
+        styles: &ResolvedStyleSet,
+        fit_common_height: bool,
+    ) -> Vec<f64> {
         if let Some(mt) = measured_table {
             let mut rh = mt.row_heights.clone();
             rh.resize(row_count, hwpunit_to_px(400, self.dpi));
-            self.fit_row_heights_to_common_height(table, &mut rh);
+            if fit_common_height {
+                self.fit_row_heights_to_common_height(table, &mut rh);
+            }
             return rh;
         }
 
@@ -1219,7 +1263,9 @@ impl LayoutEngine {
                 row_heights[r] = hwpunit_to_px(400, self.dpi);
             }
         }
-        self.fit_row_heights_to_common_height(table, &mut row_heights);
+        if fit_common_height {
+            self.fit_row_heights_to_common_height(table, &mut row_heights);
+        }
         row_heights
     }
 
@@ -1242,17 +1288,6 @@ impl LayoutEngine {
             if residual > 0.5 {
                 if let Some(last) = row_heights.last_mut() {
                     *last += residual;
-                }
-            } else if residual < -0.5 {
-                let mut remaining = -residual;
-                for height in row_heights.iter_mut().rev() {
-                    let reducible = (*height - 1.0).max(0.0);
-                    let shrink = remaining.min(reducible);
-                    *height -= shrink;
-                    remaining -= shrink;
-                    if remaining <= 0.5 {
-                        break;
-                    }
                 }
             }
         }
@@ -1418,26 +1453,60 @@ impl LayoutEngine {
         cell: &crate::model::table::Cell,
         table: &crate::model::table::Table,
     ) -> (f64, f64, f64, f64) {
+        self.resolve_cell_padding_for_context(cell, table, false)
+    }
+
+    fn resolve_cell_padding_for_context(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        allow_saved_small_cell_margin: bool,
+    ) -> (f64, f64, f64, f64) {
         // HWP 스펙: aim(apply_inner_margin)=true → cell.padding,
         //           aim=false → table.padding 우선.
         // 한컴은 aim=false일 때 cell.padding 원값을 파일에 보존하더라도 렌더에는 쓰지 않는다.
         // aim=true에서는 0mm도 사용자가 지정한 셀 고유 안 여백으로 존중한다.
-        let pad_left = if cell.apply_inner_margin {
+        let use_cell_left = Self::should_use_cell_padding_axis_for_context(
+            cell,
+            cell.padding.left,
+            table.padding.left,
+            allow_saved_small_cell_margin,
+        );
+        let use_cell_right = Self::should_use_cell_padding_axis_for_context(
+            cell,
+            cell.padding.right,
+            table.padding.right,
+            allow_saved_small_cell_margin,
+        );
+        let use_cell_top = Self::should_use_cell_padding_axis_for_context(
+            cell,
+            cell.padding.top,
+            table.padding.top,
+            allow_saved_small_cell_margin,
+        );
+        let use_cell_bottom = Self::should_use_cell_padding_axis_for_context(
+            cell,
+            cell.padding.bottom,
+            table.padding.bottom,
+            allow_saved_small_cell_margin,
+        );
+
+        let pad_left = if use_cell_left {
             hwpunit_to_px(cell.padding.left as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.left as i32, self.dpi)
         };
-        let pad_right = if cell.apply_inner_margin {
+        let pad_right = if use_cell_right {
             hwpunit_to_px(cell.padding.right as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.right as i32, self.dpi)
         };
-        let pad_top = if cell.apply_inner_margin {
+        let pad_top = if use_cell_top {
             hwpunit_to_px(cell.padding.top as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.top as i32, self.dpi)
         };
-        let pad_bottom = if cell.apply_inner_margin {
+        let pad_bottom = if use_cell_bottom {
             hwpunit_to_px(cell.padding.bottom as i32, self.dpi)
         } else {
             hwpunit_to_px(table.padding.bottom as i32, self.dpi)
@@ -1460,6 +1529,30 @@ impl LayoutEngine {
             (pad_top, pad_bottom)
         };
         (pad_left, pad_right, pad_top, pad_bottom)
+    }
+
+    fn should_use_cell_padding_axis_for_context(
+        cell: &crate::model::table::Cell,
+        cell_padding: i16,
+        table_padding: i16,
+        allow_saved_small_cell_margin: bool,
+    ) -> bool {
+        if cell.apply_inner_margin {
+            return cell_padding != 0;
+        }
+
+        if cell_padding <= table_padding {
+            return false;
+        }
+
+        // 오래된 HWP/HWPX에는 hasMargin=0이어도 셀별 안여백 보존값이 렌더링에
+        // 필요한 경우가 있다(KTX 목차, exam_kor 보기 박스 등). 다만 1443 샘플처럼
+        // 사용자가 10mm급 명시 여백을 껐다가 저장한 값은 한컴이 렌더링에 쓰지 않는다.
+        if !allow_saved_small_cell_margin && cell_padding >= 2500 {
+            return false;
+        }
+
+        true
     }
 
     /// 셀 텍스트가 오버플로우할 때 좌우 패딩을 축소하여 공간을 확보한다.
@@ -1645,15 +1738,12 @@ impl LayoutEngine {
             let horz_rel_to = table.common.horz_rel_to;
             let horz_align = table.common.horz_align;
             let h_offset = hwpunit_to_px(table.common.horizontal_offset as i32, self.dpi);
-            let om_left = hwpunit_to_px(table.outer_margin_left as i32, self.dpi);
-            let om_right = hwpunit_to_px(table.outer_margin_right as i32, self.dpi);
-            let outer_width = table_width + om_left + om_right;
             let (ref_x, ref_w) = match horz_rel_to {
                 HorzRelTo::Paper => {
                     let paper_w = paper_width.unwrap_or({
                         // fallback: col_area 기반 추정 (paper_width 미전달 시)
-                        if outer_width > col_area.width {
-                            col_area.x * 2.0 + outer_width
+                        if table_width > col_area.width {
+                            col_area.x * 2.0 + table_width
                         } else {
                             col_area.x * 2.0 + col_area.width
                         }
@@ -1676,13 +1766,11 @@ impl LayoutEngine {
                 _ => (col_area.x, col_area.width),
             };
             match horz_align {
-                HorzAlign::Left | HorzAlign::Inside => ref_x + h_offset + om_left,
-                HorzAlign::Center => {
-                    ref_x + (ref_w - outer_width).max(0.0) / 2.0 + h_offset + om_left
-                }
+                HorzAlign::Left | HorzAlign::Inside => ref_x + h_offset,
+                HorzAlign::Center => ref_x + (ref_w - table_width).max(0.0) / 2.0 + h_offset,
                 // Task #347: picture_footnote.rs:185와 동일하게 - h_offset (오른쪽 끝에서 안쪽으로 오프셋).
                 HorzAlign::Right | HorzAlign::Outside => {
-                    ref_x + (ref_w - outer_width).max(0.0) - h_offset + om_left
+                    ref_x + (ref_w - table_width).max(0.0) - h_offset
                 }
             }
         } else {
@@ -1772,21 +1860,28 @@ impl LayoutEngine {
                 0.0
             };
             let vert_align = table.common.vert_align;
-            // 표 위치 값은 바깥 여백을 포함한 외곽 박스 기준이고, 실제 표 border는
-            // outer_margin_top만큼 안쪽에서 시작한다.
-            let om_top_px = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
-            let om_bottom_px = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
-            let outer_height = table_height + om_top_px + om_bottom_px;
+            // [Task #898] Paper-relative 표는 v_offset 이 외곽 박스 (outer_margin 포함) 기준이므로
+            // 가시 표 상단 = v_offset + outer_margin_top. 한컴 PDF (exam_math.hwp 바탕쪽 쪽번호 박스) 정합.
+            let om_top_px = if matches!(vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+                hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
+            } else {
+                0.0
+            };
+            let om_bottom_px = if matches!(vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+                hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi)
+            } else {
+                0.0
+            };
             let raw_y = match vert_align {
                 crate::model::shape::VertAlign::Top | crate::model::shape::VertAlign::Inside => {
                     ref_y + v_offset + caption_top_offset + om_top_px
                 }
                 crate::model::shape::VertAlign::Center => {
-                    ref_y + (ref_h - outer_height) / 2.0 + v_offset + caption_top_offset + om_top_px
+                    ref_y + (ref_h - table_height) / 2.0 + v_offset + caption_top_offset
                 }
                 crate::model::shape::VertAlign::Bottom
                 | crate::model::shape::VertAlign::Outside => {
-                    ref_y + ref_h - outer_height - v_offset + caption_top_offset + om_top_px
+                    ref_y + ref_h - table_height - v_offset + caption_top_offset - om_bottom_px
                 }
             };
             // Para 기준 + bit 13: 본문 영역으로 제한
@@ -1812,20 +1907,15 @@ impl LayoutEngine {
             } else {
                 0.0
             };
-            let om_top = if table_treat_as_char {
-                0.0
-            } else {
-                hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
-            };
             if let Some(ref caption) = table.caption {
                 use crate::model::shape::CaptionDirection;
                 if matches!(caption.direction, CaptionDirection::Top) {
-                    y_start + caption_height + caption_spacing + v_offset + om_top
+                    y_start + caption_height + caption_spacing + v_offset
                 } else {
-                    y_start + v_offset + om_top
+                    y_start + v_offset
                 }
             } else {
-                y_start + v_offset + om_top
+                y_start + v_offset
             }
         } else {
             // 중첩 표: outer_margin_top 적용
@@ -1862,6 +1952,7 @@ impl LayoutEngine {
         row_y_shift: f64,
         clamp_header_negative_para_offset: bool,
         inline_table_flow_y_shift: f64,
+        header_footer_padding_compat: bool,
     ) {
         let mut independent_border_nodes: Vec<RenderNode> = Vec::new();
         for (cell_idx, cell) in table.cells.iter().enumerate() {
@@ -1947,7 +2038,7 @@ impl LayoutEngine {
 
             // 셀 패딩 (cell.padding이 0이면 table.padding fallback)
             let (mut pad_left, mut pad_right, pad_top, pad_bottom) =
-                self.resolve_cell_padding(cell, table);
+                self.resolve_cell_padding_for_context(cell, table, header_footer_padding_compat);
 
             let mut composed_paras: Vec<_> = cell
                 .paragraphs
@@ -1965,7 +2056,11 @@ impl LayoutEngine {
                 }
             }
 
-            // 텍스트 오버플로우 시 좌우 패딩 축소
+            // 텍스트 오버플로우 시 좌우 패딩 축소.
+            // 1443 셀 안여백 샘플처럼 큰 명시 좌우 여백은 한컴과 같이 보존하되,
+            // 기존 문서의 1~4mm급 일반 셀 여백은 종전 오버플로우 방어를 유지한다.
+            let preserve_explicit_horizontal_padding = cell.apply_inner_margin
+                && cell.padding.left.max(cell.padding.right) >= 1700;
             let (new_pl, new_pr) = self.shrink_cell_padding_for_overflow(
                 pad_left,
                 pad_right,
@@ -1973,7 +2068,7 @@ impl LayoutEngine {
                 &composed_paras,
                 &cell.paragraphs,
                 styles,
-                cell.apply_inner_margin,
+                preserve_explicit_horizontal_padding,
             );
             pad_left = new_pl;
             pad_right = new_pr;
@@ -4003,7 +4098,9 @@ impl LayoutEngine {
                     let nt = nested_tables[0];
                     let ncol = nt.col_count as usize;
                     let nrow = nt.row_count as usize;
-                    let rhs = self.resolve_row_heights(nt, ncol, nrow, None, styles);
+                    // 분할 컷은 저장된 표 높이보다 실제 콘텐츠 높이를 기준으로 잡아야
+                    // page-larger 중첩 표가 한컴처럼 행 단위로 이어진다.
+                    let rhs = self.resolve_row_heights_for_content(nt, ncol, nrow, None, styles);
                     let ncs = hwpunit_to_px(nt.cell_spacing as i32, self.dpi);
                     let om_top = hwpunit_to_px(nt.outer_margin_top as i32, self.dpi);
                     let om_bot = hwpunit_to_px(nt.outer_margin_bottom as i32, self.dpi);

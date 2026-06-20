@@ -2448,7 +2448,7 @@ impl LayoutEngine {
                 .map(|r| r.text.chars().filter(|c| *c != '\t').count())
                 .sum();
             let suppress_cell_overflow_spacing =
-                cell_ctx.is_some() && total_text_width > available_width;
+                cell_ctx.is_some() && total_text_width > available_width * 1.15;
 
             // Task #352: 라인 내 dash leader (3+ 연속 '-') 글자 수 카운트.
             // visible_count 까지의 chars 에서만 카운트 (후행 공백 제외).
@@ -2557,7 +2557,7 @@ impl LayoutEngine {
                 }
             } else if total_text_width > available_width && total_char_count > 1 && !has_tabs {
                 // 비정렬(왼쪽/오른쪽/가운데) 텍스트가 오버플로우할 때 글자 간격 압축
-                if cell_ctx.is_some() {
+                if suppress_cell_overflow_spacing {
                     (0.0, 0.0, 0.0)
                 } else {
                     let raw = (available_width - total_text_width) / total_char_count as f64;
