@@ -33,6 +33,12 @@
 - renderer composer가 비-TAC 그림/도형/표를 inline 제어 문자 슬롯으로 세지 않도록 조정했다.
 - 기존 composer 테스트의 표 inline 판정은 `treat_as_char=true` 조건을 명시하도록 수정했다.
 
+## PR CI 보정
+
+- PR #1460 CI의 `cargo test --verbose`에서 `issue_1198_exam_social_internal_paste_uses_nested_cell_path`가 실패했다.
+- #1459에서 non-TAC 개체를 커서 탐색용 논리 inline control에서 제외하면서, 클립보드 range trimming이 `Paragraph::split_at()`에 넘길 offset까지 같은 기준으로 변환해 텍스트 앞 non-TAC 개체가 있는 nested cell 복사에서 첫 글자를 잃었다.
+- 클립보드 trimming 전용 변환을 `Paragraph::split_at()`의 movable control 기준으로 분리해, cursor/nav 논리 offset 변경과 paragraph split offset 계산을 독립시켰다.
+
 ## 검증 결과
 
 - `cargo fmt`
@@ -46,4 +52,8 @@
 - `cargo test --profile release-test --test issue_1139_inline_picture_duplicate issue_1139_endnote -- --nocapture`
 - `cargo test --profile release-test --lib`
 - `wasm-pack build --target web --out-dir pkg`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test --test issue_1198_nested_cell_paste issue_1198_exam_social_internal_paste_uses_nested_cell_path -- --nocapture`
+- `cargo test --test issue_1198_nested_cell_paste -- --nocapture`
+- `cargo test --verbose`
 - `cargo clippy --all-targets -- -D warnings`

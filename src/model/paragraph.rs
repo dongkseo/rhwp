@@ -254,7 +254,7 @@ pub struct FieldRange {
 }
 
 impl Paragraph {
-    fn is_split_movable_control(ctrl: &Control) -> bool {
+    pub(crate) fn is_split_movable_control(ctrl: &Control) -> bool {
         matches!(
             ctrl,
             Control::Shape(_)
