@@ -184,6 +184,22 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
             st.cur_plot_ax_ids.clear();
             st.cur_plot_series_start = chart.series.len();
         }
+        b"bar3DChart" => {
+            // 3D 막대 — 2D 근사(C1a #1453). barDir 핸들러가 col/bar를 그대로 채워
+            // 파싱 종료 후처리가 Column↔Bar를 확정한다.
+            chart.chart_type = OoxmlChartType::Column;
+            st.cur_plot_type = Some(OoxmlChartType::Column);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
+        b"pie3DChart" | b"ofPieChart" => {
+            // 3D 원형 / ofPie — 단일 원형으로 2D 근사(C1a #1453).
+            // 입체감·보조플롯(원형대원형의 2차 원, 원형대막대의 막대)은 후속(C2).
+            chart.chart_type = OoxmlChartType::Pie;
+            st.cur_plot_type = Some(OoxmlChartType::Pie);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
         b"barDir" => {
             if let Some(val) = attr_val(e, "val") {
                 st.bar_dir = match val.as_str() {
@@ -341,7 +357,8 @@ fn handle_end(name: &[u8], chart: &mut OoxmlChart, st: &mut ParseState) {
                 st.cur_val_ax_pos = None;
             }
         }
-        b"barChart" | b"lineChart" | b"pieChart" => {
+        b"barChart" | b"lineChart" | b"pieChart" | b"bar3DChart" | b"pie3DChart"
+        | b"ofPieChart" => {
             // plot 종료 — 이 plot에 속한 시리즈에 axIds 복사
             let start = st.cur_plot_series_start;
             for ser in chart.series.iter_mut().skip(start) {
@@ -480,5 +497,42 @@ mod tests {
     #[test]
     fn test_parse_malformed() {
         assert!(parse_chart_xml(b"not xml").is_none());
+    }
+
+    // --- C1a (#1453): 3D막대·3D원형·ofPie 라우팅 ---
+
+    #[test]
+    fn test_parse_bar3d_col() {
+        // bar3DChart + barDir=col → Column (세로 3D 막대 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:bar3DChart><c:barDir val="col"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>100</c:v></c:pt><c:pt idx="1"><c:v>80</c:v></c:pt></c:numCache></c:val></c:ser></c:bar3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Column);
+        assert_eq!(c.series[0].values, vec![100.0, 80.0]);
+    }
+
+    #[test]
+    fn test_parse_bar3d_bar() {
+        // bar3DChart + barDir=bar → Bar (가로 3D 막대 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:bar3DChart><c:barDir val="bar"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>5</c:v></c:pt></c:numCache></c:val></c:ser></c:bar3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Bar);
+    }
+
+    #[test]
+    fn test_parse_pie3d() {
+        // pie3DChart → Pie (3D 원형 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:pie3DChart><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>70</c:v></c:pt></c:numCache></c:val></c:ser></c:pie3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Pie);
+        assert_eq!(c.series[0].values, vec![30.0, 70.0]);
+    }
+
+    #[test]
+    fn test_parse_ofpie() {
+        // ofPieChart → Pie (원형대원형/원형대막대 → 단일 원형 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:ofPieChart><c:ofPieType val="pie"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>40</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt><c:pt idx="2"><c:v>35</c:v></c:pt></c:numCache></c:val></c:ser></c:ofPieChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Pie);
+        assert_eq!(c.series[0].values, vec![40.0, 25.0, 35.0]);
     }
 }
