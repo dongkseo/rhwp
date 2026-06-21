@@ -9,6 +9,7 @@ use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 struct ImageRender {
     control_index: usize,
     y: f64,
+    height: f64,
     opacity: f64,
 }
 
@@ -18,6 +19,7 @@ fn collect_images(node: &RenderNode, out: &mut Vec<ImageRender>) {
             out.push(ImageRender {
                 control_index,
                 y: node.bbox.y,
+                height: node.bbox.height,
                 opacity: img.opacity,
             });
         }
@@ -84,6 +86,11 @@ fn topbottom_second_picture_flows_before_tac_picture() {
         assert!(
             topbottom.y < tac.y,
             "{path}: 한컴처럼 투명도 50 자리차지 그림이 먼저 흐르고 TAC 그림이 아래에 있어야 함: topbottom={topbottom:?}, tac={tac:?}, all={images:?}"
+        );
+        let vertical_gap = tac.y - (topbottom.y + topbottom.height);
+        assert!(
+            vertical_gap.abs() <= 2.0,
+            "{path}: TAC 그림은 자리차지 그림 bbox 바로 다음 줄에 이어져야 함: gap={vertical_gap:.2}, topbottom={topbottom:?}, tac={tac:?}, all={images:?}"
         );
         assert!(
             topbottom.opacity < tac.opacity,

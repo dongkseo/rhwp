@@ -3545,12 +3545,17 @@ impl LayoutEngine {
                             if let Some(ctrl) = p.controls.get(tac_ci) {
                                 if let Control::Picture(pic) = ctrl {
                                     let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
-                                    // sibling wrap=TopAndBottom 개체(tac=false)가 차지하는
-                                    // vertical 영역만큼 picture y 보정.
-                                    let sibling_reserved_hu =
-                                        calc_sibling_topandbottom_reserved_hu(&p.controls);
+                                    // LINE_SEG vpos가 TopAndBottom 흐름 위치를 이미 담고 있으면
+                                    // sibling 예약 높이를 다시 더하지 않는다.
                                     let sibling_reserved_px =
-                                        hwpunit_to_px(sibling_reserved_hu, self.dpi);
+                                        if para_topbottom_line_vpos_base.is_some() {
+                                            0.0
+                                        } else {
+                                            hwpunit_to_px(
+                                                calc_sibling_topandbottom_reserved_hu(&p.controls),
+                                                self.dpi,
+                                            )
+                                        };
                                     if raw_lh + 4.0 >= pic_h {
                                         current_line_reserved_tac_picture_height = Some(pic_h);
                                     }
@@ -4123,12 +4128,17 @@ impl LayoutEngine {
                                 }
                                 if let Control::Picture(pic) = ctrl {
                                     let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
-                                    // 같은 paragraph 의 sibling wrap=TopAndBottom 개체(tac=false)
-                                    // 가 차지하는 vertical 영역만큼 picture y 보정.
-                                    let sibling_reserved_hu =
-                                        calc_sibling_topandbottom_reserved_hu(&p.controls);
+                                    // LINE_SEG vpos가 TopAndBottom 흐름 위치를 이미 담고 있으면
+                                    // sibling 예약 높이를 다시 더하지 않는다.
                                     let sibling_reserved_px =
-                                        hwpunit_to_px(sibling_reserved_hu, self.dpi);
+                                        if para_topbottom_line_vpos_base.is_some() {
+                                            0.0
+                                        } else {
+                                            hwpunit_to_px(
+                                                calc_sibling_topandbottom_reserved_hu(&p.controls),
+                                                self.dpi,
+                                            )
+                                        };
                                     if raw_lh + 4.0 >= pic_h {
                                         current_line_reserved_tac_picture_height = Some(pic_h);
                                     }
