@@ -54,3 +54,39 @@ fn chart_3d_ofpie_routed_no_unsupported_placeholder() {
         }
     }
 }
+
+/// Part B (#1453): 막대 누적(stacked/percentStacked) 6종 — C1a 3D 누적(2) + 기존 2D 누적/백프로(4).
+/// percent 여부 = `c:grouping=percentStacked` 샘플.
+const STACKED_BAR_STEMS: &[(&str, bool)] = &[
+    ("세로막대형/3차원누적세로막대형", false),
+    ("가로막대형/3차원누적가로막대형", false),
+    ("세로막대형/누적세로막대형", false),
+    ("가로막대형/누적가로막대형", false),
+    ("세로막대형/백프로기준누적세로막대형", true),
+    ("가로막대형/백프로기준누적가로막대형", true),
+];
+
+#[test]
+fn chart_stacked_bars_render_with_percent_axis() {
+    for (stem, is_percent) in STACKED_BAR_STEMS {
+        let rel = format!("samples/chart/{stem}.hwpx");
+        let svg = render_page0_svg(&rel);
+
+        assert!(
+            !svg.contains("차트 (미지원)") && svg.contains("hwp-ooxml-chart\""),
+            "{rel}: 누적 막대 정상 렌더 실패",
+        );
+        // 백분율 누적은 % 축 라벨(0%/100%)을 가진다. 일반 누적은 가지지 않는다.
+        if *is_percent {
+            assert!(
+                svg.contains("100%"),
+                "{rel}: percentStacked인데 % 축(100%) 라벨 없음",
+            );
+        } else {
+            assert!(
+                !svg.contains("100%"),
+                "{rel}: 일반 stacked인데 % 축이 잘못 적용됨",
+            );
+        }
+    }
+}

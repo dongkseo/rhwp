@@ -880,4 +880,91 @@ mod tests {
     fn test_color_hex() {
         assert_eq!(color_hex(0xFFFF00FF), "#ff00ff");
     }
+
+    // --- C1a Part B (#1453): 막대 누적 기하 ---
+
+    /// 데이터 막대(fill="#...", stroke 없음)의 x 좌표 목록. 배경/플롯 rect 제외.
+    /// (시리즈 name 비움 → 범례 미렌더 → 데이터 막대만 남음)
+    fn data_bar_xs(svg: &str) -> Vec<i64> {
+        let mut xs = Vec::new();
+        for chunk in svg.split("<rect ").skip(1) {
+            let end = chunk.find('>').unwrap_or(chunk.len());
+            let tag = &chunk[..end];
+            // 배경/플롯 rect(stroke) + 범례 swatch(10×10) 제외 → 데이터 막대만.
+            if tag.contains("stroke")
+                || !tag.contains("fill=\"#")
+                || tag.contains("width=\"10\" height=\"10\"")
+            {
+                continue;
+            }
+            if let Some(p) = tag.find("x=\"") {
+                let s = p + 3;
+                if let Some(e) = tag[s..].find('"') {
+                    if let Ok(v) = tag[s..s + e].parse::<f64>() {
+                        xs.push((v * 10.0).round() as i64); // 0.1 단위 라운드
+                    }
+                }
+            }
+        }
+        xs
+    }
+
+    fn distinct(mut v: Vec<i64>) -> usize {
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    }
+
+    fn bars_chart(grouping: BarGrouping) -> OoxmlChart {
+        OoxmlChart {
+            chart_type: OoxmlChartType::Column,
+            grouping,
+            // name 비움 → 범례 미렌더
+            series: vec![
+                OoxmlSeries {
+                    values: vec![4.0, 3.0],
+                    ..Default::default()
+                },
+                OoxmlSeries {
+                    values: vec![2.0, 1.0],
+                    ..Default::default()
+                },
+                OoxmlSeries {
+                    values: vec![2.0, 4.0],
+                    ..Default::default()
+                },
+            ],
+            categories: vec!["a".into(), "b".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_stacked_bars_share_x_per_category() {
+        // 누적: 카테고리(2)당 단일 컬럼 → 서로 다른 x = 2개 (시리즈가 같은 x 공유)
+        let svg = render_chart_svg(&bars_chart(BarGrouping::Stacked), 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(distinct(data_bar_xs(&svg)), 2, "stacked는 카테고리당 단일 x");
+    }
+
+    #[test]
+    fn test_clustered_bars_distinct_x() {
+        // 묶은: 카테고리(2) × 시리즈(3) = 6개 서로 다른 x (무회귀 가드)
+        let svg = render_chart_svg(&bars_chart(BarGrouping::Clustered), 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(distinct(data_bar_xs(&svg)), 6, "clustered는 시리즈별 x 분리");
+    }
+
+    #[test]
+    fn test_percent_stacked_axis_and_single_column() {
+        // 백프로: % 축 라벨 + 카테고리당 단일 컬럼
+        let svg = render_chart_svg(
+            &bars_chart(BarGrouping::PercentStacked),
+            0.0,
+            0.0,
+            400.0,
+            300.0,
+        );
+        assert!(svg.contains("100%"), "percentStacked는 % 축 라벨");
+        assert!(svg.contains("0%"));
+        assert_eq!(distinct(data_bar_xs(&svg)), 2, "percent도 카테고리당 단일 x");
+    }
 }
