@@ -89,6 +89,10 @@ export class Toolbar {
     eventBus.on('cursor-style-changed', (info) => {
       this.updateStyleState(info as { id: number; name: string });
     });
+
+    eventBus.on('local-fonts-changed', () => {
+      this.refreshFontDropdown();
+    });
   }
 
   /** B/I/U/S 토글 버튼 클릭 이벤트 → 커맨드 디스패치 */
@@ -478,6 +482,7 @@ export class Toolbar {
 
   /** 문서 로드 시 글꼴 드롭다운을 초기화한다 (기본 글꼴 + 문서 글꼴 + 대표/로컬) */
   initFontDropdown(docFonts?: string[]): void {
+    this.lastFontFamilies = docFonts ? [...docFonts] : undefined;
     const BASE_FONTS = ['함초롬바탕', '함초롬돋움', '맑은 고딕', '나눔고딕', '바탕', '돋움', '궁서'];
     this.fontName.replaceChildren();
     for (const name of BASE_FONTS) {
@@ -500,6 +505,14 @@ export class Toolbar {
     }
     this.populateFontSetOptions();
     this.populateLocalFontOptions();
+  }
+
+  private refreshFontDropdown(): void {
+    const previousValue = this.fontName.value;
+    this.initFontDropdown(this.lastFontFamilies);
+    if (previousValue && this.fontName.querySelector(`option[value="${CSS.escape(previousValue)}"]`)) {
+      this.fontName.value = previousValue;
+    }
   }
 
   /** 문서 로드 시 스타일 목록으로 드롭다운을 채운다 */

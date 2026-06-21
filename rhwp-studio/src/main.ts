@@ -21,11 +21,14 @@ import { installPwaFileHandling, type FileHandlingWindowLike } from '@/command/p
 import { ContextMenu } from '@/ui/context-menu';
 import { CommandPalette } from '@/ui/command-palette';
 import { showValidationModalIfNeeded } from '@/ui/validation-modal';
+import { showLocalFontsModalIfNeeded } from '@/ui/local-fonts-modal';
 import { showToast } from '@/ui/toast';
 import { showDropConfirmDialog } from '@/ui/drop-confirm-dialog';
 import { initRhwpDev } from '@/core/rhwp-dev';
 import { DocumentDirtyState } from '@/core/document-dirty-state';
 import { initThemeSync, setThemeMode, getThemeMode, getEffectiveTheme } from '@/core/theme';
+import { analyzeDocumentFonts } from '@/core/document-font-status';
+import { detectLocalFonts, getLocalFontState, loadStoredLocalFonts } from '@/core/local-fonts';
 import { AutosaveManager } from '@/recovery/autosave-manager';
 import { clearAutosaveDrafts, deleteAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
 import { recoveryFileName } from '@/recovery/recovery-format';
@@ -515,6 +518,12 @@ function setupEventListeners(): void {
     eventBus.emit('command-state-changed');
   });
 
+  eventBus.on('local-fonts-changed', () => {
+    if (wasm.pageCount > 0) {
+      canvasView?.loadDocument();
+    }
+  });
+
   // 필드 정보 표시
   const sbField = document.getElementById('sb-field');
   eventBus.on('field-info-changed', (info) => {
@@ -632,6 +641,9 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     } catch (e) {
       console.warn('[validation] 감지/보정 실패 (치명적이지 않음):', e);
     }
+
+    await promptLocalFontsIfNeeded(docInfo, displayName);
+
     if (normalizedDuringLoad) {
       documentState.markDirty('validation-auto-fix');
     } else {
@@ -640,6 +652,43 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
   } catch (error) {
     console.error('[initDoc] 오류:', error);
     if (window.innerWidth < 768) alert(`초기화 오류: ${error}`);
+  }
+}
+
+async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: string): Promise<void> {
+  if (!docInfo.fontsUsed?.length) return;
+
+  const msg = sbMessage();
+  try {
+    await loadStoredLocalFonts();
+    const report = analyzeDocumentFonts(docInfo.fontsUsed);
+    if (!report.shouldPromptLocalAccess) return;
+
+    const choice = await showLocalFontsModalIfNeeded(report);
+    if (choice !== 'detect') return;
+
+    msg.textContent = '로컬 글꼴 감지 중...';
+    const fonts = await detectLocalFonts({
+      force: true,
+      includeRegistered: true,
+      candidateFamilies: docInfo.fontsUsed,
+    });
+    const nextReport = analyzeDocumentFonts(docInfo.fontsUsed);
+    eventBus.emit('local-fonts-changed', { fonts, report: nextReport });
+    const state = getLocalFontState();
+    const resultLabel = state.source === 'font-presence-probe' ? '확인됨' : '감지됨';
+    msg.textContent = `${displayName} (로컬 글꼴 ${fonts.length}개 ${resultLabel})`;
+    showToast({
+      message: `로컬 글꼴 ${fonts.length}개를 ${resultLabel.replace('됨', '')}하고 저장했습니다.\n다음 문서 로드부터 감지 결과를 재사용합니다.`,
+      durationMs: 5000,
+    });
+  } catch (error) {
+    console.warn('[local-fonts] 감지 안내/실행 실패 (치명적이지 않음):', error);
+    msg.textContent = displayName;
+    showToast({
+      message: '로컬 글꼴 감지에 실패했습니다.\n웹 대체 글꼴로 계속 표시합니다.',
+      durationMs: 8000,
+    });
   }
 }
 

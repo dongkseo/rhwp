@@ -15,8 +15,7 @@ export interface ValidationReport {
     cell: { ctrl: number; row: number; col: number; innerPara: number } | null;
   }>;
 }
-import { resolveFont, fontFamilyWithFallback } from './font-substitution';
-import { REGISTERED_FONTS } from './font-loader';
+import { fontFamilyChainForDisplay } from './font-substitution';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 
 /**
@@ -36,12 +35,30 @@ function substituteCssFontFamily(cssFont: string): string {
   if (!match) return cssFont;
 
   const fontName = match[1];
-  if (REGISTERED_FONTS.has(fontName)) return cssFont;
+  return prefix + fontFamilyChainForDisplay(fontName, 0, 0);
+}
 
-  const resolved = resolveFont(fontName, 0, 0);
-  if (resolved === fontName) return cssFont;
+let canvasFontSubstitutionInstalled = false;
 
-  return prefix + fontFamilyWithFallback(resolved);
+function installCanvasFontSubstitution(): void {
+  if (canvasFontSubstitutionInstalled) return;
+  if (typeof CanvasRenderingContext2D === 'undefined') return;
+
+  const proto = CanvasRenderingContext2D.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'font');
+  if (!descriptor?.get || !descriptor.set || descriptor.configurable === false) return;
+
+  Object.defineProperty(proto, 'font', {
+    configurable: true,
+    enumerable: descriptor.enumerable,
+    get() {
+      return descriptor.get!.call(this);
+    },
+    set(value: string) {
+      descriptor.set!.call(this, substituteCssFontFamily(String(value)));
+    },
+  });
+  canvasFontSubstitutionInstalled = true;
 }
 
 export class WasmBridge {
@@ -52,6 +69,7 @@ export class WasmBridge {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    installCanvasFontSubstitution();
     this.installMeasureTextWidth();
     await init();
     this.initialized = true;
@@ -67,7 +85,7 @@ export class WasmBridge {
       if (!ctx) {
         ctx = document.createElement('canvas').getContext('2d');
       }
-      const resolved = substituteCssFontFamily(font);
+      const resolved = canvasFontSubstitutionInstalled ? font : substituteCssFontFamily(font);
       if (resolved !== lastFont) {
         ctx!.font = resolved;
         lastFont = resolved;
