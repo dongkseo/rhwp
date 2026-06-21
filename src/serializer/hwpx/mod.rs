@@ -802,6 +802,67 @@ mod tests {
     }
 
     #[test]
+    fn issue1452_hwpx_preserves_alpha_png_bindata_bytes() {
+        use crate::model::bin_data::BinDataContent;
+        use crate::model::control::Control;
+        use crate::model::image::{ImageAttr, Picture};
+        use crate::model::shape::CommonObjAttr;
+
+        let alpha_png = vec![
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00,
+            0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0xda, 0x63, 0x60, 0x60, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x2b, 0x09, 0x4d, 0x84,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        let mut doc = Document::default();
+        doc.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: alpha_png.clone(),
+            extension: "png".to_string(),
+        });
+
+        let mut section = crate::model::document::Section::default();
+        let mut para = crate::model::paragraph::Paragraph::default();
+        para.text = "A".to_string();
+        para.char_offsets = vec![8];
+        para.char_count = 10;
+        para.controls.push(Control::Picture(Box::new(Picture {
+            common: CommonObjAttr {
+                width: 5000,
+                height: 5000,
+                treat_as_char: true,
+                ..Default::default()
+            },
+            image_attr: ImageAttr {
+                bin_data_id: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        })));
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize alpha png picture");
+        let cursor = std::io::Cursor::new(&bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+        let bin_name = archive
+            .file_names()
+            .find(|name| name.starts_with("BinData/") && name.ends_with(".png"))
+            .map(String::from)
+            .expect("png BinData entry");
+        let mut bin = archive.by_name(&bin_name).expect("read png BinData");
+        let mut actual = Vec::new();
+        std::io::Read::read_to_end(&mut bin, &mut actual).expect("read");
+
+        assert_eq!(
+            actual, alpha_png,
+            "알파 채널이 있는 PNG BinData 바이트는 HWPX ZIP 안에서도 그대로 보존되어야 한다"
+        );
+    }
+
+    #[test]
     fn issue_1345_picture_effects_shadow_roundtrip() {
         use crate::model::control::Control;
         use crate::model::shape::ShapeObject;
