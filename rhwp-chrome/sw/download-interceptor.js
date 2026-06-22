@@ -1,4 +1,4 @@
-// 다운로드 가로채기 (Chrome)
+// 다운로드 관찰자 (Chrome)
 // - .hwp/.hwpx 다운로드 감지 → 뷰어로 열기
 // - 사용자 설정(autoOpen)에 따라 동작
 //
@@ -7,35 +7,65 @@
 // #207: 판정 로직은 rhwp-shared/sw/download-interceptor-common.js 와 공유.
 // #1131: 로컬 file:// HWP 는 이미 디스크에 있으므로 자체 뷰어로 열 때 중복 다운로드를
 //        억제한다 (cancel + erase, best-effort). 원격(http) 파일은 기존 동작 유지.
+// #1471: onDeterminingFilename 리스너 등록 자체가 다른 확장의 download({filename})
+//        경로 결정을 무효화하므로 filename 결정 단계에서 완전히 빠진다.
 
 import { openViewer } from './viewer-launcher.js';
 import { shouldInterceptDownload } from './download-interceptor-common.js';
+
+const handled = new Set();
 
 /** 다운로드 항목이 로컬 file:// 인지 판별. */
 function isLocalFileDownload(item) {
   return typeof item?.url === 'string' && item.url.startsWith('file:');
 }
 
+function isTerminalDelta(delta) {
+  return delta?.state?.current === 'complete' || delta?.state?.current === 'interrupted' || Boolean(delta?.error);
+}
+
+function shouldRecheckDownload(delta) {
+  return Boolean(delta?.filename?.current || delta?.finalUrl?.current || delta?.state?.current === 'complete');
+}
+
 /**
- * 다운로드 인터셉터를 설정한다.
+ * 다운로드 관찰자를 설정한다.
  *
  * - 로컬 file:// HWP: 뷰어를 열고 다운로드는 cancel + erase 로 억제 (#1131)
- * - 원격 HWP/HWPX 다운로드: handleHwpDownload + suggest 호출 (자체 뷰어 트리거)
- * - 일반 파일: suggest 호출 안 함 → Chrome 의 마지막 저장 위치 기억 동작 유지 (#198)
+ * - 원격 HWP/HWPX 다운로드: 뷰어 트리거
+ * - 일반 파일: filename 결정 단계에 참여하지 않음 (#1471)
  */
 export function setupDownloadInterceptor() {
-  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-    if (shouldInterceptDownload(item)) {
-      handleHwpDownload(item);
-      if (isLocalFileDownload(item)) {
-        // 로컬 파일은 재다운로드 불필요 — suggest 대신 다운로드 항목 취소/삭제 (#1131)
-        suppressLocalDownload(item);
-      } else {
-        suggest({ filename: item.filename });
+  chrome.downloads.onCreated.addListener((item) => {
+    processDownloadItem(item);
+  });
+
+  chrome.downloads.onChanged.addListener(async (delta) => {
+    if (!handled.has(delta.id) && shouldRecheckDownload(delta)) {
+      try {
+        const [item] = await chrome.downloads.search({ id: delta.id });
+        processDownloadItem(item);
+      } catch (err) {
+        console.error('[rhwp] 다운로드 항목 재조회 오류:', err);
       }
     }
-    // HWP 가 아니면 suggest 호출하지 않는다 — Chrome 기본 동작 유지 (#198)
+
+    if (handled.has(delta.id) && isTerminalDelta(delta)) {
+      setTimeout(() => handled.delete(delta.id), 30000);
+    }
   });
+}
+
+function processDownloadItem(item) {
+  if (!item || handled.has(item.id)) return;
+  if (!shouldInterceptDownload(item)) return;
+
+  handled.add(item.id);
+  handleHwpDownload(item);
+
+  if (isLocalFileDownload(item)) {
+    suppressLocalDownload(item);
+  }
 }
 
 /**
