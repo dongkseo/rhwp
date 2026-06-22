@@ -693,6 +693,74 @@ fn force_para_end_on_last_run(col_node: &mut RenderNode) {
     }
 }
 
+/// 빈 TopAndBottom 표 host 문단의 조판부호를 표 시작 위치에 직접 그린다.
+fn push_empty_para_end_mark(
+    tree: &mut PageRenderTree,
+    col_node: &mut RenderNode,
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    section_index: usize,
+    para_index: usize,
+    x: f64,
+    y: f64,
+    dpi: f64,
+) {
+    let char_shape_id = para
+        .char_shape_id_at(0)
+        .or_else(|| para.char_shapes.first().map(|cs| cs.char_shape_id));
+    let mut style = char_shape_id
+        .map(|id| resolved_to_text_style(styles, id, 0))
+        .unwrap_or_default();
+    let line_height = para
+        .line_segs
+        .first()
+        .map(|seg| hwpunit_to_px(seg.line_height, dpi))
+        .unwrap_or_else(|| style.font_size.max(13.3));
+
+    if style.font_size <= 0.0 {
+        style.font_size = line_height.max(13.3);
+    }
+    if style.font_family.is_empty() {
+        style.font_family = "바탕".to_string();
+    }
+
+    let font_size = style.font_size.max(1.0);
+    let line_height = line_height.max(font_size);
+    let baseline = ensure_min_baseline(font_size * 0.8, font_size);
+    let line_id = tree.next_id();
+    let mut line_node = RenderNode::new(
+        line_id,
+        RenderNodeType::TextLine(TextLineNode::new(line_height, font_size)),
+        BoundingBox::new(x, y, font_size, line_height),
+    );
+
+    let run_id = tree.next_id();
+    let run_node = RenderNode::new(
+        run_id,
+        RenderNodeType::TextRun(TextRunNode {
+            text: String::new(),
+            style,
+            char_shape_id,
+            para_shape_id: Some(para.para_shape_id),
+            section_index: Some(section_index),
+            para_index: Some(para_index),
+            char_start: Some(0),
+            cell_context: None,
+            is_para_end: true,
+            is_line_break_end: false,
+            rotation: 0.0,
+            is_vertical: false,
+            char_overlap: None,
+            border_fill_id: 0,
+            baseline,
+            field_marker: FieldMarkerType::None,
+        }),
+        BoundingBox::new(x, y, 0.0, line_height),
+    );
+    line_node.children.push(run_node);
+    col_node.children.push(line_node);
+}
+
 /// [Task #1027 Stage A] VPOS_CORR 의 보정 목표 y(end_y) 계산 + 클램프(순수).
 /// 렌더러(layout)와 페이지네이터(typeset)가 동일 측정을 쓰도록 추출한 공용 함수.
 ///
@@ -4514,6 +4582,14 @@ impl LayoutEngine {
                             || (t.common.treat_as_char
                                 && !crate::renderer::height_measurer::is_tac_table_inline(t, seg_width, &para.text, &para.controls))));
                     if has_block_table {
+                        if para_is_empty_topbottom_table_anchor(para) {
+                            // 빈 기본 표 host 문단은 별도 빈 줄로 소비하지 않는다.
+                            // 표 PageItem 렌더 시 같은 y에 문단부호를 얹어 한컴처럼
+                            // 첫 조판부호가 표와 겹쳐 보이게 한다.
+                            para_start_y.entry(*para_index).or_insert(y_offset);
+                            return (y_offset, false);
+                        }
+
                         let comp = composed.get(*para_index);
                         let para_style_id = comp
                             .map(|c| c.para_style_id as usize)
@@ -5026,6 +5102,15 @@ impl LayoutEngine {
                     )
                 })
                 .unwrap_or(false);
+            let is_first_empty_para_float_control = is_current_empty_para_float
+                && para.controls.iter().position(|c| {
+                    matches!(
+                        c,
+                        Control::Table(t)
+                            if is_para_topbottom_float(&t.common)
+                                && !para_has_visible_text(para)
+                    )
+                }) == Some(control_index);
             // ── 표 위 간격 ──
             {
                 let comp = composed.get(para_index);
@@ -5392,6 +5477,23 @@ impl LayoutEngine {
                             None,
                             marker_x,
                             table_y_start,
+                        );
+                    }
+                    if is_first_empty_para_float_control && !is_tac {
+                        let marker_x = tbl_inline_x.unwrap_or(col_area.x + effective_margin);
+                        // FullParagraph에서 빈 줄 진행을 생략한 대신, 표와 같은 줄에
+                        // host 문단부호를 렌더링한다. 표 뒤 빈 문단은 그대로 남아
+                        // 아래쪽 탈출 위치를 제공한다.
+                        push_empty_para_end_mark(
+                            tree,
+                            col_node,
+                            para,
+                            styles,
+                            page_content.section_index,
+                            para_index,
+                            marker_x,
+                            table_y_start,
+                            self.dpi,
                         );
                     }
                     table_y_end = table_visual_end;

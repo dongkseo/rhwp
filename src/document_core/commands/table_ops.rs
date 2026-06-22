@@ -844,6 +844,7 @@ impl DocumentCore {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let original_width = table.common.width;
         let original_height = table.common.height;
+        let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
         let mut applied_width_delta: i64 = 0;
         let mut applied_height_delta: i64 = 0;
         let mut width_delta_by_row = std::collections::BTreeMap::<u16, (usize, i64)>::new();
@@ -933,6 +934,27 @@ impl DocumentCore {
             }
         }
         table.update_ctrl_dimensions();
+        if updates.iter().any(|u| u.height_delta != 0)
+            && !force_local_resize
+            && original_height > original_row_height_sum
+            && table.row_count > 1
+        {
+            // 여러 행 표에서 일부 행을 조절할 때만 생성 표의 표시 height 여유분을 보존한다.
+            // 1행 표는 조절한 셀 높이가 곧 표 높이라는 기존 TAC 전환 회귀 규칙을 유지해야 한다.
+            let resized_row_height_sum: u32 = table.get_row_heights().iter().sum();
+            let row_height_delta = resized_row_height_sum as i64 - original_row_height_sum as i64;
+            let adjusted_height = if row_height_delta >= 0 {
+                original_height.saturating_add(row_height_delta.min(u32::MAX as i64) as u32)
+            } else {
+                original_height.saturating_sub((-row_height_delta).min(u32::MAX as i64) as u32)
+            }
+            .max(resized_row_height_sum);
+            table.common.height = adjusted_height;
+            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                    .copy_from_slice(&adjusted_height.to_le_bytes());
+            }
+        }
         if applied_width_delta == 0
             || (force_local_resize && updates.iter().any(|u| u.width_delta != 0))
         {

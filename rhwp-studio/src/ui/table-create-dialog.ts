@@ -348,7 +348,7 @@ export class TableCreateDialog {
     const treatChk = document.createElement('input');
     treatChk.type = 'checkbox';
     treatChk.id = 'tc-treat-as-char';
-    treatChk.checked = true;
+    treatChk.checked = false;
     const treatLbl = document.createElement('label');
     treatLbl.htmlFor = 'tc-treat-as-char';
     treatLbl.textContent = ' 글자처럼 취급';

@@ -977,12 +977,7 @@ export class CursorState {
         return;
       }
     } else {
-      if (ppi! > 0) {
-        const prevLen = this.wasm.getParagraphLength(sec, ppi! - 1);
-        this.position = { sectionIndex: sec, paragraphIndex: ppi! - 1, charOffset: prevLen };
-      } else {
-        return;
-      }
+      this.position = { sectionIndex: sec, paragraphIndex: ppi!, charOffset: 0 };
     }
     this.updateRect();
   }

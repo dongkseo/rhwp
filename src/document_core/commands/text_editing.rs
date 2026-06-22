@@ -8,6 +8,7 @@ use crate::model::control::{Control, FieldType};
 use crate::model::event::DocumentEvent;
 use crate::model::page::ColumnDef;
 use crate::model::paragraph::Paragraph;
+use crate::model::shape::{TextWrap, VertRelTo};
 use crate::renderer::composer::{compose_paragraph, reflow_line_segs, ComposedParagraph};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::resolve_styles;
@@ -80,6 +81,46 @@ fn inactive_field_end_insertions(
             })
         })
         .collect()
+}
+
+fn para_has_visible_text_for_enter(para: &Paragraph) -> bool {
+    para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+}
+
+fn is_empty_topbottom_table_anchor_for_enter(para: &Paragraph) -> bool {
+    !para_has_visible_text_for_enter(para)
+        && para.controls.iter().any(|ctrl| {
+            matches!(
+                ctrl,
+                Control::Table(table)
+                    if !table.common.treat_as_char
+                        && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+                        && matches!(table.common.vert_rel_to, VertRelTo::Para)
+            )
+        })
+}
+
+fn empty_paragraph_after_table_anchor(anchor: &Paragraph) -> Paragraph {
+    let mut para = Paragraph::new_empty();
+    para.para_shape_id = anchor.para_shape_id;
+    para.style_id = anchor.style_id;
+    para.char_shapes = anchor
+        .char_shapes
+        .first()
+        .cloned()
+        .map(|shape| vec![shape])
+        .unwrap_or_default();
+    if let Some(seg) = para.line_segs.first_mut() {
+        if let Some(anchor_seg) = anchor.line_segs.first() {
+            seg.segment_width = anchor_seg.segment_width;
+        }
+    }
+    let mut raw_header_extra = vec![0u8; 10];
+    raw_header_extra[0..2].copy_from_slice(&1u16.to_le_bytes());
+    raw_header_extra[4..6].copy_from_slice(&1u16.to_le_bytes());
+    para.raw_header_extra = raw_header_extra;
+    para.has_para_text = false;
+    para
 }
 
 fn inactive_field_start_insertions(
@@ -1037,6 +1078,64 @@ impl DocumentCore {
                 "문단 인덱스 {} 범위 초과 (총 {}개)",
                 para_idx,
                 section.paragraphs.len()
+            )));
+        }
+
+        if char_offset == 0
+            && is_empty_topbottom_table_anchor_for_enter(
+                &self.document.sections[section_idx].paragraphs[para_idx],
+            )
+        {
+            self.document.sections[section_idx].raw_stream = None;
+            let new_para_idx = para_idx + 1;
+            let new_para = empty_paragraph_after_table_anchor(
+                &self.document.sections[section_idx].paragraphs[para_idx],
+            );
+            self.document.sections[section_idx]
+                .paragraphs
+                .insert(new_para_idx, new_para);
+
+            let old_col = self
+                .para_column_map
+                .get(section_idx)
+                .and_then(|m| m.get(para_idx))
+                .copied()
+                .unwrap_or(0);
+            self.reflow_paragraph(section_idx, new_para_idx);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                para_idx,
+            );
+            self.insert_composed_paragraph(section_idx, new_para_idx);
+            self.paginate_if_needed();
+
+            for _ in 0..2 {
+                let new_col = self
+                    .para_column_map
+                    .get(section_idx)
+                    .and_then(|m| m.get(para_idx))
+                    .copied()
+                    .unwrap_or(0);
+                if new_col == old_col {
+                    break;
+                }
+                self.reflow_paragraph(section_idx, new_para_idx);
+                crate::renderer::composer::recalculate_section_vpos(
+                    &mut self.document.sections[section_idx].paragraphs,
+                    para_idx,
+                );
+                self.recompose_paragraph(section_idx, new_para_idx);
+                self.paginate_if_needed();
+            }
+
+            self.event_log.push(DocumentEvent::ParagraphSplit {
+                section: section_idx,
+                para: para_idx,
+                offset: char_offset,
+            });
+            return Ok(super::super::helpers::json_ok_with(&format!(
+                "\"paraIdx\":{},\"charOffset\":0",
+                new_para_idx
             )));
         }
 

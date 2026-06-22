@@ -53,6 +53,145 @@ fn test_create_empty_document_is_editable() {
     );
 }
 
+fn issue_1481_json_usize(json: &str, key: &str) -> usize {
+    let parsed: Value = serde_json::from_str(json).expect("JSON 파싱");
+    parsed[key].as_u64().expect("usize 값") as usize
+}
+
+fn issue_1481_table<'a>(doc: &'a HwpDocument, para_idx: usize) -> &'a crate::model::table::Table {
+    use crate::model::control::Control;
+
+    doc.document.sections[0].paragraphs[para_idx]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(table.as_ref()),
+            _ => None,
+        })
+        .expect("표 컨트롤")
+}
+
+fn issue_1481_first_page_render_tree(
+    doc: &HwpDocument,
+) -> crate::renderer::render_tree::PageRenderTree {
+    let dpi = 96.0;
+    let styles = crate::renderer::style_resolver::resolve_styles(&doc.document.doc_info, dpi);
+    let engine = crate::renderer::layout::LayoutEngine::new(dpi);
+    let section = &doc.document.sections[0];
+    let composed: Vec<_> = section
+        .paragraphs
+        .iter()
+        .map(crate::renderer::composer::compose_paragraph)
+        .collect();
+    let sec_mt = doc
+        .measured_tables
+        .first()
+        .map(|tables| tables.as_slice())
+        .unwrap_or(&[]);
+    let page = &doc.pagination[0].pages[0];
+
+    engine.build_render_tree(
+        page,
+        &section.paragraphs,
+        &section.paragraphs,
+        &section.paragraphs,
+        &composed,
+        &styles,
+        &section.section_def.footnote_shape,
+        &doc.document.bin_data_content,
+        None,
+        sec_mt,
+        Some(&section.section_def.page_border_fill),
+        section.section_def.outline_numbering_id,
+        &[],
+    )
+}
+
+fn issue_1481_find_table_and_host_mark_y(
+    node: &crate::renderer::render_tree::RenderNode,
+    para_idx: usize,
+    table_y: &mut Option<f64>,
+    mark_y: &mut Option<f64>,
+) {
+    use crate::renderer::render_tree::RenderNodeType;
+
+    match &node.node_type {
+        RenderNodeType::Table(table) if table.para_index == Some(para_idx) => {
+            *table_y = Some(node.bbox.y);
+        }
+        RenderNodeType::TextRun(run)
+            if run.para_index == Some(para_idx)
+                && run.cell_context.is_none()
+                && run.text.is_empty()
+                && run.is_para_end =>
+        {
+            *mark_y = Some(node.bbox.y);
+        }
+        _ => {}
+    }
+
+    for child in &node.children {
+        issue_1481_find_table_and_host_mark_y(child, para_idx, table_y, mark_y);
+    }
+}
+
+fn issue_1481_collect_outside_empty_para_marks(
+    node: &crate::renderer::render_tree::RenderNode,
+    marks: &mut Vec<(usize, f64)>,
+) {
+    use crate::renderer::render_tree::RenderNodeType;
+
+    if let RenderNodeType::TextRun(run) = &node.node_type {
+        if let Some(para_idx) = run.para_index {
+            if run.cell_context.is_none() && run.text.is_empty() && run.is_para_end {
+                marks.push((para_idx, node.bbox.y));
+            }
+        }
+    }
+
+    for child in &node.children {
+        issue_1481_collect_outside_empty_para_marks(child, marks);
+    }
+}
+
+fn issue_1481_collect_layer_control_mark_y(value: &Value, marks: &mut Vec<f64>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("textControlMark")
+                && map.get("isParaEnd").and_then(Value::as_bool) == Some(true)
+            {
+                if let Some(y) = map
+                    .get("bbox")
+                    .and_then(|bbox| bbox.get("y"))
+                    .and_then(Value::as_f64)
+                {
+                    marks.push(y);
+                }
+            }
+            for child in map.values() {
+                issue_1481_collect_layer_control_mark_y(child, marks);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                issue_1481_collect_layer_control_mark_y(item, marks);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn issue_1481_layer_control_mark_y(doc: &HwpDocument) -> Vec<f64> {
+    let json = doc
+        .get_page_layer_tree_native(0)
+        .expect("PageLayerTree JSON");
+    let parsed: Value = serde_json::from_str(&json).expect("PageLayerTree JSON 파싱");
+    let mut marks = Vec::new();
+    issue_1481_collect_layer_control_mark_y(&parsed, &mut marks);
+    marks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    marks
+}
+
 #[test]
 fn issue_1470_style_update_reflows_and_keeps_margin_unit() {
     use crate::model::style::{CharShape, ParaShape, Style};
@@ -360,6 +499,517 @@ fn issue_1470_create_table_ex_applies_size_options() {
     assert_eq!(table.cells[1].width, 6000);
     assert_eq!(table.cells[0].height, 3000);
     assert_eq!(table.cells[2].height, 5000);
+}
+
+#[test]
+fn issue_1481_create_table_keeps_first_line_mark_for_escape() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_ex_native(0, 0, 1, 3, 5, false, None, None)
+        .expect("상세 대화상자 경로의 일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+    let section = &doc.document.sections[0];
+
+    assert_eq!(table_para_idx, 0, "새 문서 첫 표는 첫 줄에 만들어져야 한다");
+    assert!(
+        section.paragraphs.len() >= 2,
+        "표 뒤 빈 문단은 유지되어야 한다"
+    );
+    assert!(section.paragraphs[0].text.is_empty());
+    assert_eq!(section.paragraphs[0].char_count, 9);
+    assert!(section.paragraphs[0].has_para_text);
+    assert!(!section.paragraphs[0].line_segs.is_empty());
+    assert!(matches!(
+        section.paragraphs[table_para_idx].controls.first(),
+        Some(Control::Table(_))
+    ));
+    assert!(section.paragraphs[table_para_idx + 1].text.is_empty());
+    assert!(section.paragraphs[table_para_idx + 1].controls.is_empty());
+    assert_eq!(section.paragraphs[table_para_idx + 1].char_count, 1);
+    assert!(!section.paragraphs[table_para_idx + 1].line_segs.is_empty());
+
+    let moved = doc
+        .move_vertical(0, 0, 0, -1, 0.0, table_para_idx as u32, 0, 0, 0)
+        .expect("첫 셀에서 위쪽 이동");
+    let moved: Value = serde_json::from_str(&moved).expect("moveVertical JSON");
+    assert_eq!(
+        moved["paragraphIndex"].as_u64(),
+        Some(table_para_idx as u64)
+    );
+    assert_eq!(moved["charOffset"].as_u64(), Some(0));
+    assert!(
+        moved.get("parentParaIndex").is_none(),
+        "첫 셀 위쪽 이동은 같은 첫 줄의 표 밖 조판부호 위치로 나가야 한다"
+    );
+
+    let tree = issue_1481_first_page_render_tree(&doc);
+    let mut table_y = None;
+    let mut host_mark_y = None;
+    issue_1481_find_table_and_host_mark_y(
+        &tree.root,
+        table_para_idx,
+        &mut table_y,
+        &mut host_mark_y,
+    );
+    let table_y = table_y.expect("표 렌더 노드 y");
+    let host_mark_y = host_mark_y.expect("표 host 문단부호 y");
+    assert!(
+        (table_y - host_mark_y).abs() < 1.0,
+        "기본 자리차지 표의 첫 조판부호는 빈 줄이 아니라 표 상단과 겹쳐야 한다: table_y={table_y}, mark_y={host_mark_y}"
+    );
+    doc.set_show_paragraph_marks(true);
+    let layer_marks = issue_1481_layer_control_mark_y(&doc);
+    let layer_marks_above_table = layer_marks
+        .iter()
+        .filter(|y| **y < table_y - 1.0)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        layer_marks_above_table.is_empty(),
+        "새 문서 빈 문단 끝에서 표를 만들 때 생성 경로가 빈 줄을 남기면 안 된다: table_y={table_y}, layer_marks_above={layer_marks_above_table:?}, all={layer_marks:?}"
+    );
+    doc.set_show_paragraph_marks(false);
+
+    let mut outside_marks = Vec::new();
+    issue_1481_collect_outside_empty_para_marks(&tree.root, &mut outside_marks);
+    let marks_above_table = outside_marks
+        .iter()
+        .filter(|(_, y)| *y < table_y - 1.0)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        marks_above_table.is_empty(),
+        "표 생성 직후 표 위에 별도 빈 줄 조판부호가 있으면 안 된다: table_y={table_y}, marks={marks_above_table:?}, all={outside_marks:?}"
+    );
+
+    let enter_result = doc
+        .split_paragraph_native(0, table_para_idx, 0)
+        .expect("표 앞 조판부호 위치 Enter");
+    let enter_para_idx = issue_1481_json_usize(&enter_result, "paraIdx");
+    assert_eq!(
+        enter_para_idx,
+        table_para_idx + 1,
+        "자리차지 표 앞 Enter는 표 아래 문단으로 커서를 보내야 한다"
+    );
+    let section_after_enter = &doc.document.sections[0];
+    assert!(matches!(
+        section_after_enter.paragraphs[table_para_idx]
+            .controls
+            .first(),
+        Some(Control::Table(_))
+    ));
+    assert_eq!(
+        section_after_enter.paragraphs[table_para_idx].char_count, 9,
+        "Enter 후에도 표 host 문단은 빈 문단으로 분리되면 안 된다"
+    );
+    assert!(section_after_enter.paragraphs[enter_para_idx]
+        .text
+        .is_empty());
+    assert!(section_after_enter.paragraphs[enter_para_idx]
+        .controls
+        .is_empty());
+    assert_eq!(section_after_enter.paragraphs[enter_para_idx].char_count, 1);
+    assert!(section_after_enter
+        .paragraphs
+        .get(enter_para_idx + 1)
+        .map(|p| p.text.is_empty() && p.controls.is_empty())
+        .unwrap_or(false));
+
+    let tree_after_enter = issue_1481_first_page_render_tree(&doc);
+    let mut table_y_after = None;
+    let mut host_mark_y_after = None;
+    issue_1481_find_table_and_host_mark_y(
+        &tree_after_enter.root,
+        table_para_idx,
+        &mut table_y_after,
+        &mut host_mark_y_after,
+    );
+    let table_y_after = table_y_after.expect("Enter 후 표 렌더 노드 y");
+    let host_mark_y_after = host_mark_y_after.expect("Enter 후 표 host 문단부호 y");
+    assert!(
+        (table_y_after - host_mark_y_after).abs() < 1.0,
+        "Enter 후에도 표 host 조판부호는 표 상단과 겹쳐야 한다: table_y={table_y_after}, mark_y={host_mark_y_after}"
+    );
+    let mut outside_marks_after = Vec::new();
+    issue_1481_collect_outside_empty_para_marks(&tree_after_enter.root, &mut outside_marks_after);
+    let marks_above_table_after = outside_marks_after
+        .iter()
+        .filter(|(_, y)| *y < table_y_after - 1.0)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        marks_above_table_after.is_empty(),
+        "Enter 후에도 표 위에 별도 빈 줄 조판부호가 있으면 안 된다: table_y={table_y_after}, marks={marks_above_table_after:?}, all={outside_marks_after:?}"
+    );
+}
+
+#[test]
+fn issue_1481_create_table_preserves_user_blank_line_above() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    doc.split_paragraph_native(0, 0, 0)
+        .expect("사용자가 만든 빈 줄");
+    let table_result = doc
+        .create_table_ex_native(0, 1, 1, 3, 5, false, None, None)
+        .expect("두 번째 빈 문단에 일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+    let section = &doc.document.sections[0];
+
+    assert_eq!(
+        table_para_idx, 1,
+        "사용자가 표 위에 만든 빈 문단은 삭제하지 않고 현재 빈 문단만 표 host로 교체해야 한다"
+    );
+    assert!(section.paragraphs[0].text.is_empty());
+    assert!(section.paragraphs[0].controls.is_empty());
+    assert_eq!(section.paragraphs[0].char_count, 1);
+    assert!(matches!(
+        section.paragraphs[table_para_idx].controls.first(),
+        Some(Control::Table(_))
+    ));
+}
+
+#[test]
+fn issue_1481_create_table_empty_para_ignores_stale_offset() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_ex_native(0, 0, 2, 3, 5, false, None, None)
+        .expect("빈 문단의 초과 offset에서 일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+    let section = &doc.document.sections[0];
+
+    assert_eq!(
+        table_para_idx, 0,
+        "빈 문단 offset이 초과되어도 표 위에 생성 경로의 빈 줄을 남기면 안 된다"
+    );
+    assert!(matches!(
+        section.paragraphs[table_para_idx].controls.first(),
+        Some(Control::Table(_))
+    ));
+
+    let tree = issue_1481_first_page_render_tree(&doc);
+    let mut table_y = None;
+    let mut host_mark_y = None;
+    issue_1481_find_table_and_host_mark_y(
+        &tree.root,
+        table_para_idx,
+        &mut table_y,
+        &mut host_mark_y,
+    );
+    let table_y = table_y.expect("표 렌더 노드 y");
+    let host_mark_y = host_mark_y.expect("표 host 문단부호 y");
+    assert!(
+        (table_y - host_mark_y).abs() < 1.0,
+        "빈 문단 초과 offset에서도 첫 조판부호는 표 상단과 겹쳐야 한다: table_y={table_y}, mark_y={host_mark_y}"
+    );
+}
+
+#[test]
+fn issue_1481_blank_template_create_table_has_no_generated_blank_above() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document_native()
+        .expect("Studio 새 문서 템플릿 생성");
+    let table_result = doc
+        .create_table_ex_native(0, 0, 2, 3, 5, false, None, None)
+        .expect("blank2010 기반 빈 문단 초과 offset에서 일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+    let table_control_idx = issue_1481_json_usize(&table_result, "controlIdx");
+    let section = &doc.document.sections[0];
+
+    assert_eq!(
+        table_para_idx, 0,
+        "Studio 새 문서 템플릿에서도 첫 표는 첫 줄에 만들어져야 한다"
+    );
+    assert_eq!(
+        table_control_idx, 2,
+        "blank2010의 SectionDef/ColumnDef 구조 컨트롤 뒤에 표 컨트롤이 보존되어야 한다"
+    );
+    assert!(matches!(
+        section.paragraphs[table_para_idx]
+            .controls
+            .get(table_control_idx),
+        Some(Control::Table(_))
+    ));
+
+    let tree = issue_1481_first_page_render_tree(&doc);
+    let mut table_y = None;
+    let mut host_mark_y = None;
+    issue_1481_find_table_and_host_mark_y(
+        &tree.root,
+        table_para_idx,
+        &mut table_y,
+        &mut host_mark_y,
+    );
+    let table_y = table_y.expect("표 렌더 노드 y");
+    let host_mark_y = host_mark_y.expect("표 host 문단부호 y");
+    assert!(
+        (table_y - host_mark_y).abs() < 1.0,
+        "blank2010 경로에서도 첫 조판부호는 표 상단과 겹쳐야 한다: table_y={table_y}, mark_y={host_mark_y}"
+    );
+
+    doc.set_show_paragraph_marks(true);
+    let layer_marks = issue_1481_layer_control_mark_y(&doc);
+    let layer_marks_above_table = layer_marks
+        .iter()
+        .filter(|y| **y < table_y - 1.0)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        layer_marks_above_table.is_empty(),
+        "blank2010 경로에서도 표 위에 생성 경로 빈 줄을 남기면 안 된다: table_y={table_y}, layer_marks_above={layer_marks_above_table:?}, all={layer_marks:?}"
+    );
+    doc.set_show_paragraph_marks(false);
+}
+
+#[test]
+fn issue_1481_insert_column_keeps_create_table_height() {
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+
+    let (original_width, original_height, original_raw_height, row_height_sum) = {
+        let table = issue_1481_table(&doc, table_para_idx);
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        (
+            table.common.width,
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.insert_table_column_native(0, table_para_idx, 0, 0, false)
+        .expect("왼쪽 열 추가");
+
+    let table = issue_1481_table(&doc, table_para_idx);
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+
+    assert_eq!(table.col_count, 6);
+    assert!(
+        table.common.width > original_width,
+        "열 추가 후 표 폭은 기준 열 폭만큼 증가해야 한다"
+    );
+    assert_eq!(
+        table.common.height, original_height,
+        "열 추가는 행 수를 바꾸지 않으므로 표 외곽 height를 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, original_raw_height,
+        "직렬화 원본 raw height도 표 외곽 height와 함께 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
+#[test]
+fn issue_1481_insert_row_keeps_create_table_display_height() {
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+
+    let (original_height, original_raw_height, original_row_height_sum) = {
+        let table = issue_1481_table(&doc, table_para_idx);
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        (
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > original_row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.insert_table_row_native(0, table_para_idx, 0, 0, false)
+        .expect("위쪽 줄 추가");
+
+    let table = issue_1481_table(&doc, table_para_idx);
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+    let expected_height = original_height + (original_height / 3);
+
+    assert_eq!(table.row_count, 4);
+    assert_eq!(
+        table.common.height, expected_height,
+        "줄 추가는 한 행의 표시 높이만큼 표 외곽 height를 늘려야 한다"
+    );
+    assert!(
+        table.common.height > original_raw_height,
+        "줄 추가 후 표 높이는 기존 외곽 height보다 커야 한다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
+#[test]
+fn issue_1481_delete_row_keeps_create_table_display_height() {
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+
+    let (original_height, original_row_height_sum) = {
+        let table = issue_1481_table(&doc, table_para_idx);
+        (
+            table.common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > original_row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.delete_table_row_native(0, table_para_idx, 0, 0)
+        .expect("줄 지우기");
+
+    let table = issue_1481_table(&doc, table_para_idx);
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+    let expected_height = original_height - (original_height / 3);
+
+    assert_eq!(table.row_count, 2);
+    assert_eq!(
+        table.common.height, expected_height,
+        "줄 삭제는 삭제 행의 표시 높이만큼 표 외곽 height를 줄여야 한다"
+    );
+    assert!(
+        table.common.height > table.get_row_heights().iter().sum::<u32>(),
+        "삭제 후에도 일반 표의 표시 height가 셀 저장 height 합으로 붕괴하면 안 된다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
+#[test]
+fn issue_1481_delete_column_keeps_create_table_height() {
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+
+    let (original_width, original_height, original_raw_height, row_height_sum) = {
+        let table = issue_1481_table(&doc, table_para_idx);
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        (
+            table.common.width,
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.delete_table_column_native(0, table_para_idx, 0, 0)
+        .expect("칸 지우기");
+
+    let table = issue_1481_table(&doc, table_para_idx);
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+
+    assert_eq!(table.col_count, 4);
+    assert!(
+        table.common.width < original_width,
+        "열 삭제 후 표 폭은 삭제 열 폭만큼 줄어야 한다"
+    );
+    assert_eq!(
+        table.common.height, original_height,
+        "열 삭제는 행 수를 바꾸지 않으므로 표 외곽 height를 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, original_raw_height,
+        "직렬화 원본 raw height도 표 외곽 height와 함께 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
+#[test]
+fn issue_1481_resize_bottom_row_keeps_create_table_display_height() {
+    let mut doc = HwpDocument::create_empty();
+    let table_result = doc
+        .create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+    let table_para_idx = issue_1481_json_usize(&table_result, "paraIdx");
+
+    let (original_height, original_raw_height, original_row_height_sum, last_row_cells) = {
+        let table = issue_1481_table(&doc, table_para_idx);
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        let last_row = table.row_count - 1;
+        (
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+            table
+                .cells
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, cell)| (cell.row == last_row).then_some(idx))
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    assert!(
+        original_height > original_row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+    assert_eq!(original_height, original_raw_height);
+    assert_eq!(last_row_cells.len(), 5);
+
+    let updates = last_row_cells
+        .iter()
+        .map(|cell_idx| format!(r#"{{"cellIdx":{},"heightDelta":300}}"#, cell_idx))
+        .collect::<Vec<_>>()
+        .join(",");
+    doc.resize_table_cells_native(0, table_para_idx, 0, &format!("[{}]", updates))
+        .expect("하단 행 resize");
+
+    let table = issue_1481_table(&doc, table_para_idx);
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+    let row_height_sum = table.get_row_heights().iter().sum::<u32>();
+
+    assert_eq!(
+        table.common.height,
+        original_height + 300,
+        "하단선 resize는 기존 표시 height에 실제 행 높이 변화량만 반영해야 한다"
+    );
+    assert!(
+        table.common.height > row_height_sum,
+        "resize 후에도 생성 직후 표의 표시 height가 셀 저장 height 합으로 붕괴하면 안 된다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
 }
 
 fn issue_1470_count_rendered_tables(

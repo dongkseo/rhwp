@@ -328,6 +328,45 @@ impl Table {
         self.common.height = total_height;
     }
 
+    fn sync_ctrl_height(&mut self, height: HwpUnit) {
+        self.common.height = height;
+        if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+            self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&height.to_le_bytes());
+        }
+    }
+
+    fn stretched_row_heights(&self) -> Option<Vec<HwpUnit>> {
+        let mut heights = self.get_row_heights();
+        let raw_sum: u64 = heights.iter().map(|h| *h as u64).sum();
+        let target = self.common.height as u64;
+        if heights.is_empty() || raw_sum == 0 || target <= raw_sum {
+            return None;
+        }
+
+        let mut scaled_sum = 0u64;
+        for height in &mut heights {
+            let scaled = ((*height as u64 * target) + raw_sum / 2) / raw_sum;
+            *height = scaled.max(1).min(u32::MAX as u64) as HwpUnit;
+            scaled_sum += *height as u64;
+        }
+
+        if let Some(last) = heights.last_mut() {
+            match target.cmp(&scaled_sum) {
+                std::cmp::Ordering::Greater => {
+                    let delta = (target - scaled_sum).min(u32::MAX as u64);
+                    *last = last.saturating_add(delta as HwpUnit);
+                }
+                std::cmp::Ordering::Less => {
+                    let delta = (scaled_sum - target).min(*last as u64);
+                    *last = last.saturating_sub(delta as HwpUnit).max(1);
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+
+        Some(heights)
+    }
+
     /// 열별 폭을 추출한다 (col_span==1인 셀 기준).
     pub fn get_column_widths(&self) -> Vec<HwpUnit> {
         let mut widths = vec![0u32; self.col_count as usize];
@@ -423,6 +462,10 @@ impl Table {
             ));
         }
 
+        let stretched_new_row_height = self
+            .stretched_row_heights()
+            .and_then(|heights| heights.get(row_idx as usize).copied());
+        let original_height = self.common.height;
         let target_row = if below { row_idx + 1 } else { row_idx };
         let col_widths = self.get_column_widths();
 
@@ -495,6 +538,11 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if let Some(new_row_height) = stretched_new_row_height {
+            // 일반 표는 셀 저장 height보다 큰 표시 height를 별도로 가진다.
+            // 행 추가 시 표시 기준 행 높이를 더해 표가 납작해지지 않도록 보존한다.
+            self.sync_ctrl_height(original_height.saturating_add(new_row_height));
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();
@@ -513,6 +561,7 @@ impl Table {
             ));
         }
 
+        let original_height = self.common.height;
         let target_col = if right { col_idx + 1 } else { col_idx };
         let col_widths = self.get_column_widths();
         let row_heights = self.get_row_heights();
@@ -578,6 +627,14 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if original_height > 0 {
+            // 열 추가는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+            self.common.height = original_height;
+            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                    .copy_from_slice(&original_height.to_le_bytes());
+            }
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();
@@ -598,6 +655,11 @@ impl Table {
         if self.row_count <= 1 {
             return Err("최소 1행은 유지해야 합니다".to_string());
         }
+
+        let stretched_deleted_row_height = self
+            .stretched_row_heights()
+            .and_then(|heights| heights.get(row_idx as usize).copied());
+        let original_height = self.common.height;
 
         // 삭제 행을 걸치는 병합 셀: row_span 축소
         for cell in &mut self.cells {
@@ -633,6 +695,16 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if let Some(deleted_row_height) = stretched_deleted_row_height {
+            // 일반 표의 표시 높이는 셀 저장 height 합보다 크므로 삭제 행의 표시
+            // 높이만큼 외곽 height를 줄여 한컴식 비례를 유지한다.
+            let raw_sum: HwpUnit = self.get_row_heights().iter().sum();
+            self.sync_ctrl_height(
+                original_height
+                    .saturating_sub(deleted_row_height)
+                    .max(raw_sum),
+            );
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();
@@ -653,6 +725,8 @@ impl Table {
         if self.col_count <= 1 {
             return Err("최소 1열은 유지해야 합니다".to_string());
         }
+
+        let original_height = self.common.height;
 
         // 삭제 열의 폭 (셀 width 축소용)
         let col_widths = self.get_column_widths();
@@ -698,6 +772,14 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if original_height > 0 {
+            // 열 삭제는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+            self.common.height = original_height;
+            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                    .copy_from_slice(&original_height.to_le_bytes());
+            }
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();

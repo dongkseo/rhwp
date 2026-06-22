@@ -1,3 +1,5 @@
+import { detectPlatformKind, type PlatformKind } from '../engine/navigation-keymap.ts';
+
 /** 키보드 단축키 정의 */
 export interface ShortcutDef {
   /** 키 문자 (소문자). 예: 'z', 'b', '=', '-' */
@@ -8,6 +10,8 @@ export interface ShortcutDef {
   ctrl?: boolean;
   shift?: boolean;
   alt?: boolean;
+  /** 특정 플랫폼에서만 활성화해야 하는 단축키 */
+  platform?: PlatformKind;
 }
 
 /** 기본 단축키 → 커맨드 ID 매핑 */
@@ -114,8 +118,8 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   [{ key: 'ㅇ', alt: true, shift: true }, 'format:align-distribute'],
 
   // 표
-  [{ key: 'insert', alt: true }, 'table:insert-col-left'],
-  [{ key: 'delete', alt: true }, 'table:delete-col'],
+  [{ key: 'enter', alt: true }, 'table:insert-row-col'],
+  [{ key: 'delete', alt: true }, 'table:delete-row-col'],
   [{ key: 's', ctrl: true, shift: true }, 'table:block-sum'],
   [{ key: 'a', ctrl: true, shift: true }, 'table:block-avg'],
   [{ key: 'p', ctrl: true, shift: true }, 'table:block-product'],
@@ -128,12 +132,14 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
 export function matchShortcut(
   e: KeyboardEvent,
   shortcuts: [ShortcutDef, string][],
+  platform: PlatformKind = detectPlatformKind(),
 ): string | null {
   const ctrlOrMeta = e.ctrlKey || e.metaKey;
   const eventKey = e.key.toLowerCase();
   const eventCode = (e.code ?? '').toLowerCase();
 
   for (const [def, cmdId] of shortcuts) {
+    if (def.platform && def.platform !== platform) continue;
     if (def.ctrl && !ctrlOrMeta) continue;
     if (!def.ctrl && ctrlOrMeta) continue;
     if ((def.shift ?? false) !== e.shiftKey) continue;

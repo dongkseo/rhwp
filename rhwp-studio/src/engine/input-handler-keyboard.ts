@@ -11,7 +11,7 @@ import {
   type NavigationAction,
   type NavigationKeyInput,
 } from './navigation-keymap';
-import type { DocumentPosition, CellPathLike } from '@/core/types';
+import type { DocumentPosition, CellBbox, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 
 const RHWP_CLIPBOARD_MARKER_RE = /<!--\s*rhwp-studio-clipboard:([A-Za-z0-9._:-]+)\s*-->/;
@@ -60,6 +60,67 @@ function hasCurrentRhwpClipboardMarker(self: any, html: string): boolean {
 
 function isNestedCellPosition(pos: DocumentPosition): boolean {
   return pos.parentParaIndex !== undefined && (pos.cellPath?.length ?? 0) > 1;
+}
+
+function uniqueCellsInReadingOrder(bboxes: CellBbox[]): CellBbox[] {
+  const seen = new Set<number>();
+  const unique: CellBbox[] = [];
+  for (const bbox of bboxes) {
+    if (seen.has(bbox.cellIdx)) continue;
+    seen.add(bbox.cellIdx);
+    unique.push(bbox);
+  }
+  unique.sort((a, b) => a.row !== b.row ? a.row - b.row : a.col - b.col);
+  return unique;
+}
+
+function tableCellStartPosition(pos: DocumentPosition, cellIndex: number): DocumentPosition {
+  return {
+    sectionIndex: pos.sectionIndex,
+    paragraphIndex: 0,
+    charOffset: 0,
+    parentParaIndex: pos.parentParaIndex,
+    controlIndex: pos.controlIndex,
+    cellIndex,
+    cellParaIndex: 0,
+  };
+}
+
+function insertRowAfterLastTableCellByTab(this: any): boolean {
+  const pos = this.cursor.getPosition() as DocumentPosition;
+  const sec = pos.sectionIndex;
+  const ppi = pos.parentParaIndex;
+  const ci = pos.controlIndex;
+  const currentCellIdx = pos.cellIndex;
+  if (ppi === undefined || ci === undefined || currentCellIdx === undefined) return false;
+  if (isNestedCellPosition(pos)) return false;
+
+  try {
+    const order = uniqueCellsInReadingOrder(this.wasm.getTableCellBboxes(sec, ppi, ci));
+    if (order.length === 0 || order[order.length - 1].cellIdx !== currentCellIdx) {
+      return false;
+    }
+
+    const info = this.wasm.getCellInfo(sec, ppi, ci, currentCellIdx);
+    const insertAfterRow = info.row + Math.max(1, info.rowSpan || 1) - 1;
+    this.executeOperation({
+      kind: 'snapshot',
+      operationType: 'insertTableRow',
+      operation: (wasm: WasmBridge) => {
+        wasm.insertTableRow(sec, ppi, ci, insertAfterRow, true);
+        const nextOrder = uniqueCellsInReadingOrder(wasm.getTableCellBboxes(sec, ppi, ci));
+        const insertedRow = insertAfterRow + 1;
+        const nextCell = nextOrder.find(cell => cell.row === insertedRow)
+          ?? nextOrder.find(cell => cell.row > insertAfterRow)
+          ?? nextOrder[nextOrder.length - 1];
+        return tableCellStartPosition(pos, nextCell?.cellIdx ?? currentCellIdx);
+      },
+    });
+    return true;
+  } catch (error) {
+    console.warn('[InputHandler] 마지막 셀 Tab 행 추가 실패:', error);
+    return false;
+  }
 }
 
 type PictureDeleteRef = {
@@ -973,7 +1034,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // Alt 조합 단축키 처리
   // - Alt+Backspace → 이전 단어 삭제 (아래 Backspace/Delete case)
-  // - Alt+Delete → 표 안 영역 영역 'table:delete-col' (기존 동작 보존),
+  // - Alt+Delete → 표 안 영역은 'table:delete-row-col' 대화상자,
   //                표 외 영역 영역 다음 단어 삭제 (아래 Backspace/Delete case)
   const isAltWordKey = e.altKey && (
     e.key === 'Backspace' ||
@@ -1178,11 +1239,22 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
         this.moveToAdjacentFormField?.(e.shiftKey ? -1 : 1);
         return;
       }
+      if (this.cursor.isInCell() && !this.cursor.isInTextBox()) {
+        if (e.shiftKey) {
+          this.cursor.moveToCellPrev();
+        } else if (insertRowAfterLastTableCellByTab.call(this)) {
+          // 마지막 셀 Tab은 한컴처럼 새 줄을 자동 추가하고 새 줄 첫 셀로 이동한다.
+        } else {
+          this.cursor.moveToCellNext();
+        }
+        this.updateCaret();
+        break;
+      }
       if (e.shiftKey) {
         this.applyHangingIndentAtCursor();
         break;
       }
-      // 탭 문자 삽입 (본문·표 셀·글상자 공통)
+      // 탭 문자 삽입 (본문·글상자 공통)
       this.executeOperation({ kind: 'command', command: new InsertTabCommand(this.cursor.getPosition()) });
       break;
     }

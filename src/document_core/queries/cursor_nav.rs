@@ -1486,19 +1486,7 @@ impl DocumentCore {
             // 문서 끝 — 표 마지막 위치 유지
             Ok((sec, 0, 0, None))
         } else {
-            if ppi > 0 {
-                return self.enter_paragraph(sec, ppi - 1, delta, preferred_x);
-            }
-            // 구역 시작
-            if sec > 0 {
-                let prev_sec = sec - 1;
-                let prev_count = self.document.sections[prev_sec].paragraphs.len();
-                if prev_count > 0 {
-                    return self.enter_paragraph(prev_sec, prev_count - 1, delta, preferred_x);
-                }
-            }
-            // 문서 시작 — 이동 안 함
-            Ok((sec, 0, 0, None))
+            Ok((sec, ppi, 0, None))
         }
     }
 

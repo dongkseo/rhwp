@@ -6,6 +6,8 @@ import { enableDialogDrag } from './dialog-drag';
  * DOM은 show() 호출 시 생성된다 (ES2022 class field 초기화 순서 이슈 방지).
  */
 export abstract class ModalDialog {
+  afterClose?: () => void;
+
   protected overlay!: HTMLDivElement;
   protected dialog!: HTMLDivElement;
   private title: string;
@@ -123,6 +125,7 @@ export abstract class ModalDialog {
       this.captureHandler = null;
     }
     this.overlay?.remove();
+    this.afterClose?.();
   }
 
   /** 서브클래스에서 본문 DOM을 생성 */
