@@ -4525,12 +4525,15 @@ fn diff_common_obj(
 /// 0x20)로, HWPX `<hp:tab>`(width/leader/type만 보유)에는 대응 속성이 없어 파서가 0으로
 /// 두고, 렌더러·직렬화·레이아웃 어디서도 읽지 않는 비의미(reserved) 값이다. 따라서
 /// HWPX↔HWP5 parity 비교에서 이 세 필드는 거의 모든 탭에서 거짓 차이(0 vs 32)를 만들어
-/// 실제 차이(width/leader/type)를 가린다. 의미 필드 [0]=width, [1]=leader/fill,
-/// [2]=type<<8|fill, [6]=0x0009 마커만 비교한다. (HWP5 직렬화는 [3..6]을 그대로 보존하므로
-/// self-roundtrip 충실도에는 영향 없음 — 도구 비교에서만 제외.)
+/// 실제 차이(width/leader/type)를 가린다. 비예약 필드 [0]=width, [1], [2], [6]=0x0009
+/// 마커만 비교한다. (leader/type 인코딩은 포맷별로 다르다: HWPX 파서는 `ext[2]`에
+/// `type<<8 | leader` 로 패킹하고 `ext[1]=0` 으로 두는 반면, HWP5 는 `ext[1]` 을
+/// leader/fill 슬롯으로, `ext[2]` high byte 를 type 으로 쓴다 — 그래서 [1],[2] 둘 다
+/// 비교 대상에 둬야 실제 leader/type 비대칭을 놓치지 않는다.) HWP5 직렬화는 [3..6]을
+/// 그대로 보존하므로 self-roundtrip 충실도에는 영향 없음 — 도구 비교에서만 제외.
 fn tab_ext_semantic_differs(a: &[u16; 7], b: &[u16; 7]) -> bool {
-    // 의미 필드만: [0]=width, [1]=leader/fill, [2]=type<<8|fill, [6]=0x0009 마커.
-    // [3],[4],[5]는 비의미 예약 필드라 제외.
+    // 비예약 필드만: [0]=width, [1]·[2]=leader/type(포맷별 인코딩 상이, 위 문서 참고),
+    // [6]=0x0009 마커. [3],[4],[5]는 비의미 예약 필드라 제외.
     const SEMANTIC: [usize; 4] = [0, 1, 2, 6];
     SEMANTIC.iter().any(|&k| a[k] != b[k])
 }
@@ -5126,10 +5129,12 @@ mod tests {
         assert!(!tab_ext_semantic_differs(&base, &base));
         // width([0]) 차이 검출
         assert!(tab_ext_semantic_differs(&base, &[1641, 0, 256, 0, 0, 0, 9]));
-        // leader/fill([1]) 차이 검출
-        assert!(tab_ext_semantic_differs(&base, &[1640, 1, 256, 0, 0, 0, 9]));
-        // type+fill([2]) 차이 검출
+        // type([2] high byte) 차이 검출 — 256(0x0100)→512(0x0200)
         assert!(tab_ext_semantic_differs(&base, &[1640, 0, 512, 0, 0, 0, 9]));
+        // leader([2] low byte, HWPX 인코딩) 차이 검출 — 256(0x0100)→257(0x0101)
+        assert!(tab_ext_semantic_differs(&base, &[1640, 0, 257, 0, 0, 0, 9]));
+        // HWP5 leader/fill 슬롯([1], HWPX는 0) 비대칭도 검출
+        assert!(tab_ext_semantic_differs(&base, &[1640, 1, 256, 0, 0, 0, 9]));
         // marker([6]) 차이 검출
         assert!(tab_ext_semantic_differs(&base, &[1640, 0, 256, 0, 0, 0, 0]));
     }
