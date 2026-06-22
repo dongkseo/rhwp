@@ -186,3 +186,18 @@ test('상단 메뉴 하드코딩 단축키와 registry shortcutLabel의 누락 �
   assertCommandShortcut(format, 'format:line-spacing-increase', 'Alt+Shift+Z');
   assertCommandShortcut(format, 'format:line-spacing-decrease', 'Alt+Shift+A');
 });
+
+test('표 줄/칸 추가·지우기 대표 메뉴에 한컴 단축키를 표시한다', () => {
+  const table = source('src/command/commands/table.ts');
+  const html = source('index.html');
+
+  assertCommandShortcut(table, 'table:insert-row-col', 'Alt+Insert');
+  assertCommandShortcut(table, 'table:delete-row-col', 'Alt+Delete');
+  assert.match(html, /data-cmd="table:insert-row-col"[\s\S]*?<span class="md-label">줄\/칸 추가하기<\/span>[\s\S]*?<span class="md-shortcut">Alt\+Insert<\/span>/);
+  assert.match(html, /data-cmd="table:delete-row-col"[\s\S]*?<span class="md-label">줄\/칸 지우기<\/span>[\s\S]*?<span class="md-shortcut">Alt\+Delete<\/span>/);
+
+  const leftColItem = html.match(/<div class="md-item disabled" data-cmd="table:insert-col-left"[\s\S]*?<\/div>/)?.[0] ?? '';
+  const deleteColItem = html.match(/<div class="md-item disabled" data-cmd="table:delete-col"[\s\S]*?<\/div>/)?.[0] ?? '';
+  assert.doesNotMatch(leftColItem, /Alt\+Insert/);
+  assert.doesNotMatch(deleteColItem, /Alt\+Delete/);
+});

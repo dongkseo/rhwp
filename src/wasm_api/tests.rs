@@ -362,6 +362,132 @@ fn issue_1470_create_table_ex_applies_size_options() {
     assert_eq!(table.cells[2].height, 5000);
 }
 
+#[test]
+fn issue_1481_insert_column_keeps_create_table_height() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    doc.create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+
+    let (original_width, original_height, original_raw_height, row_height_sum) = {
+        let table = doc.document.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("표 컨트롤");
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        (
+            table.common.width,
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.insert_table_column_native(0, 0, 0, 0, false)
+        .expect("왼쪽 열 추가");
+
+    let table = doc.document.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("표 컨트롤");
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+
+    assert_eq!(table.col_count, 6);
+    assert!(
+        table.common.width > original_width,
+        "열 추가 후 표 폭은 기준 열 폭만큼 증가해야 한다"
+    );
+    assert_eq!(
+        table.common.height, original_height,
+        "열 추가는 행 수를 바꾸지 않으므로 표 외곽 height를 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, original_raw_height,
+        "직렬화 원본 raw height도 표 외곽 height와 함께 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
+#[test]
+fn issue_1481_delete_column_keeps_create_table_height() {
+    use crate::model::control::Control;
+
+    let mut doc = HwpDocument::create_empty();
+    doc.create_table_native(0, 0, 0, 3, 5)
+        .expect("일반 표 생성");
+
+    let (original_width, original_height, original_raw_height, row_height_sum) = {
+        let table = doc.document.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .find_map(|control| match control {
+                Control::Table(table) => Some(table),
+                _ => None,
+            })
+            .expect("표 컨트롤");
+        let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+        (
+            table.common.width,
+            table.common.height,
+            raw_common.height,
+            table.get_row_heights().iter().sum::<u32>(),
+        )
+    };
+
+    assert!(
+        original_height > row_height_sum,
+        "일반 표는 셀 저장 height 합보다 큰 외곽 height를 가진다"
+    );
+
+    doc.delete_table_column_native(0, 0, 0, 0)
+        .expect("칸 지우기");
+
+    let table = doc.document.sections[0].paragraphs[0]
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("표 컨트롤");
+    let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
+
+    assert_eq!(table.col_count, 4);
+    assert!(
+        table.common.width < original_width,
+        "열 삭제 후 표 폭은 삭제 열 폭만큼 줄어야 한다"
+    );
+    assert_eq!(
+        table.common.height, original_height,
+        "열 삭제는 행 수를 바꾸지 않으므로 표 외곽 height를 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, original_raw_height,
+        "직렬화 원본 raw height도 표 외곽 height와 함께 보존해야 한다"
+    );
+    assert_eq!(
+        raw_common.height, table.common.height,
+        "raw height와 in-memory common height는 동기화되어야 한다"
+    );
+}
+
 fn issue_1470_count_rendered_tables(
     doc: &HwpDocument,
     para_idx: usize,

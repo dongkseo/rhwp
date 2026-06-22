@@ -513,6 +513,7 @@ impl Table {
             ));
         }
 
+        let original_height = self.common.height;
         let target_col = if right { col_idx + 1 } else { col_idx };
         let col_widths = self.get_column_widths();
         let row_heights = self.get_row_heights();
@@ -578,6 +579,14 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if original_height > 0 {
+            // 열 추가는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+            self.common.height = original_height;
+            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                    .copy_from_slice(&original_height.to_le_bytes());
+            }
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();
@@ -654,6 +663,8 @@ impl Table {
             return Err("최소 1열은 유지해야 합니다".to_string());
         }
 
+        let original_height = self.common.height;
+
         // 삭제 열의 폭 (셀 width 축소용)
         let col_widths = self.get_column_widths();
         let deleted_width = col_widths[col_idx as usize];
@@ -698,6 +709,14 @@ impl Table {
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
+        if original_height > 0 {
+            // 열 삭제는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+            self.common.height = original_height;
+            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                    .copy_from_slice(&original_height.to_le_bytes());
+            }
+        }
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();

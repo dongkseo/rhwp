@@ -41,3 +41,10 @@ test('IME pending 상태처럼 key가 Process여도 code로 장평/자간 단축
   assert.equal(command({ key: 'Process', code: 'KeyN', altKey: true, shiftKey: true }), 'format:char-spacing-decrease');
   assert.equal(command({ key: 'Process', code: 'KeyW', altKey: true, shiftKey: true }), 'format:char-spacing-increase');
 });
+
+test('표 줄/칸 추가·지우기 단축키는 대화상자 명령으로 매핑한다', () => {
+  assert.equal(command({ key: 'Insert', altKey: true }), 'table:insert-row-col');
+  assert.equal(command({ key: 'insert', altKey: true }), 'table:insert-row-col');
+  assert.equal(command({ key: 'Delete', altKey: true }), 'table:delete-row-col');
+  assert.equal(command({ key: 'delete', altKey: true }), 'table:delete-row-col');
+});

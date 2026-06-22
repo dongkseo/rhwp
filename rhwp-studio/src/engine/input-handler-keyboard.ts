@@ -973,7 +973,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // Alt 조합 단축키 처리
   // - Alt+Backspace → 이전 단어 삭제 (아래 Backspace/Delete case)
-  // - Alt+Delete → 표 안 영역 영역 'table:delete-col' (기존 동작 보존),
+  // - Alt+Delete → 표 안 영역은 'table:delete-row-col' 대화상자,
   //                표 외 영역 영역 다음 단어 삭제 (아래 Backspace/Delete case)
   const isAltWordKey = e.altKey && (
     e.key === 'Backspace' ||

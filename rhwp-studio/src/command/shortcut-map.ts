@@ -114,8 +114,8 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   [{ key: 'ㅇ', alt: true, shift: true }, 'format:align-distribute'],
 
   // 표
-  [{ key: 'insert', alt: true }, 'table:insert-col-left'],
-  [{ key: 'delete', alt: true }, 'table:delete-col'],
+  [{ key: 'insert', alt: true }, 'table:insert-row-col'],
+  [{ key: 'delete', alt: true }, 'table:delete-row-col'],
   [{ key: 's', ctrl: true, shift: true }, 'table:block-sum'],
   [{ key: 'a', ctrl: true, shift: true }, 'table:block-avg'],
   [{ key: 'p', ctrl: true, shift: true }, 'table:block-product'],

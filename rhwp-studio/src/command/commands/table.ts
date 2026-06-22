@@ -5,12 +5,23 @@ import type { TableCreateOptions } from '@/ui/table-create-dialog';
 import { CellSplitDialog } from '@/ui/cell-split-dialog';
 import { CellBorderBgDialog } from '@/ui/cell-border-bg-dialog';
 import { FormulaDialog } from '@/ui/formula-dialog';
+import {
+  TableDeleteRowColumnDialog,
+  TableInsertRowColumnDialog,
+  type TableDeleteRowColumnMode,
+  type TableInsertRowColumnMode,
+} from '@/ui/table-row-column-dialog';
 
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
 
 type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
 type TableDimensions = { rowCount: number; colCount: number; cellCount: number };
+type TableCellCommandContext = {
+  ih: NonNullable<ReturnType<CommandServices['getInputHandler']>>;
+  pos: ReturnType<NonNullable<ReturnType<CommandServices['getInputHandler']>>['getCursorPosition']>;
+  cellInfo: ReturnType<CommandServices['wasm']['getCellInfo']>;
+};
 
 function safeTableOp(fn: () => void, label: string): void {
   try { fn(); } catch (e) { console.error(`[table] ${label} 실패:`, e); }
@@ -89,6 +100,81 @@ function openFormulaDialog(services: Parameters<CommandDef['execute']>[0]): void
     cellIndex: pos.cellIndex,
   });
   dialog.show();
+}
+
+function currentTableCellContext(services: CommandServices): TableCellCommandContext | null {
+  const ih = services.getInputHandler();
+  if (!ih) return null;
+  const pos = ih.getCursorPosition();
+  if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return null;
+  const cellInfo = services.wasm.getCellInfo(
+    pos.sectionIndex,
+    pos.parentParaIndex,
+    pos.controlIndex,
+    pos.cellIndex,
+  );
+  return { ih, pos, cellInfo };
+}
+
+function restoreEditorFocus(ih: TableCellCommandContext['ih']): void {
+  const textarea = (ih as unknown as { textarea?: HTMLTextAreaElement }).textarea;
+  textarea?.focus();
+}
+
+function applyTableInsertRowColumn(
+  services: CommandServices,
+  mode: TableInsertRowColumnMode,
+  count: number,
+): void {
+  const ctx = currentTableCellContext(services);
+  if (!ctx) return;
+  const { ih, pos, cellInfo } = ctx;
+  safeTableOp(() => ih.executeOperation({
+    kind: 'snapshot',
+    operationType: mode.startsWith('row') ? 'insertTableRow' : 'insertTableColumn',
+    operation: (wasm) => {
+      for (let i = 0; i < count; i += 1) {
+        switch (mode) {
+          case 'row-above':
+            wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false);
+            break;
+          case 'row-below':
+            wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true);
+            break;
+          case 'col-left':
+            wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false);
+            break;
+          case 'col-right':
+            wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true);
+            break;
+        }
+      }
+      return pos;
+    },
+  }), '줄/칸 추가');
+  restoreEditorFocus(ih);
+}
+
+function applyTableDeleteRowColumn(
+  services: CommandServices,
+  mode: TableDeleteRowColumnMode,
+): void {
+  const ctx = currentTableCellContext(services);
+  if (!ctx) return;
+  const { ih, pos, cellInfo } = ctx;
+  safeTableOp(() => ih.executeOperation({
+    kind: 'snapshot',
+    operationType: mode === 'row' ? 'deleteTableRow' : 'deleteTableColumn',
+    operation: (wasm) => {
+      if (mode === 'row') {
+        wasm.deleteTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row);
+      } else {
+        wasm.deleteTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col);
+      }
+      return pos;
+    },
+  }), '줄/칸 지우기');
+  restoreEditorFocus(ih);
 }
 
 export const tableCommands: CommandDef[] = [
@@ -190,6 +276,28 @@ export const tableCommands: CommandDef[] = [
     },
   },
   {
+    id: 'table:insert-row-col',
+    label: '줄/칸 추가하기',
+    shortcutLabel: 'Alt+Insert',
+    canExecute: inTable,
+    execute(services) {
+      const dialog = new TableInsertRowColumnDialog();
+      dialog.onApply = ({ mode, count }) => applyTableInsertRowColumn(services, mode, count);
+      dialog.show();
+    },
+  },
+  {
+    id: 'table:delete-row-col',
+    label: '줄/칸 지우기',
+    shortcutLabel: 'Alt+Delete',
+    canExecute: inTable,
+    execute(services) {
+      const dialog = new TableDeleteRowColumnDialog();
+      dialog.onApply = ({ mode }) => applyTableDeleteRowColumn(services, mode);
+      dialog.show();
+    },
+  },
+  {
     id: 'table:insert-row-above',
     label: '위쪽에 줄 추가하기',
     canExecute: inTable,
@@ -232,7 +340,6 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:insert-col-left',
     label: '왼쪽에 칸 추가하기',
-    shortcutLabel: 'Alt+Insert',
     canExecute: inTable,
     execute(services) {
       const ih = services.getInputHandler();
@@ -293,7 +400,6 @@ export const tableCommands: CommandDef[] = [
   {
     id: 'table:delete-col',
     label: '칸 지우기',
-    shortcutLabel: 'Alt+Delete',
     canExecute: inTable,
     execute(services) {
       const ih = services.getInputHandler();
