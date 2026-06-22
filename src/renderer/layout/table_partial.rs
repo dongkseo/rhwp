@@ -861,7 +861,12 @@ impl LayoutEngine {
 
                 // 표 컨트롤이 없는 문단: 텍스트 먼저, 컨트롤 나중 (기존 동작)
                 // 표 컨트롤이 있는 문단: 문단 앞 간격 적용 → 표 먼저 배치 → 텍스트(엔터 등) 나중
-                if !has_table_ctrl {
+                if !has_table_ctrl
+                    || composed
+                        .lines
+                        .iter()
+                        .any(|line| line.runs.iter().any(|run| !run.text.trim().is_empty()))
+                {
                     let is_last_para = cp_idx == last_rendered_para_idx;
                     let numbered_comp = if start_line == 0 {
                         self.apply_paragraph_numbering(

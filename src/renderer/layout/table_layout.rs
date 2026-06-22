@@ -170,6 +170,7 @@ struct CellUnit {
     height: f64,
     /// 이 유닛 앞에 vpos 리셋(셀 내부 페이지 분할)이 있는가.
     hard_break_before: bool,
+    vpos_gap_before: bool,
     /// 이 유닛이 속한 문단 인덱스 (셀 내).
     para_idx: usize,
     /// 이 유닛이 visible 일 때 기여하는 문단 내 줄 범위 `[vis_start, vis_end)`.
@@ -4000,6 +4001,20 @@ impl LayoutEngine {
             0.0
         };
         let inner_width = (cell_w - pad_left - pad_right).max(0.0);
+        let has_visible_text_with_nested_table = table.cells.iter().any(|cell| {
+            cell.paragraphs.iter().any(|p| {
+                !p.text.trim().is_empty()
+                    && p.controls
+                        .iter()
+                        .any(|c| matches!(c, Control::Table(_)))
+            })
+        });
+        let use_vpos_unit_positions = matches!(
+            table.page_break,
+            crate::model::table::TablePageBreak::RowBreak
+        ) && !table.common.treat_as_char
+            && table.row_count > 1
+            && has_visible_text_with_nested_table;
         // [Task #700] vpos 동기화 가드와 동일 — 한컴 정상 인코딩(첫 문단 vpos=0) 한정.
         let cell_first_vpos = cell
             .paragraphs
@@ -4033,6 +4048,20 @@ impl LayoutEngine {
                     .unwrap_or(-1);
                 let cur_first = p.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1);
                 cur_first >= 0 && prev_end > 0 && cur_first < prev_end
+            } else {
+                false
+            };
+            let vpos_gap_threshold_hu = (12.0 / self.dpi * 7200.0).round() as i32;
+            let vpos_gap_before_para = if use_vpos_unit_positions && pi > 0 && cell_first_vpos == 0
+            {
+                let prev = &cell.paragraphs[pi - 1];
+                let prev_end = prev
+                    .line_segs
+                    .last()
+                    .map(|s| s.vertical_pos + s.line_height + s.line_spacing)
+                    .unwrap_or(-1);
+                let cur_first = p.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1);
+                cur_first >= 0 && prev_end > 0 && cur_first > prev_end + vpos_gap_threshold_hu
             } else {
                 false
             };
@@ -4091,6 +4120,7 @@ impl LayoutEngine {
             };
             let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));
             let line_count = comp.lines.len();
+            let mut unit_cum = units.iter().map(|u| u.height).sum::<f64>();
             // [Task #1073] 텍스트 없는 문단(가시 텍스트 없음 — 합성 줄은 placeholder)에 단일
             // 중첩 표가 있고 그 표가 2행 이상이면 per-중첩행 유닛으로 분해 — advance_row_cut 가
             // 중첩 표 행 경계에서 페이지 분할할 수 있게 한다. whole-row 높이 합은
@@ -4118,6 +4148,17 @@ impl LayoutEngine {
                     let om_bot = hwpunit_to_px(nt.outer_margin_bottom as i32, self.dpi);
                     for (ri, rh) in rhs.iter().enumerate() {
                         let mut uh = *rh;
+                        let hard_break_before = reset_before && ri == 0;
+                        let mut vpos_gap_before = vpos_gap_before_para && ri == 0;
+                        if use_vpos_unit_positions && ri == 0 && !hard_break_before {
+                            if let Some(seg) = p.line_segs.first() {
+                                let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                                if target_top > unit_cum {
+                                    uh += target_top - unit_cum;
+                                    vpos_gap_before = true;
+                                }
+                            }
+                        }
                         if ri + 1 < nrow {
                             uh += ncs;
                         }
@@ -4129,12 +4170,14 @@ impl LayoutEngine {
                         }
                         units.push(CellUnit {
                             height: uh,
-                            hard_break_before: reset_before && ri == 0,
+                            hard_break_before,
+                            vpos_gap_before,
                             para_idx: pi,
                             vis_start: 0,
                             vis_end: line_count.max(1),
                             nested_row: Some(ri),
                         });
+                        unit_cum += uh;
                     }
                     continue;
                 }
@@ -4189,16 +4232,39 @@ impl LayoutEngine {
                             lh
                         })
                         .sum();
-                    nested_h.max(line_based_h)
+                    let has_visible_text_with_nested = use_vpos_unit_positions
+                        && comp
+                            .lines
+                            .iter()
+                            .any(|line| line.runs.iter().any(|run| !run.text.trim().is_empty()));
+                    if has_visible_text_with_nested && nested_h > 0.0 {
+                        line_based_h + nested_h + 4.0
+                    } else {
+                        nested_h.max(line_based_h)
+                    }
                 };
+                let hard_break_before = reset_before;
+                let mut para_h = para_h;
+                let mut vpos_gap_before = vpos_gap_before_para;
+                if use_vpos_unit_positions && !hard_break_before {
+                    if let Some(seg) = p.line_segs.first() {
+                        let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                        if target_top > unit_cum {
+                            para_h += target_top - unit_cum;
+                            vpos_gap_before = true;
+                        }
+                    }
+                }
                 units.push(CellUnit {
                     height: para_h,
-                    hard_break_before: reset_before,
+                    hard_break_before,
+                    vpos_gap_before,
                     para_idx: pi,
                     vis_start: 0,
                     vis_end: line_count.max(1),
                     nested_row: None,
                 });
+                unit_cum += para_h;
             } else {
                 // 일반 텍스트 문단 — 합성 줄마다 유닛 1개.
                 for (li, line) in comp.lines.iter().enumerate() {
@@ -4219,14 +4285,42 @@ impl LayoutEngine {
                     if li == line_count - 1 {
                         lh += spacing_after;
                     }
+                    let hard_break_before = line_reset_before(li);
+                    let mut vpos_gap_before = if li == 0 {
+                        vpos_gap_before_para
+                    } else if use_vpos_unit_positions && cell_first_vpos == 0 {
+                        match (p.line_segs.get(li - 1), p.line_segs.get(li)) {
+                            (Some(prev), Some(cur)) => {
+                                cur.vertical_pos
+                                    > prev.vertical_pos
+                                        + prev.line_height
+                                        + prev.line_spacing
+                                        + vpos_gap_threshold_hu
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    if use_vpos_unit_positions && !hard_break_before {
+                        if let Some(seg) = p.line_segs.get(li) {
+                            let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                            if target_top > unit_cum {
+                                lh += target_top - unit_cum;
+                                vpos_gap_before = true;
+                            }
+                        }
+                    }
                     units.push(CellUnit {
                         height: lh,
-                        hard_break_before: line_reset_before(li),
+                        hard_break_before,
+                        vpos_gap_before,
                         para_idx: pi,
                         vis_start: li,
                         vis_end: li + 1,
                         nested_row: None,
                     });
+                    unit_cum += lh;
                 }
             }
         }
@@ -4258,6 +4352,7 @@ impl LayoutEngine {
                     units.push(CellUnit {
                         height: h,
                         hard_break_before: false,
+                        vpos_gap_before: false,
                         para_idx: last_para,
                         vis_start: 0,
                         vis_end: 0,
@@ -4319,6 +4414,14 @@ impl LayoutEngine {
                 }
                 h += u.height;
                 j += 1;
+            }
+            if j < units.len()
+                && units[j..].iter().any(|unit| unit.hard_break_before)
+                && Self::rewind_rowbreak_tail_before_pending_hard_break(
+                    table, &units, start, &mut j, &mut h,
+                )
+            {
+                hit_hard_break = true;
             }
             if j < units.len() {
                 fully_consumed = false;
@@ -4384,6 +4487,14 @@ impl LayoutEngine {
                 h += u.height;
                 j += 1;
             }
+            if j < units.len()
+                && units[j..].iter().any(|unit| unit.hard_break_before)
+                && Self::rewind_rowbreak_tail_before_pending_hard_break(
+                    table, &units, start, &mut j, &mut h,
+                )
+            {
+                hit_hard_break = true;
+            }
             if j < units.len() {
                 fully_consumed = false;
             }
@@ -4420,7 +4531,57 @@ impl LayoutEngine {
         if prev.para_idx == hard_break_unit.para_idx {
             *h -= prev.height;
             *j -= 1;
+            return;
         }
+
+        if table.common.treat_as_char {
+            return;
+        }
+
+        if let Some(rewind_to) = units[start..*j]
+            .iter()
+            .rposition(|unit| unit.vpos_gap_before)
+            .map(|idx| start + idx)
+        {
+            if rewind_to > start {
+                let rewind_h: f64 = units[rewind_to..*j].iter().map(|unit| unit.height).sum();
+                *h -= rewind_h;
+                *j = rewind_to;
+            }
+        }
+    }
+
+    fn rewind_rowbreak_tail_before_pending_hard_break(
+        table: &crate::model::table::Table,
+        units: &[CellUnit],
+        start: usize,
+        j: &mut usize,
+        h: &mut f64,
+    ) -> bool {
+        if !matches!(
+            table.page_break,
+            crate::model::table::TablePageBreak::RowBreak
+        ) || table.common.treat_as_char
+            || *j <= start + 1
+        {
+            return false;
+        }
+
+        let Some(rewind_to) = units[start..*j]
+            .iter()
+            .rposition(|unit| unit.vpos_gap_before)
+            .map(|idx| start + idx)
+        else {
+            return false;
+        };
+        if rewind_to <= start {
+            return false;
+        }
+
+        let rewind_h: f64 = units[rewind_to..*j].iter().map(|unit| unit.height).sum();
+        *h -= rewind_h;
+        *j = rewind_to;
+        true
     }
 
     /// RowBreak 표의 rowspan 블록 중 셀 내부 HWP page reset 이 있는 블록만

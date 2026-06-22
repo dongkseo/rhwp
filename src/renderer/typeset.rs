@@ -10240,6 +10240,31 @@ impl TypesetEngine {
         }
 
         // fits: 전체가 현재 페이지에 들어가는가?
+        let is_rowbreak_para_topbottom_block = !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            && matches!(table.common.vert_rel_to, VertRelTo::Para)
+            && matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+            && table.cells.iter().any(|cell| {
+                cell.paragraphs.iter().any(|p| {
+                    !p.text.trim().is_empty()
+                        && p.controls
+                            .iter()
+                            .any(|c| matches!(c, crate::model::control::Control::Table(_)))
+                })
+            });
+        if is_rowbreak_para_topbottom_block {
+            if let Some(first_seg) = para.line_segs.first() {
+                let target_y =
+                    crate::renderer::hwpunit_to_px(first_seg.vertical_pos as i32, self.dpi);
+                if target_y > st.current_height && target_y < available {
+                    st.current_height = target_y;
+                }
+            }
+        }
+
         if st.current_height + table_total <= available {
             self.place_table_with_text(
                 st,
