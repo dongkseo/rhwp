@@ -259,6 +259,102 @@ impl Cell {
 }
 
 impl Table {
+    /// 저장/복구 후 Studio 런타임 힌트가 사라진 행 단위 가로 resize를 보수적으로 추론한다.
+    ///
+    /// 한컴 HWP5에는 `local_resize_rows` 같은 rhwp 내부 힌트를 저장할 곳이 없다. 따라서
+    /// 같은 셀 배치 패턴을 공유하는 행들 중 다수의 폭 벡터와 다른 소수 행만 행 단위
+    /// resize 결과로 간주한다. 병합 패턴이 유일한 행은 원본 문서 구조일 가능성이 높아
+    /// 추론 대상에서 제외한다.
+    pub fn inferred_local_resize_rows(&self) -> Vec<u16> {
+        let col_count = self.col_count as usize;
+        if col_count == 0 || self.row_count == 0 {
+            return Vec::new();
+        }
+
+        let explicit_rows = self
+            .local_resize_rows
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut grouped_rows =
+            std::collections::BTreeMap::<Vec<(u16, u16)>, Vec<(u16, Vec<u32>)>>::new();
+
+        for row in 0..self.row_count {
+            if explicit_rows.contains(&row) {
+                continue;
+            }
+
+            let mut row_cells = self
+                .cells
+                .iter()
+                .filter(|cell| cell.row == row && cell.row_span == 1)
+                .collect::<Vec<_>>();
+            row_cells.sort_by_key(|cell| cell.col);
+
+            let mut next_col = 0u16;
+            let mut pattern = Vec::new();
+            let mut widths = Vec::new();
+            let mut valid = !row_cells.is_empty();
+
+            for cell in row_cells {
+                let span = cell.col_span.max(1);
+                let end_col = cell.col.saturating_add(span);
+                if cell.col != next_col || end_col <= cell.col || end_col as usize > col_count {
+                    valid = false;
+                    break;
+                }
+
+                pattern.push((cell.col, span));
+                widths.push(cell.width);
+                next_col = end_col;
+            }
+
+            if !valid || next_col as usize != col_count {
+                continue;
+            }
+
+            grouped_rows.entry(pattern).or_default().push((row, widths));
+        }
+
+        let mut inferred = std::collections::BTreeSet::new();
+        for rows in grouped_rows.values() {
+            if rows.len() < 2 {
+                continue;
+            }
+
+            let mut width_counts = std::collections::BTreeMap::<Vec<u32>, usize>::new();
+            for (_, widths) in rows {
+                *width_counts.entry(widths.clone()).or_default() += 1;
+            }
+
+            let Some((dominant_widths, dominant_count)) =
+                width_counts.iter().max_by_key(|(_, count)| **count)
+            else {
+                continue;
+            };
+            if *dominant_count < 2 {
+                continue;
+            }
+
+            let dominant_is_tied = width_counts
+                .values()
+                .filter(|count| **count == *dominant_count)
+                .count()
+                > 1;
+            if dominant_is_tied {
+                continue;
+            }
+
+            for (row, widths) in rows {
+                if widths != dominant_widths {
+                    inferred.insert(*row);
+                }
+            }
+        }
+
+        inferred.into_iter().collect()
+    }
+
     /// 2D 그리드 인덱스를 재구축한다.
     /// 구조 변경(파싱, 행/열 추가/삭제, 병합/분할) 후 호출해야 한다.
     pub fn rebuild_grid(&mut self) {

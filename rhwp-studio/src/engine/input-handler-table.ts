@@ -120,6 +120,24 @@ function computeAffectedResizePositionBounds(
   return { min, max };
 }
 
+function promoteResizeDragToSingleCell(self: any, state: any, shiftKey: boolean): { cellIdx: number; side: 'start' | 'end' } | null {
+  if (state.singleCellTarget) return state.singleCellTarget;
+  if (!shiftKey || !state.resizeTarget) return null;
+
+  state.singleCellTarget = state.resizeTarget;
+  state.shiftResize = true;
+  const resizeBounds = computeResizePositionBounds(
+    self,
+    state.edge,
+    state.pageBboxes,
+    state.singleCellTarget,
+    state.bboxes,
+  );
+  state.minResizePos = resizeBounds.min;
+  state.maxResizePos = resizeBounds.max;
+  return state.singleCellTarget;
+}
+
 function clampResizePosition(pos: number, bounds: { min: number; max: number }): number {
   return Math.min(Math.max(pos, bounds.min), bounds.max);
 }
@@ -639,6 +657,7 @@ export function startResizeDrag(this: any,
     borderOriginalPos,
     minResizePos: resizeBounds.min,
     maxResizePos: resizeBounds.max,
+    resizeTarget,
     singleCellTarget,
     shiftResize,
   };
@@ -662,15 +681,16 @@ export function updateResizeDrag(this: any, e: MouseEvent): void {
   const pageLeft = this.virtualScroll.getPageLeftResolved(pageIdx, scrollContent.clientWidth);
   const pageX = (contentX - pageLeft) / zoom;
   const pageY = (contentY - pageOffset) / zoom;
+  const singleCellTarget = promoteResizeDragToSingleCell(this, this.resizeDragState, e.shiftKey);
 
   const rawNewPos = this.resizeDragState.edge.type === 'row' ? pageY : pageX;
   const newPos = clampResizePosition(rawNewPos, {
     min: this.resizeDragState.minResizePos,
     max: this.resizeDragState.maxResizePos,
   });
-  const markerBboxes = this.resizeDragState.singleCellTarget
+  const markerBboxes = singleCellTarget
     ? this.resizeDragState.bboxes.filter((b: CellBbox) =>
-      b.cellIdx === this.resizeDragState.singleCellTarget?.cellIdx)
+      b.cellIdx === singleCellTarget.cellIdx)
     : undefined;
 
   // 드래그 마커 표시
@@ -708,6 +728,7 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
   const pageLeft = this.virtualScroll.getPageLeftResolved(pageIdx, scrollContent.clientWidth);
   const pageX = (contentX - pageLeft) / zoom;
   const pageY = (contentY - pageOffset) / zoom;
+  const singleCellTarget = promoteResizeDragToSingleCell(this, state, e.shiftKey);
 
   const rawNewPos = state.edge.type === 'row' ? pageY : pageX;
   const newPos = clampResizePosition(rawNewPos, {
@@ -723,7 +744,7 @@ export function finishResizeDrag(this: any, e: MouseEvent): void {
     const shouldSelectTable = isOuterResizeEdge(this, state.edge, state.pageBboxes);
     const tableRef = { ...state.tableRef };
     this.cleanupResizeDrag();
-    if (shouldSelectTable && !state.singleCellTarget) {
+    if (shouldSelectTable && !singleCellTarget) {
       selectTableObjectFromResize.call(this, tableRef);
     }
     return;

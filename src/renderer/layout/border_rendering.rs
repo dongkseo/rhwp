@@ -90,11 +90,15 @@ pub(crate) fn build_row_col_x(
         base_rx.last().copied().unwrap_or(0.0)
     };
 
-    if !table.local_resize_rows.is_empty() {
+    let inferred_local_resize_rows = table.inferred_local_resize_rows();
+    if !table.local_resize_rows.is_empty() || !inferred_local_resize_rows.is_empty() {
         let mut row_col_x_from_cells = vec![base_rx.clone(); row_count];
         let mut has_cell_order_row = false;
         for (r, row_x) in row_col_x_from_cells.iter_mut().enumerate().take(row_count) {
-            if !table.local_resize_rows.contains(&(r as u16)) {
+            let row_idx = r as u16;
+            if !table.local_resize_rows.contains(&row_idx)
+                && !inferred_local_resize_rows.contains(&row_idx)
+            {
                 continue;
             }
             let mut row_cells: Vec<_> = table

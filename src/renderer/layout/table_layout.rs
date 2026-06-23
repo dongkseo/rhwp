@@ -994,9 +994,12 @@ impl LayoutEngine {
         col_count: usize,
     ) -> Vec<f64> {
         // 1단계: col_span==1인 셀에서 개별 열 폭 추출
+        let inferred_local_resize_rows = table.inferred_local_resize_rows();
         let mut col_widths = vec![0.0f64; col_count];
         for cell in &table.cells {
-            if table.local_resize_rows.contains(&cell.row) {
+            if table.local_resize_rows.contains(&cell.row)
+                || inferred_local_resize_rows.contains(&cell.row)
+            {
                 continue;
             }
             if cell.col_span == 1 && (cell.col as usize) < col_count {
@@ -1011,7 +1014,9 @@ impl LayoutEngine {
         {
             let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
             for cell in &table.cells {
-                if table.local_resize_rows.contains(&cell.row) {
+                if table.local_resize_rows.contains(&cell.row)
+                    || inferred_local_resize_rows.contains(&cell.row)
+                {
                     continue;
                 }
                 let c = cell.col as usize;

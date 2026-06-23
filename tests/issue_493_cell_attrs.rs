@@ -177,6 +177,28 @@ fn table_cell_render_width_hu(doc: &HwpDocument, pos: TablePos, cell_idx: u32) -
     (table_cell_bbox_value(doc, pos, cell_idx as u64, "w") * 75.0).round() as i64
 }
 
+fn resize_cells_to_render_widths(doc: &mut HwpDocument, pos: TablePos, widths: &[(u32, i64)]) {
+    let updates = widths
+        .iter()
+        .map(|(idx, render_width)| {
+            let model_width = table_cell_property_i64(doc, pos, *idx, "width");
+            format!(
+                r#"{{"cellIdx":{idx},"widthDelta":{},"localResize":true,"renderWidth":{render_width}}}"#,
+                render_width - model_width
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    doc.resize_table_cells(
+        pos.section as u32,
+        pos.para as u32,
+        pos.control as u32,
+        &format!("[{updates}]"),
+    )
+    .expect("resize cells to render widths");
+}
+
 fn hwpx_section0_xml(bytes: &[u8]) -> String {
     let reader = std::io::Cursor::new(bytes);
     let mut zip = zip::ZipArchive::new(reader).expect("open hwpx zip");
@@ -691,6 +713,107 @@ fn local_then_global_column_resize_preserves_unaffected_rows() {
             && (after_global_cell23_w - after_local_cell23_w).abs() <= 0.2
             && (after_global_cell24_x - after_local_cell24_x).abs() <= 0.2,
         "업데이트 대상이 아닌 마지막 행 뒤쪽 셀은 전역 fallback 때문에 흔들리면 안 됨: 23x {after_local_cell23_x}->{after_global_cell23_x}, 23w {after_local_cell23_w}->{after_global_cell23_w}, 24x {after_local_cell24_x}->{after_global_cell24_x}"
+    );
+}
+
+#[test]
+fn recovered_shift_resize_row_keeps_independent_widths() {
+    let bytes = sample_bytes("samples/셀보호2.hwp");
+    let parsed = parse_document(&bytes).expect("parse 셀보호2.hwp");
+    let pos = find_first_table(&parsed);
+    let mut doc = HwpDocument::from_bytes(&bytes).expect("load HwpDocument");
+
+    let before_cell5_w = table_cell_bbox_value(&doc, pos, 5, "w");
+    let before_cell6_w = table_cell_bbox_value(&doc, pos, 6, "w");
+    let first_delta_hu = -6000_i64;
+    let first_cell5_render_w = table_cell_render_width_hu(&doc, pos, 5) + first_delta_hu;
+    let first_cell6_render_w = table_cell_render_width_hu(&doc, pos, 6) - first_delta_hu;
+    let first_cell7_render_w = table_cell_render_width_hu(&doc, pos, 7);
+    let first_cell8_render_w = table_cell_render_width_hu(&doc, pos, 8);
+    let first_cell9_render_w = table_cell_render_width_hu(&doc, pos, 9);
+
+    resize_cells_to_render_widths(
+        &mut doc,
+        pos,
+        &[
+            (5, first_cell5_render_w),
+            (6, first_cell6_render_w),
+            (7, first_cell7_render_w),
+            (8, first_cell8_render_w),
+            (9, first_cell9_render_w),
+        ],
+    );
+
+    let after_local_cell5_w = table_cell_bbox_value(&doc, pos, 5, "w");
+    let after_local_cell6_w = table_cell_bbox_value(&doc, pos, 6, "w");
+    let after_local_cell7_x = table_cell_bbox_value(&doc, pos, 7, "x");
+    let after_local_cell23_x = table_cell_bbox_value(&doc, pos, 23, "x");
+
+    assert!(
+        after_local_cell5_w < before_cell5_w - 50.0,
+        "첫 Shift resize에서 대상 셀은 줄어야 함: before={before_cell5_w}, after={after_local_cell5_w}"
+    );
+    assert!(
+        after_local_cell6_w > before_cell6_w + 50.0,
+        "첫 Shift resize에서 이웃 셀은 커져야 함: before={before_cell6_w}, after={after_local_cell6_w}"
+    );
+
+    let exported = doc.export_hwp().expect("export recovered source hwp");
+    let recovered_parsed = parse_document(&exported).expect("parse recovered source hwp");
+    let recovered_pos = find_first_table(&recovered_parsed);
+    let mut recovered = HwpDocument::from_bytes(&exported).expect("load recovered HwpDocument");
+
+    let recovered_cell5_w = table_cell_bbox_value(&recovered, recovered_pos, 5, "w");
+    let recovered_cell6_w = table_cell_bbox_value(&recovered, recovered_pos, 6, "w");
+    let recovered_cell7_x = table_cell_bbox_value(&recovered, recovered_pos, 7, "x");
+    let recovered_cell23_x = table_cell_bbox_value(&recovered, recovered_pos, 23, "x");
+
+    assert!(
+        (recovered_cell5_w - after_local_cell5_w).abs() <= 0.2
+            && (recovered_cell6_w - after_local_cell6_w).abs() <= 0.2
+            && (recovered_cell7_x - after_local_cell7_x).abs() <= 0.2,
+        "복구본은 저장 전 행 단위 폭을 그대로 렌더해야 함: 5w {after_local_cell5_w}->{recovered_cell5_w}, 6w {after_local_cell6_w}->{recovered_cell6_w}, 7x {after_local_cell7_x}->{recovered_cell7_x}"
+    );
+    assert!(
+        (recovered_cell23_x - after_local_cell23_x).abs() <= 0.2,
+        "복구본 로드는 다른 행의 x를 밀면 안 됨: before={after_local_cell23_x}, after={recovered_cell23_x}"
+    );
+
+    let second_delta_hu = 6000_i64;
+    let second_cell5_render_w =
+        table_cell_render_width_hu(&recovered, recovered_pos, 5) + second_delta_hu;
+    let second_cell6_render_w =
+        table_cell_render_width_hu(&recovered, recovered_pos, 6) - second_delta_hu;
+    let second_cell7_render_w = table_cell_render_width_hu(&recovered, recovered_pos, 7);
+    let second_cell8_render_w = table_cell_render_width_hu(&recovered, recovered_pos, 8);
+    let second_cell9_render_w = table_cell_render_width_hu(&recovered, recovered_pos, 9);
+
+    resize_cells_to_render_widths(
+        &mut recovered,
+        recovered_pos,
+        &[
+            (5, second_cell5_render_w),
+            (6, second_cell6_render_w),
+            (7, second_cell7_render_w),
+            (8, second_cell8_render_w),
+            (9, second_cell9_render_w),
+        ],
+    );
+
+    let after_second_cell5_w = table_cell_bbox_value(&recovered, recovered_pos, 5, "w");
+    let after_second_cell6_w = table_cell_bbox_value(&recovered, recovered_pos, 6, "w");
+    let after_second_cell7_x = table_cell_bbox_value(&recovered, recovered_pos, 7, "x");
+    let after_second_cell23_x = table_cell_bbox_value(&recovered, recovered_pos, 23, "x");
+
+    assert!(
+        after_second_cell5_w > recovered_cell5_w + 50.0
+            && after_second_cell6_w < recovered_cell6_w - 50.0,
+        "복구본에서 두 번째 Shift resize도 대상/이웃 셀만 조절되어야 함: 5w {recovered_cell5_w}->{after_second_cell5_w}, 6w {recovered_cell6_w}->{after_second_cell6_w}"
+    );
+    assert!(
+        (after_second_cell7_x - recovered_cell7_x).abs() <= 0.2
+            && (after_second_cell23_x - recovered_cell23_x).abs() <= 0.2,
+        "복구본에서 두 번째 Shift resize는 뒤쪽/다른 행을 다시 밀면 안 됨: 7x {recovered_cell7_x}->{after_second_cell7_x}, 23x {recovered_cell23_x}->{after_second_cell23_x}"
     );
 }
 

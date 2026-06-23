@@ -317,6 +317,7 @@ export class InputHandler {
     borderOriginalPos: number;
     minResizePos: number;
     maxResizePos: number;
+    resizeTarget?: { cellIdx: number; side: 'start' | 'end' } | null;
     singleCellTarget?: { cellIdx: number; side: 'start' | 'end' } | null;
     shiftResize?: boolean;
   } | null = null;
