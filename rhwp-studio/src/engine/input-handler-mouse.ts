@@ -215,6 +215,10 @@ function promoteCellSelectionDragCandidate(this: any, e: MouseEvent): boolean {
 }
 
 export function onClick(this: any, e: MouseEvent): void {
+  if ((this.wasm?.pageCount ?? 0) <= 0) {
+    return;
+  }
+
   // 연결선 드로잉 모드: 연결점 클릭으로 시작/끝
   if (this.connectorDrawingMode && e.button === 0) {
     const target = e.target as HTMLElement;
