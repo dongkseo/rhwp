@@ -4790,6 +4790,33 @@ impl TypesetEngine {
                                     })
                                 })
                                 .unwrap_or(false);
+                            let internal_rewind_full_advance_needed = internal_rewind_split
+                                .filter(|split| *split > 1)
+                                .filter(|split| {
+                                    split_endnote_to_fit.is_some_and(|fit_split| fit_split > *split)
+                                })
+                                .filter(|_| {
+                                    default_between_notes_gap
+                                        && compact_endnote_separator_profile
+                                        && has_visible_endnote_separator
+                                        && internal_vpos_rewind
+                                        && internal_rewind_target_is_reset
+                                        && st.col_count > 1
+                                        && st.current_column + 1 < st.col_count
+                                        && st.current_height > available * 0.90
+                                        && !st.current_items.is_empty()
+                                        && st.current_height + en_fit
+                                            <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                        && st.current_height + total_advance_fit
+                                            > available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                        && endnote_has_visible_payload
+                                })
+                                .and_then(|split| {
+                                    let first = en_para.line_segs.first()?;
+                                    let target = en_para.line_segs.get(split)?;
+                                    (target.vertical_pos < first.vertical_pos).then_some(true)
+                                })
+                                .unwrap_or(false);
                             let new_endnote_stale_forward_vpos = compact_endnote_separator_profile
                                 && ep_idx == 0
                                 && emitted_endnote_count > 0
@@ -6882,14 +6909,17 @@ impl TypesetEngine {
                                 || no_separator_saved_vpos_tail_outside
                                 || visible_separator_saved_vpos_tail_outside
                                 || internal_rewind_head_overflows_current_column
-                                || internal_reset_split_head_render_overflows)
+                                || internal_reset_split_head_render_overflows
+                                || internal_rewind_full_advance_needed)
                                 && (split_endnote_to_fit.is_none()
                                     || (late_compact_text_tail_overflow_risk
-                                        && !zero_equation_text_run_tail_before_next_title_fits))
+                                        && !zero_equation_text_run_tail_before_next_title_fits)
+                                    || internal_rewind_full_advance_needed)
                                 && large_between_last_column_visual_split.is_none()
                                 && large_between_last_column_flow_tail_split.is_none()
                                 && (!internal_rewind_head_allows_current_column
-                                    || internal_reset_split_head_render_overflows)
+                                    || internal_reset_split_head_render_overflows
+                                    || internal_rewind_full_advance_needed)
                                 && (!compact_endnote_own_vpos_span_fits_for_flow
                                     || late_compact_text_tail_overflow_risk
                                     || internal_rewind_head_overflows_current_column
@@ -6903,7 +6933,8 @@ impl TypesetEngine {
                                     || zero_between_visible_last_column_text_tail_starts_next_page
                                     || zero_between_large_separator_last_column_title_orphan
                                     || large_between_last_column_final_lead_tac_tail_starts_next_page
-                                    || internal_reset_split_head_render_overflows)
+                                    || internal_reset_split_head_render_overflows
+                                    || internal_rewind_full_advance_needed)
                                 && !allow_compact_question_title_tail
                                 && !default_question_title_tail_fits_by_line_height
                                 && !zero_question_title_tail_fits_by_line_height
@@ -6916,7 +6947,8 @@ impl TypesetEngine {
                                 && !large_between_last_column_title_body_tail_fits
                                 && (!default_between_notes_gap
                                     || internal_rewind_split.is_none()
-                                    || internal_rewind_head_overflows_current_column)
+                                    || internal_rewind_head_overflows_current_column
+                                    || internal_rewind_full_advance_needed)
                                 && !late_question_title_small_overflow
                                 && !allow_large_between_question_title_tail
                                 && !large_between_last_column_question_title_tail_fits
@@ -6930,7 +6962,7 @@ impl TypesetEngine {
                                 && !st.current_items.is_empty();
                             if std::env::var("RHWP_ENDNOTE_ADVANCE_DEBUG").is_ok() {
                                 eprintln!(
-                                    "ENDNOTE_ADV phase=fit note={} ep={} col={}/{} cur={:.2} avail={:.2} en_fit={:.2} total={:.2} h4f={:.2} boundary_gap_extra={:.2} boundary_gap_over={} next_head_large_tac={} lines={} first={:?} bottom={:?} content_bottom={:?} local_rewind={} internal_rewind={:?} internal_split={:?} split={:?} visual_split={:?} flow_tail_split={:?} own_span_fit={} late_text_tail={} eq_tail_next_title={} zero_tac_tail={} visible_large_tac_tail={} text_after_tac_tail={} text_after_eq_tail={} tac_candidate={} tac_render_y={:?} tac_bottom={:?} zero_intro_tail={} zero_text_tail={} no_sep_visible_tail={} no_sep_multiline_tail={} default_title_body={} split_head_over={} reset_split_head_over={} last_col_new_tail={} large_eq_tail_next_col={} lead_final_tail={} no_sep_tail={} visible_sep_tail={} internal_head_over={} non_visible_tail_bleed={} advance_fit={}",
+                                    "ENDNOTE_ADV phase=fit note={} ep={} col={}/{} cur={:.2} avail={:.2} en_fit={:.2} total={:.2} h4f={:.2} boundary_gap_extra={:.2} boundary_gap_over={} next_head_large_tac={} lines={} first={:?} bottom={:?} content_bottom={:?} local_rewind={} internal_rewind={:?} internal_split={:?} split={:?} visual_split={:?} flow_tail_split={:?} own_span_fit={} late_text_tail={} eq_tail_next_title={} zero_tac_tail={} visible_large_tac_tail={} text_after_tac_tail={} text_after_eq_tail={} tac_candidate={} tac_render_y={:?} tac_bottom={:?} zero_intro_tail={} zero_text_tail={} no_sep_visible_tail={} no_sep_multiline_tail={} default_title_body={} split_head_over={} reset_split_head_over={} rewind_full_advance={} last_col_new_tail={} large_eq_tail_next_col={} lead_final_tail={} no_sep_tail={} visible_sep_tail={} internal_head_over={} non_visible_tail_bleed={} advance_fit={}",
                                     en_ref.number,
                                     ep_idx,
                                     st.current_column + 1,
@@ -6970,6 +7002,7 @@ impl TypesetEngine {
                                     default_title_tail_body_advances_column,
                                     large_between_split_head_render_overflows,
                                     internal_reset_split_head_render_overflows,
+                                    internal_rewind_full_advance_needed,
                                     large_between_last_column_new_note_tail,
                                     large_between_equation_tail_starts_next_column,
                                     large_between_lead_in_before_final_tail_starts_next_column,
@@ -7066,6 +7099,10 @@ impl TypesetEngine {
                                     // 저장 lineSeg reset은 실제 column/page split 신호지만,
                                     // 현재 단의 render-y 기준으로 reset 앞 head가 이미 frame을
                                     // 넘으면 현재 단 tail로 남기지 않고 다음 단/쪽에서 다시 본다.
+                                    internal_rewind_split = None;
+                                } else if internal_rewind_full_advance_needed {
+                                    // saved-vpos 압축 높이만 현재 단에 들어가는 기본 미주 rewind는
+                                    // head tail로 쪼개지 않고 다음 단에서 전체 문단으로 시작한다.
                                     internal_rewind_split = None;
                                 }
                             }
