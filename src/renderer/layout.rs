@@ -9,7 +9,7 @@ use super::float_placement::{
 };
 use super::font_metrics_data;
 use super::height_cursor::HeightCursor;
-use super::height_measurer::MeasuredTable;
+use super::height_measurer::{fit_measured_table_to_declared_height, MeasuredTable};
 use super::page_layout::{LayoutRect, PageLayoutInfo};
 use super::pagination::{
     ColumnContent, EndnoteParaSource, FootnoteRef, FootnoteSource, PageContent, PageItem,
@@ -273,6 +273,33 @@ impl CellContext {
 
 fn para_has_visible_text(para: &Paragraph) -> bool {
     para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+}
+
+fn para_has_non_whitespace_text(para: &Paragraph) -> bool {
+    para.text
+        .chars()
+        .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
+}
+
+fn para_line_spacing_px(para: &Paragraph, dpi: f64) -> f64 {
+    para.line_segs
+        .last()
+        .filter(|seg| seg.line_spacing > 0)
+        .map(|seg| hwpunit_to_px(seg.line_spacing, dpi))
+        .unwrap_or(0.0)
+}
+
+fn has_following_non_positive_visible_float(para: &Paragraph, control_index: usize) -> bool {
+    para.controls
+        .iter()
+        .skip(control_index + 1)
+        .any(|ctrl| match ctrl {
+            Control::Table(table) => {
+                is_para_topbottom_float(&table.common)
+                    && signed_hwpunit(table.common.vertical_offset) <= 0
+            }
+            _ => false,
+        })
 }
 
 fn para_has_visible_inline_control(para: &Paragraph) -> bool {
@@ -5205,7 +5232,8 @@ impl LayoutEngine {
                     matches!(
                         c,
                         Control::Table(t)
-                            if is_para_topbottom_float(&t.common) && para_has_visible_text(para)
+                            if is_para_topbottom_float(&t.common)
+                                && para_has_non_whitespace_text(para)
                     )
                 })
                 .unwrap_or(false);
@@ -5318,9 +5346,17 @@ impl LayoutEngine {
             let tac_table_y_before = y_offset; // Task #9: 표 렌더 전 y 보존
             let mut para_float_lane_info: Option<(f64, f64, f64, f64, f64)> = None;
             if let Some(Control::Table(t)) = para.controls.get(control_index) {
-                let mt = measured_tables
+                let raw_mt = measured_tables
                     .iter()
                     .find(|mt| mt.para_index == para_index && mt.control_index == control_index);
+                let fitted_visible_mt = if is_current_visible_para_float {
+                    raw_mt.map(|measured| {
+                        fit_measured_table_to_declared_height(measured, t, self.dpi)
+                    })
+                } else {
+                    None
+                };
+                let mt = fitted_visible_mt.as_ref().or(raw_mt);
                 let para_style = styles.para_styles.get(para.para_shape_id as usize);
                 let alignment = para_style.map(|s| s.alignment).unwrap_or(Alignment::Left);
                 let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
@@ -5536,6 +5572,11 @@ impl LayoutEngine {
                     } else {
                         None
                     };
+                    let visible_outer_top_px = if is_current_visible_para_float {
+                        hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+                    } else {
+                        0.0
+                    };
                     let table_y_start = if let Some((_, _, _, lane_top, _)) = para_float_lane_info {
                         lane_top
                     } else if let Some((_, iy)) = inline_pos {
@@ -5544,9 +5585,17 @@ impl LayoutEngine {
                         let v_off =
                             hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
                         if self.is_hwpx_source.get() && v_off <= 0.0 {
-                            table_y_before + v_off.max(0.0)
+                            let flow_at_para_start =
+                                (table_y_before - para_y_for_table).abs() < 0.5;
+                            table_y_before
+                                + if flow_at_para_start {
+                                    visible_outer_top_px
+                                } else {
+                                    0.0
+                                }
+                                + v_off.max(0.0)
                         } else if v_off < 0.0 {
-                            para_y_for_table + v_off
+                            para_y_for_table + visible_outer_top_px + v_off
                         } else {
                             para_y_for_table
                         }
@@ -5586,7 +5635,7 @@ impl LayoutEngine {
                             margin_right,
                             tbl_inline_x,
                             None,
-                            Some(para_y_for_table),
+                            Some(para_y_for_table + visible_outer_top_px),
                             allow_para_top_bleed,
                             false,
                         )
@@ -5624,7 +5673,14 @@ impl LayoutEngine {
                         if signed_hwpunit(t.common.vertical_offset) > 0 {
                             table_y_before
                         } else if self.is_hwpx_source.get() {
-                            table_visual_end
+                            let following_non_positive =
+                                has_following_non_positive_visible_float(para, control_index);
+                            let inter_float_gap = if following_non_positive {
+                                para_line_spacing_px(para, self.dpi)
+                            } else {
+                                0.0
+                            };
+                            table_visual_end + inter_float_gap
                         } else {
                             table_y_before.max(table_visual_end)
                         }

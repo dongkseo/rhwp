@@ -19,7 +19,7 @@ use crate::renderer::float_placement::{
     horizontal_range, is_para_topbottom_float, signed_hwpunit, FloatLaneSet, FloatPlacementContext,
 };
 use crate::renderer::height_cursor::HeightCursor;
-use crate::renderer::height_measurer::MeasuredTable;
+use crate::renderer::height_measurer::{fit_measured_table_to_declared_height, MeasuredTable};
 use crate::renderer::layout::{border_width_to_px, ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::ResolvedStyleSet;
@@ -318,6 +318,27 @@ fn para_has_non_whitespace_text(para: &Paragraph) -> bool {
     para.text
         .chars()
         .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
+}
+
+fn para_line_spacing_px(para: &Paragraph, dpi: f64) -> f64 {
+    para.line_segs
+        .last()
+        .filter(|seg| seg.line_spacing > 0)
+        .map(|seg| hwpunit_to_px(seg.line_spacing, dpi))
+        .unwrap_or(0.0)
+}
+
+fn has_following_non_positive_visible_float(para: &Paragraph, control_index: usize) -> bool {
+    para.controls
+        .iter()
+        .skip(control_index + 1)
+        .any(|ctrl| match ctrl {
+            Control::Table(table) => {
+                is_para_topbottom_float(&table.common)
+                    && signed_hwpunit(table.common.vertical_offset) <= 0
+            }
+            _ => false,
+        })
 }
 
 fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
@@ -9288,6 +9309,13 @@ impl TypesetEngine {
         let mt = measured_tables
             .iter()
             .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
+        let fitted_visible_mt =
+            if is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para) {
+                mt.map(|measured| fit_measured_table_to_declared_height(measured, table, self.dpi))
+            } else {
+                None
+            };
+        let mt = fitted_visible_mt.as_ref().or(mt);
 
         let is_tac = table.attr & 0x01 != 0;
         let table_text_wrap = (table.attr >> 21) & 0x07;
@@ -9536,10 +9564,11 @@ impl TypesetEngine {
         // out-of-flow 개체다. 빈 host 에서는 para.controls 배열 순서가 시각적 위·아래
         // 순서와 다를 수 있어 vertical_offset 오름차순 안정정렬을 유지한다(#986/#1088).
         //
-        // [Issue #1510] visible text 가 있는 host 문단은 한컴이 문서/control 순서와
+        // [Issue #1510] 실제 비공백 텍스트가 있는 host 문단은 한컴이 문서/control 순서와
         // 선언된 절대 위치를 함께 보존한다. 여기서 vertical_offset 순으로 재정렬하면
         // 제목 텍스트와 co-anchored float 표의 순서가 뒤집히므로 정렬 대상에서 제외한다.
-        let should_sort_para_float_tables = !para_has_visible_text(para);
+        // 공백-only host 는 기존 TopAndBottom empty/float 흐름을 유지한다(#157).
+        let should_sort_para_float_tables = !para_has_non_whitespace_text(para);
         let float_table_voffset = |ctrl: &Control| -> i32 {
             match ctrl {
                 Control::Table(t)
@@ -10057,7 +10086,7 @@ impl TypesetEngine {
     ) {
         let vertical_offset = Self::get_table_vertical_offset(table);
         let is_visible_para_float =
-            is_para_topbottom_float(&table.common) && para_has_visible_text(para);
+            is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para);
         let signed_vertical_offset = vertical_offset as i32;
         let total_lines = fmt.line_heights.len();
         let pre_table_end_line = if !is_visible_para_float
@@ -10138,15 +10167,23 @@ impl TypesetEngine {
             st.current_height += pre_height.max(table_bottom);
         } else if is_visible_para_float {
             let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+            let outer_top_px = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
             let table_top = if signed_vertical_offset > 0 {
-                para_start_height + v_off_px
+                para_start_height + outer_top_px + v_off_px
             } else if st.is_hwpx_source {
                 // HWPX visible float 는 같은 문단 안의 앞선 float 뒤에 이어 쌓인다.
                 // B/C처럼 둘 다 non-positive offset 이면 문단 시작점이 아니라 현재 흐름
                 // 높이를 기준으로 reserve 해야 layout 의 세로 stacking 과 page break 가 맞는다.
-                st.current_height + v_off_px.max(0.0)
+                let flow_at_para_start = (st.current_height - para_start_height).abs() < 0.5;
+                st.current_height
+                    + if flow_at_para_start {
+                        outer_top_px
+                    } else {
+                        0.0
+                    }
+                    + v_off_px.max(0.0)
             } else {
-                para_start_height + v_off_px
+                para_start_height + outer_top_px + v_off_px
             };
             let table_bottom = table_top + table_total_height.max(0.0);
             if signed_vertical_offset > 0 {
@@ -10158,7 +10195,14 @@ impl TypesetEngine {
                 }
                 st.current_height += pre_height;
             } else {
-                st.current_height = st.current_height.max(table_bottom);
+                let following_non_positive =
+                    has_following_non_positive_visible_float(para, ctrl_idx);
+                let inter_float_gap = if st.is_hwpx_source && following_non_positive {
+                    para_line_spacing_px(para, self.dpi)
+                } else {
+                    0.0
+                };
+                st.current_height = st.current_height.max(table_bottom + inter_float_gap);
             }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
@@ -10380,7 +10424,7 @@ impl TypesetEngine {
                 table,
                 fmt,
                 para_start_height,
-                if is_para_topbottom_float(&table.common) && para_has_visible_text(para) {
+                if is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para) {
                     ft.effective_height
                 } else {
                     table_total
