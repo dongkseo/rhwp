@@ -707,6 +707,7 @@ impl LayoutEngine {
                         .max(line_h)
                         .max(nested_bottom)
                         .max(self.calc_non_inline_controls_flow_height(&cell.paragraphs))
+                        .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs))
                 } else {
                     self.calc_composed_paras_content_height(
                         &composed_paras,
@@ -714,6 +715,7 @@ impl LayoutEngine {
                         styles,
                     )
                     .max(self.calc_non_inline_controls_flow_height(&cell.paragraphs))
+                    .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs))
                 }
             };
 

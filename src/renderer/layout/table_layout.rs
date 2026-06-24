@@ -320,6 +320,55 @@ impl LayoutEngine {
             .sum()
     }
 
+    fn cell_wrap_object_visual_bottom(&self, common: &CommonObjAttr) -> f64 {
+        if common.treat_as_char {
+            return 0.0;
+        }
+        if !matches!(
+            common.text_wrap,
+            TextWrap::Square | TextWrap::Tight | TextWrap::Through
+        ) {
+            return 0.0;
+        }
+
+        let object_height = hwpunit_to_px(common.height as i32, self.dpi);
+        let top_offset = if matches!(common.vert_rel_to, VertRelTo::Para) {
+            hwpunit_to_px((common.vertical_offset as i32).max(0), self.dpi)
+        } else {
+            0.0
+        };
+        top_offset + object_height
+    }
+
+    pub(crate) fn calc_cell_wrap_objects_bottom_height(&self, paragraphs: &[Paragraph]) -> f64 {
+        paragraphs
+            .iter()
+            .map(|p| {
+                let para_top = p
+                    .line_segs
+                    .first()
+                    .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
+                    .unwrap_or(0.0);
+                let object_bottom = p
+                    .controls
+                    .iter()
+                    .map(|ctrl| match ctrl {
+                        Control::Picture(pic) => self.cell_wrap_object_visual_bottom(&pic.common),
+                        Control::Shape(shape) => {
+                            self.cell_wrap_object_visual_bottom(shape.common())
+                        }
+                        _ => 0.0,
+                    })
+                    .fold(0.0f64, f64::max);
+                if object_bottom > 0.0 {
+                    para_top + object_bottom
+                } else {
+                    0.0
+                }
+            })
+            .fold(0.0f64, f64::max)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout_table(
         &self,
@@ -1362,6 +1411,7 @@ impl LayoutEngine {
         line_based_height
             .max(self.calc_nested_controls_bottom_height(paragraphs, styles))
             .max(self.calc_non_inline_controls_flow_height(paragraphs))
+            .max(self.calc_cell_wrap_objects_bottom_height(paragraphs))
     }
 
     /// pre-composed 문단들의 콘텐츠 높이 합산 (compose 생략)
@@ -2222,7 +2272,12 @@ impl LayoutEngine {
 
                 let nested_bottom =
                     self.calc_nested_controls_bottom_height(&cell.paragraphs, styles);
-                composed_height.max(vpos_height).max(nested_bottom)
+                let wrap_object_bottom =
+                    self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs);
+                composed_height
+                    .max(vpos_height)
+                    .max(nested_bottom)
+                    .max(wrap_object_bottom)
             };
 
             // 수직 정렬 (분할 표에서는 Top 강제 — 보이는 영역이 전체 셀보다 작음)

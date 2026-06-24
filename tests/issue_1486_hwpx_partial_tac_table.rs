@@ -52,6 +52,38 @@ fn render_tree_contains_text(node: &RenderNode, needle: &str) -> bool {
     text.contains(needle)
 }
 
+fn collect_images<'a>(node: &'a RenderNode, out: &mut Vec<&'a RenderNode>) {
+    if matches!(node.node_type, RenderNodeType::Image(_)) {
+        out.push(node);
+    }
+
+    for child in &node.children {
+        collect_images(child, out);
+    }
+}
+
+fn collect_tables<'a>(node: &'a RenderNode, out: &mut Vec<&'a RenderNode>) {
+    if matches!(node.node_type, RenderNodeType::Table(_)) {
+        out.push(node);
+    }
+
+    for child in &node.children {
+        collect_tables(child, out);
+    }
+}
+
+fn collect_text_run_bboxes(node: &RenderNode, needle: &str, out: &mut Vec<BoundingBox>) {
+    if let RenderNodeType::TextRun(run) = &node.node_type {
+        if run.text == needle {
+            out.push(node.bbox);
+        }
+    }
+
+    for child in &node.children {
+        collect_text_run_bboxes(child, needle, out);
+    }
+}
+
 #[test]
 fn issue_1486_partial_table_tac_nested_table_stays_inside_page_body() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
@@ -160,5 +192,67 @@ fn issue_1486_rowspan_block_tail_stays_on_pdf_page14() {
     assert!(
         render_tree_contains_text(&page14.root, "제2조제10호"),
         "국민기초생활 보장법 행은 14쪽에 남아야 함"
+    );
+}
+
+#[test]
+fn issue_1486_page19_nested_square_picture_is_not_page_clipped() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"));
+    let doc = rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
+        .unwrap_or_else(|e| panic!("parse {SAMPLE}: {e}"));
+
+    let page19 = doc
+        .build_page_render_tree(18)
+        .expect("render issue #1486 page 19");
+    let page_bottom = page19.root.bbox.y + page19.root.bbox.height;
+
+    let mut images = Vec::new();
+    collect_images(&page19.root, &mut images);
+    let diagram = images
+        .into_iter()
+        .filter(|n| n.bbox.width > 300.0 && n.bbox.height > 90.0)
+        .max_by(|a, b| a.bbox.y.partial_cmp(&b.bbox.y).unwrap())
+        .expect("19쪽 하단 무허가건축물 확인 절차 그림");
+    let diagram_bottom = diagram.bbox.y + diagram.bbox.height;
+
+    assert!(
+        diagram_bottom <= page_bottom - 4.0,
+        "19쪽 하단 그림이 페이지 아래로 잘리면 안 됨: bottom={diagram_bottom:.2}, page_bottom={page_bottom:.2}"
+    );
+}
+
+#[test]
+fn issue_1486_page13_page_number_keeps_footer_gap() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"));
+    let doc = rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
+        .unwrap_or_else(|e| panic!("parse {SAMPLE}: {e}"));
+
+    let page13 = doc
+        .build_page_render_tree(12)
+        .expect("render issue #1486 page 13");
+
+    let mut tables = Vec::new();
+    collect_tables(&page13.root, &mut tables);
+    let bottom_table = tables
+        .into_iter()
+        .filter(|n| n.bbox.y > 500.0 && n.bbox.width > 700.0)
+        .max_by(|a, b| {
+            let ab = a.bbox.y + a.bbox.height;
+            let bb = b.bbox.y + b.bbox.height;
+            ab.partial_cmp(&bb).unwrap()
+        })
+        .expect("13쪽 하단 배점기준표 조각");
+    let table_bottom = bottom_table.bbox.y + bottom_table.bbox.height;
+
+    let mut page_numbers = Vec::new();
+    collect_text_run_bboxes(&page13.root, "-13-", &mut page_numbers);
+    let page_number = page_numbers.into_iter().next().expect("13쪽 쪽번호");
+
+    assert!(
+        page_number.y - table_bottom >= 12.0,
+        "13쪽 하단 표와 쪽번호 사이 간격이 너무 좁음: table_bottom={table_bottom:.2}, page_number_y={:.2}",
+        page_number.y
     );
 }
