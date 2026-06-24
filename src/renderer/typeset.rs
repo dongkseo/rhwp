@@ -19,7 +19,7 @@ use crate::renderer::float_placement::{
     horizontal_range, is_para_topbottom_float, signed_hwpunit, FloatLaneSet, FloatPlacementContext,
 };
 use crate::renderer::height_cursor::HeightCursor;
-use crate::renderer::height_measurer::MeasuredTable;
+use crate::renderer::height_measurer::{fit_measured_table_to_declared_height, MeasuredTable};
 use crate::renderer::layout::{border_width_to_px, ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::ResolvedStyleSet;
@@ -119,6 +119,13 @@ struct FormattedTable {
     table_footnote_height: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct VisibleFloatExclusion {
+    /// visible host 문단의 자리차지 float 표가 후속 본문을 피하게 만드는 y 구간.
+    top: f64,
+    bottom: f64,
+}
+
 /// 호스트 문단의 spacing (표 전/후)
 #[derive(Debug, Clone, Copy)]
 struct HostSpacing {
@@ -133,6 +140,8 @@ struct HostSpacing {
 /// 단일 패스 조판 엔진
 pub struct TypesetEngine {
     dpi: f64,
+    /// 현재 조판 중인 입력이 HWPX 원본인지 여부.
+    is_hwpx_source: std::cell::Cell<bool>,
 }
 
 /// 조판 중 현재 페이지/단 상태
@@ -175,6 +184,8 @@ struct TypesetState {
     /// Task #321: col 0 상단의 body-wide TopAndBottom 표/도형이 차지하는 높이 (px).
     /// col 1 이상으로 advance 시 zone_y_offset에 반영.
     pending_body_wide_top_reserve: f64,
+    /// visible text host 의 양수 offset 자리차지 표가 후속 문단을 밀어내는 구간.
+    visible_float_exclusions: Vec<VisibleFloatExclusion>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -307,6 +318,27 @@ fn para_has_non_whitespace_text(para: &Paragraph) -> bool {
     para.text
         .chars()
         .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
+}
+
+fn para_line_spacing_px(para: &Paragraph, dpi: f64) -> f64 {
+    para.line_segs
+        .last()
+        .filter(|seg| seg.line_spacing > 0)
+        .map(|seg| hwpunit_to_px(seg.line_spacing, dpi))
+        .unwrap_or(0.0)
+}
+
+fn has_following_non_positive_visible_float(para: &Paragraph, control_index: usize) -> bool {
+    para.controls
+        .iter()
+        .skip(control_index + 1)
+        .any(|ctrl| match ctrl {
+            Control::Table(table) => {
+                is_para_topbottom_float(&table.common)
+                    && signed_hwpunit(table.common.vertical_offset) <= 0
+            }
+            _ => false,
+        })
 }
 
 fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
@@ -970,6 +1002,7 @@ impl TypesetState {
             current_zone_layout: None,
             on_first_multicolumn_page: false,
             pending_body_wide_top_reserve: 0.0,
+            visible_float_exclusions: Vec::new(),
             skip_safety_margin_once: false,
             is_hwp3_variant: false,
             is_hwpx_source: false,
@@ -1084,6 +1117,7 @@ impl TypesetState {
     /// 다음 단 또는 새 페이지
     fn advance_column_or_new_page(&mut self) {
         self.flush_column();
+        self.visible_float_exclusions.clear();
         if self.current_column + 1 < self.col_count {
             self.current_column += 1;
             // Task #321: col 0 상단의 body-wide TopAndBottom 표/도형이 차지한 높이를
@@ -1130,7 +1164,32 @@ impl TypesetState {
         self.current_zone_y_offset = 0.0;
         self.current_zone_layout = None;
         self.on_first_multicolumn_page = false;
+        self.visible_float_exclusions.clear();
         self.reset_vpos_cursor();
+    }
+
+    fn apply_visible_float_exclusions(&mut self, probe_height: f64) {
+        if self.visible_float_exclusions.is_empty() {
+            return;
+        }
+
+        let use_overlap_probe = self.is_hwpx_source && probe_height > 0.0;
+        self.visible_float_exclusions
+            .retain(|zone| self.current_height < zone.bottom - 0.5);
+
+        let mut jump_to = self.current_height;
+        for zone in &self.visible_float_exclusions {
+            let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
+            let overlaps_zone =
+                use_overlap_probe && jump_to < zone.top && jump_to + probe_height > zone.top + 0.5;
+            if starts_in_zone || overlaps_zone {
+                jump_to = jump_to.max(zone.bottom);
+            }
+        }
+
+        if jump_to > self.current_height + 0.5 {
+            self.current_height = jump_to;
+        }
     }
 
     fn new_page_content(&self, column_contents: Vec<ColumnContent>) -> PageContent {
@@ -1331,7 +1390,10 @@ fn debug_print_endnote_line_segments(
 
 impl TypesetEngine {
     pub fn new(dpi: f64) -> Self {
-        Self { dpi }
+        Self {
+            dpi,
+            is_hwpx_source: std::cell::Cell::new(false),
+        }
     }
 
     pub fn with_default_dpi() -> Self {
@@ -1540,6 +1602,7 @@ impl TypesetEngine {
         is_hwpx_source: bool,
     ) -> PaginationResult {
         let layout = PageLayoutInfo::from_page_def(page_def, column_def, self.dpi);
+        self.is_hwpx_source.set(is_hwpx_source);
         let col_count = column_def.column_count.max(1);
         let footnote_separator_overhead = hwpunit_to_px(400, self.dpi);
         let footnote_safety_margin = hwpunit_to_px(3000, self.dpi);
@@ -8571,6 +8634,11 @@ impl TypesetEngine {
                     continue;
                 }
                 let raw_lh = hwpunit_to_px(line.line_height, self.dpi);
+                let raw_text_height = para
+                    .line_segs
+                    .get(line_idx)
+                    .map(|seg| hwpunit_to_px(seg.text_height, self.dpi))
+                    .unwrap_or(0.0);
                 let max_fs = line
                     .runs
                     .iter()
@@ -8643,7 +8711,15 @@ impl TypesetEngine {
                         }
                     }
                 } else {
-                    (raw_lh, hwpunit_to_px(line.line_spacing, self.dpi))
+                    crate::renderer::corrected_line_metrics_for_source(
+                        raw_lh,
+                        raw_text_height,
+                        hwpunit_to_px(line.line_spacing, self.dpi),
+                        max_fs,
+                        ls_type,
+                        ls_val,
+                        para.controls.is_empty(),
+                    )
                 };
                 let extra_rows =
                     crate::renderer::equation_tac_flow::compute_equation_only_tac_line_flow(
@@ -8742,6 +8818,16 @@ impl TypesetEngine {
         } else {
             LAYOUT_DRIFT_SAFETY_PX
         };
+        let exclusion_probe_height = if st.is_hwpx_source {
+            fmt.line_heights
+                .first()
+                .zip(fmt.line_spacings.first())
+                .map(|(lh, ls)| lh + ls)
+                .unwrap_or(fmt.height_for_fit)
+        } else {
+            0.0
+        };
+        st.apply_visible_float_exclusions(exclusion_probe_height);
         let available = (st.available_height() - safety).max(0.0);
 
         // Task #321 Stage 1 진단: 포맷터 총 높이 vs LINE_SEG 실측 총 높이 비교
@@ -9223,6 +9309,13 @@ impl TypesetEngine {
         let mt = measured_tables
             .iter()
             .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
+        let fitted_visible_mt =
+            if is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para) {
+                mt.map(|measured| fit_measured_table_to_declared_height(measured, table, self.dpi))
+            } else {
+                None
+            };
+        let mt = fitted_visible_mt.as_ref().or(mt);
 
         let is_tac = table.attr & 0x01 != 0;
         let table_text_wrap = (table.attr >> 21) & 0x07;
@@ -9466,25 +9559,20 @@ impl TypesetEngine {
         let mut para_float_lanes = FloatLaneSet::new();
 
         // 각 컨트롤에 대해 format → fits → place/split
-        // [참고2 순서 역전 fix] para-relative float 표(비-TAC, wrap=위아래, vert=문단)는
-        // 흐름과 무관하게 vertical_offset 위치에 배치되는 out-of-flow 개체다.
-        // para.controls 배열 순서는 시각적 위·아래 순서와 다를 수 있어(한컴은
-        // vertical_offset 으로 위치 결정), 배열 순서대로 처리하면 라벨·표가 역전
-        // 배치된다 (공직기강 참고2: 표 v_off=+3063·라벨 0 → 라벨이 표 뒤 페이지로 밀림).
-        // → vertical_offset 오름차순(시각 위→아래) 안정정렬로 처리 순서를 맞춘다.
-        //   in-flow·TAC 컨트롤은 키 0. 동률은 배열 순서 유지(stable). ctrl_idx 는
-        //   원래 배열 인덱스를 그대로 사용한다 (format_table·measured_tables·
-        //   PageItem 조회가 의존). 국립국어원 pi586(표 v_off=-1796<라벨 0)·pic-in-*
-        //   (전부 0)처럼 표가 라벨보다 먼저인 경우는 정렬상 배열 순서가 유지된다.
+        // [참고2 순서 역전 fix] 빈 host 문단의 para-relative float 표(비-TAC,
+        // wrap=위아래, vert=문단)는 흐름과 무관하게 vertical_offset 위치에 배치되는
+        // out-of-flow 개체다. 빈 host 에서는 para.controls 배열 순서가 시각적 위·아래
+        // 순서와 다를 수 있어 vertical_offset 오름차순 안정정렬을 유지한다(#986/#1088).
+        //
+        // [Issue #1510] 실제 비공백 텍스트가 있는 host 문단은 한컴이 문서/control 순서와
+        // 선언된 절대 위치를 함께 보존한다. 여기서 vertical_offset 순으로 재정렬하면
+        // 제목 텍스트와 co-anchored float 표의 순서가 뒤집히므로 정렬 대상에서 제외한다.
+        // 공백-only host 는 기존 TopAndBottom empty/float 흐름을 유지한다(#157).
+        let should_sort_para_float_tables = !para_has_non_whitespace_text(para);
         let float_table_voffset = |ctrl: &Control| -> i32 {
             match ctrl {
                 Control::Table(t)
-                    if !t.common.treat_as_char
-                        && matches!(
-                            t.common.text_wrap,
-                            crate::model::shape::TextWrap::TopAndBottom
-                        )
-                        && matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Para) =>
+                    if should_sort_para_float_tables && is_para_topbottom_float(&t.common) =>
                 {
                     t.common.vertical_offset as i32
                 }
@@ -9618,6 +9706,7 @@ impl TypesetEngine {
                             &fmt,
                             mt,
                             styles,
+                            para_start_height,
                             is_first_placed,
                             is_last_placed,
                         );
@@ -9973,6 +10062,7 @@ impl TypesetEngine {
             para,
             table,
             fmt,
+            st.current_height,
             table_height,
             is_first_placed,
             is_last_placed,
@@ -9989,13 +10079,20 @@ impl TypesetEngine {
         para: &Paragraph,
         table: &crate::model::table::Table,
         fmt: &FormattedParagraph,
+        para_start_height: f64,
         table_total_height: f64,
         is_first_placed: bool,
         is_last_placed: bool,
     ) {
         let vertical_offset = Self::get_table_vertical_offset(table);
+        let is_visible_para_float =
+            is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para);
+        let signed_vertical_offset = vertical_offset as i32;
         let total_lines = fmt.line_heights.len();
-        let pre_table_end_line = if vertical_offset > 0 && !para.text.is_empty() {
+        let pre_table_end_line = if !is_visible_para_float
+            && signed_vertical_offset > 0
+            && !para.text.is_empty()
+        {
             total_lines
         } else if table.common.treat_as_char
             && total_lines > 1
@@ -10068,6 +10165,45 @@ impl TypesetEngine {
             let v_off_px = crate::renderer::hwpunit_to_px(vertical_offset as i32, self.dpi);
             let table_bottom = v_off_px + table_total_height;
             st.current_height += pre_height.max(table_bottom);
+        } else if is_visible_para_float {
+            let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+            let outer_top_px = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
+            let table_top = if signed_vertical_offset > 0 {
+                para_start_height + outer_top_px + v_off_px
+            } else if st.is_hwpx_source {
+                // HWPX visible float 는 같은 문단 안의 앞선 float 뒤에 이어 쌓인다.
+                // B/C처럼 둘 다 non-positive offset 이면 문단 시작점이 아니라 현재 흐름
+                // 높이를 기준으로 reserve 해야 layout 의 세로 stacking 과 page break 가 맞는다.
+                let flow_at_para_start = (st.current_height - para_start_height).abs() < 0.5;
+                st.current_height
+                    + if flow_at_para_start {
+                        outer_top_px
+                    } else {
+                        0.0
+                    }
+                    + v_off_px.max(0.0)
+            } else {
+                para_start_height + outer_top_px + v_off_px
+            };
+            let table_bottom = table_top + table_total_height.max(0.0);
+            if signed_vertical_offset > 0 {
+                if table_bottom > table_top + 0.5 {
+                    st.visible_float_exclusions.push(VisibleFloatExclusion {
+                        top: table_top,
+                        bottom: table_bottom,
+                    });
+                }
+                st.current_height += pre_height;
+            } else {
+                let following_non_positive =
+                    has_following_non_positive_visible_float(para, ctrl_idx);
+                let inter_float_gap = if st.is_hwpx_source && following_non_positive {
+                    para_line_spacing_px(para, self.dpi)
+                } else {
+                    0.0
+                };
+                st.current_height = st.current_height.max(table_bottom + inter_float_gap);
+            }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
         } else {
@@ -10185,6 +10321,7 @@ impl TypesetEngine {
         fmt: &FormattedParagraph,
         mt: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
+        para_start_height: f64,
         is_first_placed: bool,
         is_last_placed: bool,
     ) {
@@ -10267,6 +10404,7 @@ impl TypesetEngine {
                         para,
                         table,
                         fmt,
+                        para_start_height,
                         0.0,
                         is_first_placed,
                         is_last_placed,
@@ -10285,7 +10423,12 @@ impl TypesetEngine {
                 para,
                 table,
                 fmt,
-                table_total,
+                para_start_height,
+                if is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para) {
+                    ft.effective_height
+                } else {
+                    table_total
+                },
                 is_first_placed,
                 is_last_placed,
             );
@@ -10312,6 +10455,7 @@ impl TypesetEngine {
                 para,
                 table,
                 fmt,
+                para_start_height,
                 table_total,
                 is_first_placed,
                 is_last_placed,

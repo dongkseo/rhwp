@@ -2073,6 +2073,7 @@ impl DocumentCore {
         let paginator = Paginator::new(self.dpi);
         let hwp3_origin_flow_spacing_before =
             self.document.is_hwp3_variant || self.document.header.version.major == 3;
+        let is_hwpx_source = matches!(self.source_format, crate::parser::FileFormat::Hwpx);
         let measurer = HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(self.document.is_hwp3_variant)
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before);
@@ -2275,7 +2276,7 @@ impl DocumentCore {
                     hwp3_origin_page_tolerance,
                     Some(&section.section_def.endnote_shape),
                     force_breaks.get(idx).unwrap_or(&empty_breaks),
-                    matches!(self.source_format, crate::parser::FileFormat::Hwpx),
+                    is_hwpx_source,
                 )
             };
 

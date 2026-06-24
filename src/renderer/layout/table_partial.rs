@@ -1387,6 +1387,7 @@ impl LayoutEngine {
                                         None,
                                         split_ref,
                                         None,
+                                        false,
                                         clamp_header_negative_para_offset,
                                     );
                                     para_y = nested_y + table_h_rendered;

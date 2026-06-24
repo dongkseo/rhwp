@@ -1260,6 +1260,7 @@ impl LayoutEngine {
                     None,
                     table_para_y,
                     false,
+                    false,
                 );
                 if table_bottom > max_table_bottom {
                     max_table_bottom = table_bottom;
@@ -1303,6 +1304,7 @@ impl LayoutEngine {
                 Some(inline_x),
                 None,
                 table_para_y,
+                false,
                 false,
             );
             if table_bottom > max_table_bottom {
@@ -1862,12 +1864,21 @@ impl LayoutEngine {
                 let ls_type = para_style
                     .map(|s| s.line_spacing_type)
                     .unwrap_or(LineSpacingType::Percent);
-                crate::renderer::corrected_line_metrics(
+                let raw_text_height = para
+                    .and_then(|p| p.line_segs.get(line_idx))
+                    .map(|seg| hwpunit_to_px(seg.text_height, self.dpi))
+                    .unwrap_or(0.0);
+                let is_plain_text_para = para.map(|p| p.controls.is_empty()).unwrap_or(false);
+                let use_stored_text_height =
+                    is_plain_text_para && (self.is_hwpx_source.get() || cell_ctx.is_none());
+                crate::renderer::corrected_line_metrics_for_source(
                     raw_lh,
+                    raw_text_height,
                     hwpunit_to_px(comp_line.line_spacing, self.dpi),
                     max_fs,
                     ls_type,
                     ls_val,
+                    use_stored_text_height,
                 )
             };
             // 인라인 Shape(글상자)가 있는 줄: line_height에 Shape 높이가 포함됨
@@ -3819,6 +3830,7 @@ impl LayoutEngine {
                                         Some(x),
                                         None,
                                         None,
+                                        false,
                                         false,
                                     );
                                     // 스킵 마커 등록 (별도 Table PageItem에서 중복 렌더 방지)

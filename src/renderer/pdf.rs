@@ -38,19 +38,7 @@ fn add_font_fallbacks(svg: &str) -> String {
 /// 단일 SVG를 PDF로 변환
 #[cfg(not(target_arch = "wasm32"))]
 pub fn svg_to_pdf(svg_content: &str) -> Result<Vec<u8>, String> {
-    let fontdb = create_fontdb();
-    let mut options = usvg::Options::default();
-    options.fontdb = std::sync::Arc::new(fontdb);
-    let svg_with_fallback = add_font_fallbacks(svg_content);
-    let tree = usvg::Tree::from_str(&svg_with_fallback, &options)
-        .map_err(|e| format!("SVG 파싱 실패: {}", e))?;
-    let pdf = svg2pdf::to_pdf(
-        &tree,
-        svg2pdf::ConversionOptions::default(),
-        svg2pdf::PageOptions::default(),
-    )
-    .map_err(|e| format!("PDF 변환 실패: {:?}", e))?;
-    Ok(pdf)
+    svgs_to_pdf(&[svg_content.to_string()])
 }
 
 /// 여러 SVG 페이지를 단일 다중 페이지 PDF로 생성
@@ -59,10 +47,6 @@ pub fn svgs_to_pdf(svg_pages: &[String]) -> Result<Vec<u8>, String> {
     if svg_pages.is_empty() {
         return Err("페이지가 없습니다".to_string());
     }
-    if svg_pages.len() == 1 {
-        return svg_to_pdf(&svg_pages[0]);
-    }
-
     use pdf_writer::{Finish, Pdf, Ref};
     use std::collections::HashMap;
 

@@ -611,6 +611,31 @@ pub fn corrected_line_metrics(
     }
 }
 
+/// 저장된 순수 텍스트 줄은 `vertsize`에 내부 여백이 포함되어도 한컴의 줄 진행이
+/// `textheight + spacing`에 맞춰지는 사례가 있다. IR 값은 보존하고 렌더/조판용
+/// line height만 낮춘다.
+#[inline]
+pub fn corrected_line_metrics_for_source(
+    raw_lh: f64,
+    raw_text_height: f64,
+    raw_ls: f64,
+    max_fs: f64,
+    ls_type: LineSpacingType,
+    ls_val: f64,
+    use_stored_text_height: bool,
+) -> (f64, f64) {
+    let (lh, ls) = corrected_line_metrics(raw_lh, raw_ls, max_fs, ls_type, ls_val);
+    if use_stored_text_height
+        && raw_text_height > 0.0
+        && raw_text_height < lh
+        && (max_fs <= 0.0 || raw_text_height + 0.5 >= max_fs * 0.8)
+    {
+        (raw_text_height, ls)
+    } else {
+        (lh, ls)
+    }
+}
+
 /// HWP3-origin HWP5 conversions may omit PARA_LINE_SEG for body paragraphs.
 /// The composer then emits synthetic lines with a tiny raw line height. For
 /// those synthetic lines, applying ParaShape's percent line spacing again makes
