@@ -68,8 +68,8 @@ const TAB_DEFAULT_WIDTH: u32 = 4000;
 /// Stage 2 진입점. `ctx` 는 Stage 3+ 에서 파라미터 검증에 사용.
 pub fn write_section(
     section: &Section,
-    _doc: &Document,
-    _index: usize,
+    doc: &Document,
+    index: usize,
     ctx: &mut SerializeContext,
 ) -> Result<Vec<u8>, SerializeError> {
     let mut vert_cursor: u32 = 0;
@@ -87,6 +87,30 @@ pub fn write_section(
     // 중첩 linesegarray(각주·머리말 등)가 anchor 탐색을 오염시키지 않도록 한다.
     let mut out = replace_first_linesegs(EMPTY_SECTION_XML, &first_linesegs);
     out = replace_page_pr(&out, &section.section_def.page_def);
+    // 쪽 테두리/배경 — 템플릿의 하드코딩 borderFillIDRef="1"(테두리 없음)을 IR 값으로
+    // 치환한다. 누락 시 문서의 쪽 테두리가 소실되어 외곽 4선 노드가 사라진다(#1388 동형).
+    out = replace_page_border_fill(&out, &section.section_def);
+
+    // 바탕쪽(masterPage) — secPr 의 masterPageCnt 치환 + secPr 내부 끝에 idRef 참조 삽입.
+    // 누락 시 라운드트립에서 바탕쪽 전체(그 안의 그림/표/문단 노드 포함)가 소실된다.
+    // id 인덱스는 전 섹션 누적 전역값으로, mod.rs 의 파일 생성 인덱스와 정합한다.
+    let master_pages = &section.section_def.master_pages;
+    if !master_pages.is_empty() {
+        let base: usize = doc.sections[..index]
+            .iter()
+            .map(|s| s.section_def.master_pages.len())
+            .sum();
+        let ids: Vec<String> = (0..master_pages.len())
+            .map(|k| format!("masterpage{}", base + k))
+            .collect();
+        out = out.replacen(
+            r#"masterPageCnt="0""#,
+            &format!(r#"masterPageCnt="{}""#, master_pages.len()),
+            1,
+        );
+        let refs = super::master_page::render_master_page_refs(&ids);
+        out = out.replacen("</hp:secPr>", &format!("{refs}</hp:secPr>"), 1);
+    }
 
     // [#1407] 본문 단 정의(colPr) — 첫 문단 IR 의 ColumnDef 를 템플릿 하드코딩
     // colPr(colCount=1)에 치환한다. 본문(depth 0) ColumnDef 는 render_runs 인라인
@@ -1096,7 +1120,9 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> String {
         };
     }
     if let ShapeObject::Group(g) = shape {
-        let mut xml = match writer_to_string(|w| super::shape::write_container_open(w, &g.common)) {
+        let mut xml = match writer_to_string(|w| {
+            super::shape::write_container_open(w, &g.common, &g.shape_attr)
+        }) {
             Ok(xml) => xml,
             Err(e) => {
                 eprintln!("[hwpx] Shape::Group 직렬화 실패: {e}");
@@ -1116,12 +1142,32 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> String {
         }
         return xml;
     }
-    let (tag, c, caption) = match shape {
+    let (tag, c, caption, sa) = match shape {
         ShapeObject::Rectangle(_) | ShapeObject::Line(_) => unreachable!(),
-        ShapeObject::Ellipse(e) => ("ellipse", &e.common, &e.drawing.caption),
-        ShapeObject::Arc(a) => ("arc", &a.common, &a.drawing.caption),
-        ShapeObject::Polygon(p) => ("polygon", &p.common, &p.drawing.caption),
-        ShapeObject::Curve(cv) => ("curve", &cv.common, &cv.drawing.caption),
+        ShapeObject::Ellipse(e) => (
+            "ellipse",
+            &e.common,
+            &e.drawing.caption,
+            Some(&e.drawing.shape_attr),
+        ),
+        ShapeObject::Arc(a) => (
+            "arc",
+            &a.common,
+            &a.drawing.caption,
+            Some(&a.drawing.shape_attr),
+        ),
+        ShapeObject::Polygon(p) => (
+            "polygon",
+            &p.common,
+            &p.drawing.caption,
+            Some(&p.drawing.shape_attr),
+        ),
+        ShapeObject::Curve(cv) => (
+            "curve",
+            &cv.common,
+            &cv.drawing.caption,
+            Some(&cv.drawing.shape_attr),
+        ),
         ShapeObject::Group(_) => unreachable!(),
         ShapeObject::Picture(pic) => {
             return match writer_to_string(|w| picture::write_picture(w, pic, ctx)) {
@@ -1132,26 +1178,37 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> String {
                 }
             };
         }
-        ShapeObject::Chart(ch) => ("chart", &ch.common, &ch.caption),
-        ShapeObject::Ole(o) => ("ole", &o.common, &o.caption),
+        ShapeObject::Chart(ch) => ("chart", &ch.common, &ch.caption, None),
+        ShapeObject::Ole(o) => ("ole", &o.common, &o.caption, None),
     };
-    render_common_shape_xml(tag, c, caption, ctx)
+    render_common_shape_xml(tag, c, caption, sa, ctx)
 }
 
 fn render_common_shape_xml(
     tag: &str,
     c: &CommonObjAttr,
     caption: &Option<crate::model::shape::Caption>,
+    sa: Option<&crate::model::shape::ShapeComponentAttr>,
     ctx: &mut SerializeContext,
 ) -> String {
+    // 도형 좌표계 블록(offset/orgSz/curSz/flip/rotationInfo/renderingInfo) — 누락 시
+    // 회전/뒤집힘이 소실되어 bbox 가 전치되는 등 렌더가 어긋난다(#1501 동류, polygon 등).
+    let shape_block = sa
+        .map(|sa| {
+            writer_to_string(|w| super::shape::write_shape_component_block(w, sa))
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
     let mut out = format!(
         concat!(
             r#"<hp:{tag} id="{id}" zOrder="{zo}" textWrap="{tw}" textFlow="BOTH_SIDES" lock="0">"#,
+            "{block}",
             r#"<hp:sz width="{w}" height="{h}" widthRelTo="ABSOLUTE" heightRelTo="ABSOLUTE"/>"#,
             r#"<hp:pos treatAsChar="{tac}" vertRelTo="{vr}" vertAlign="{va}" horzRelTo="{hr}" horzAlign="{ha}" vertOffset="{vo}" horzOffset="{ho}"/>"#,
             r#"<hp:outMargin left="{ml}" right="{mr}" top="{mt}" bottom="{mb}"/>"#,
         ),
         tag = tag,
+        block = shape_block,
         id = c.instance_id,
         zo = c.z_order,
         tw = text_wrap_to_hwpx(c.text_wrap),
@@ -1454,6 +1511,80 @@ fn replace_page_pr(xml: &str, page_def: &crate::model::page::PageDef) -> String 
         // 템플릿이 변경됐거나 이미 치환된 경우 — 원본 유지(회귀 방지).
         out
     }
+}
+
+/// 템플릿의 3개 `pageBorderFill`(BOTH/EVEN/ODD, 하드코딩 borderFillIDRef="1") 을 IR 값으로
+/// 치환한다. 누락 시 문서의 실제 쪽 테두리가 소실된다. 파서는 첫 항목(BOTH)을
+/// `page_border_fill`, 나머지(EVEN/ODD)를 `extra_page_border_fills` 에 위치 기반 저장한다.
+fn replace_page_border_fill(xml: &str, sec_def: &crate::model::document::SectionDef) -> String {
+    let entries: [(&str, &crate::model::page::PageBorderFill); 3] = [
+        ("BOTH", &sec_def.page_border_fill),
+        (
+            "EVEN",
+            sec_def
+                .extra_page_border_fills
+                .first()
+                .unwrap_or(&sec_def.page_border_fill),
+        ),
+        (
+            "ODD",
+            sec_def
+                .extra_page_border_fills
+                .get(1)
+                .unwrap_or(&sec_def.page_border_fill),
+        ),
+    ];
+    let mut out = xml.to_string();
+    for (ty, pbf) in entries {
+        // 템플릿 고정 문자열 (empty_section0.xml 와 정확히 일치해야 함).
+        let template = format!(
+            r#"<hp:pageBorderFill type="{ty}" borderFillIDRef="1" textBorder="PAPER" headerInside="0" footerInside="0" fillArea="PAPER"><hp:offset left="1417" right="1417" top="1417" bottom="1417"/></hp:pageBorderFill>"#
+        );
+        if out.contains(&template) {
+            out = out.replacen(&template, &render_page_border_fill(ty, pbf), 1);
+        }
+        // 미일치 시 원본 유지(회귀 방지) — replace_page_pr 패턴과 동형.
+    }
+    out
+}
+
+/// 단일 `pageBorderFill` 요소를 IR 에서 재구성한다. attr 비트 → textBorder/fillArea/
+/// headerInside/footerInside (parser `page_border_fill_attr` 의 역).
+fn render_page_border_fill(ty: &str, pbf: &crate::model::page::PageBorderFill) -> String {
+    let text_border = if pbf.attr & 0x0000_0001 != 0 {
+        "PAPER"
+    } else {
+        "CONTENT"
+    };
+    let fill_area = if pbf.attr & 0x0000_0008 != 0 {
+        "PAGE"
+    } else if pbf.attr & 0x0000_0010 != 0 {
+        "BORDER"
+    } else {
+        "PAPER"
+    };
+    let header_inside = if pbf.attr & 0x0000_0002 != 0 {
+        "1"
+    } else {
+        "0"
+    };
+    let footer_inside = if pbf.attr & 0x0000_0004 != 0 {
+        "1"
+    } else {
+        "0"
+    };
+    format!(
+        r#"<hp:pageBorderFill type="{ty}" borderFillIDRef="{}" textBorder="{}" headerInside="{}" footerInside="{}" fillArea="{}"><hp:offset left="{}" right="{}" top="{}" bottom="{}"/></hp:pageBorderFill>"#,
+        pbf.border_fill_id,
+        text_border,
+        header_inside,
+        footer_inside,
+        fill_area,
+        pbf.spacing_left,
+        pbf.spacing_right,
+        pbf.spacing_top,
+        pbf.spacing_bottom,
+    )
 }
 
 #[cfg(test)]
