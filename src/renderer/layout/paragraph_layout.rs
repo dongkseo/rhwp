@@ -1864,12 +1864,20 @@ impl LayoutEngine {
                 let ls_type = para_style
                     .map(|s| s.line_spacing_type)
                     .unwrap_or(LineSpacingType::Percent);
-                crate::renderer::corrected_line_metrics(
+                let raw_text_height = para
+                    .and_then(|p| p.line_segs.get(line_idx))
+                    .map(|seg| hwpunit_to_px(seg.text_height, self.dpi))
+                    .unwrap_or(0.0);
+                let use_hwpx_text_height = self.is_hwpx_source.get()
+                    && para.map(|p| p.controls.is_empty()).unwrap_or(false);
+                crate::renderer::corrected_line_metrics_for_source(
                     raw_lh,
+                    raw_text_height,
                     hwpunit_to_px(comp_line.line_spacing, self.dpi),
                     max_fs,
                     ls_type,
                     ls_val,
+                    use_hwpx_text_height,
                 )
             };
             // 인라인 Shape(글상자)가 있는 줄: line_height에 Shape 높이가 포함됨

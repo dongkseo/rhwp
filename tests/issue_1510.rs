@@ -6,16 +6,17 @@ use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use std::fs;
 use std::path::Path;
 
-const SAMPLE: &str = "samples/issue1510_coanchored_float_tables.hwp";
+const HWP_SAMPLE: &str = "samples/issue1510_coanchored_float_tables.hwp";
+const HWPX_SAMPLE: &str = "samples/issue1510_coanchored_float_tables.hwpx";
 const TARGET_PI: usize = 0;
 const TARGET_TABLES: [usize; 3] = [2, 3, 4];
 
-fn load_doc() -> rhwp::wasm_api::HwpDocument {
+fn load_doc(sample: &str) -> rhwp::wasm_api::HwpDocument {
     let repo_root = env!("CARGO_MANIFEST_DIR");
-    let hwp_path = Path::new(repo_root).join(SAMPLE);
-    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
+    let hwp_path = Path::new(repo_root).join(sample);
+    let bytes = fs::read(&hwp_path).unwrap_or_else(|e| panic!("read {}: {}", sample, e));
     rhwp::wasm_api::HwpDocument::from_bytes(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e))
+        .unwrap_or_else(|e| panic!("parse {}: {}", sample, e))
 }
 
 fn collect_table_order(root: &RenderNode, out: &mut Vec<usize>) {
@@ -63,19 +64,19 @@ fn find_text_bbox(root: &RenderNode, needle: &str) -> Option<(f64, f64)> {
 
 #[test]
 fn issue_1510_coanchored_visible_para_float_tables_stay_on_one_page() {
-    let doc = load_doc();
+    let doc = load_doc(HWP_SAMPLE);
 
     assert_eq!(
         doc.page_count(),
         1,
         "{} should match the Hancom 2024 HWP PDF baseline as a one-page document",
-        SAMPLE,
+        HWP_SAMPLE,
     );
 }
 
 #[test]
 fn issue_1510_visible_para_float_tables_apply_offsets_without_text_overlap() {
-    let doc = load_doc();
+    let doc = load_doc(HWP_SAMPLE);
     let tree = doc
         .build_page_render_tree(0)
         .expect("build_page_render_tree(0)");
@@ -104,7 +105,7 @@ fn issue_1510_visible_para_float_tables_apply_offsets_without_text_overlap() {
 
 #[test]
 fn issue_1510_visible_para_float_tables_keep_document_order() {
-    let doc = load_doc();
+    let doc = load_doc(HWP_SAMPLE);
     let tree = doc
         .build_page_render_tree(0)
         .expect("build_page_render_tree(0)");
@@ -114,5 +115,45 @@ fn issue_1510_visible_para_float_tables_keep_document_order() {
     assert_eq!(
         order, TARGET_TABLES,
         "co-anchored visible-host float tables should retain document/control order",
+    );
+}
+
+#[test]
+fn issue_1510_hwpx_unsigned_negative_offset_and_visible_flow_match_two_page_baseline() {
+    let doc = load_doc(HWPX_SAMPLE);
+
+    assert_eq!(
+        doc.page_count(),
+        2,
+        "{} should match the Hancom 2024 HWPX PDF baseline as a two-page document",
+        HWPX_SAMPLE,
+    );
+
+    let page0 = doc
+        .build_page_render_tree(0)
+        .expect("build_page_render_tree(0)");
+    let page1 = doc
+        .build_page_render_tree(1)
+        .expect("build_page_render_tree(1)");
+
+    let (_, b_bottom) = find_table_bbox(&page0.root, 3).expect("B table bbox");
+    let (c_top, _) = find_table_bbox(&page0.root, 4).expect("C table bbox");
+    assert!(
+        c_top + 0.5 >= b_bottom,
+        "HWPX visible-host non-positive float siblings should stack vertically: b_bottom={b_bottom:.1}, c_top={c_top:.1}",
+    );
+
+    assert!(
+        find_text_bbox(&page0.root, "filler paragraph 29").is_some(),
+        "filler 29 should remain on page 1",
+    );
+    assert!(
+        find_text_bbox(&page0.root, "filler paragraph 30").is_none(),
+        "filler 30 should move to page 2",
+    );
+    assert!(
+        find_text_bbox(&page1.root, "filler paragraph 30").is_some()
+            && find_text_bbox(&page1.root, "filler paragraph 32").is_some(),
+        "page 2 should contain filler 30..32",
     );
 }

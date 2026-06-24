@@ -3888,9 +3888,57 @@ impl LayoutEngine {
 
             if item_is_paragraph && !visible_float_exclusions.is_empty() {
                 visible_float_exclusions.retain(|zone| y_offset < zone.bottom - 0.5);
+                let item_probe_height = if self.is_hwpx_source.get() {
+                    match item {
+                        PageItem::FullParagraph { para_index } => paragraphs
+                            .get(*para_index)
+                            .and_then(|p| {
+                                p.line_segs.first().map(|seg| {
+                                    let line_height = if p.controls.is_empty()
+                                        && seg.text_height > 0
+                                        && seg.text_height < seg.line_height
+                                    {
+                                        seg.text_height
+                                    } else {
+                                        seg.line_height
+                                    };
+                                    hwpunit_to_px(line_height + seg.line_spacing, self.dpi)
+                                })
+                            })
+                            .unwrap_or(0.0),
+                        PageItem::PartialParagraph {
+                            para_index,
+                            start_line,
+                            ..
+                        } => paragraphs
+                            .get(*para_index)
+                            .and_then(|p| {
+                                p.line_segs.get(*start_line).map(|seg| {
+                                    let line_height = if p.controls.is_empty()
+                                        && seg.text_height > 0
+                                        && seg.text_height < seg.line_height
+                                    {
+                                        seg.text_height
+                                    } else {
+                                        seg.line_height
+                                    };
+                                    hwpunit_to_px(line_height + seg.line_spacing, self.dpi)
+                                })
+                            })
+                            .unwrap_or(0.0),
+                        _ => 0.0,
+                    }
+                } else {
+                    0.0
+                };
                 let mut jump_to = y_offset;
                 for zone in &visible_float_exclusions {
-                    if jump_to + 0.5 >= zone.top && jump_to < zone.bottom {
+                    let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
+                    let overlaps_zone = self.is_hwpx_source.get()
+                        && item_probe_height > 0.0
+                        && jump_to < zone.top
+                        && jump_to + item_probe_height > zone.top + 0.5;
+                    if starts_in_zone || overlaps_zone {
                         jump_to = jump_to.max(zone.bottom);
                     }
                 }
@@ -5495,7 +5543,9 @@ impl LayoutEngine {
                     } else if is_current_visible_para_float {
                         let v_off =
                             hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
-                        if v_off < 0.0 {
+                        if self.is_hwpx_source.get() && v_off <= 0.0 {
+                            table_y_before + v_off.max(0.0)
+                        } else if v_off < 0.0 {
                             para_y_for_table + v_off
                         } else {
                             para_y_for_table
@@ -5573,6 +5623,8 @@ impl LayoutEngine {
                     y_offset = if is_current_visible_para_float {
                         if signed_hwpunit(t.common.vertical_offset) > 0 {
                             table_y_before
+                        } else if self.is_hwpx_source.get() {
+                            table_visual_end
                         } else {
                             table_y_before.max(table_visual_end)
                         }
@@ -5583,7 +5635,6 @@ impl LayoutEngine {
                     };
                     if is_current_visible_para_float
                         && signed_hwpunit(t.common.vertical_offset) > 0
-                        && !self.is_hwpx_source.get()
                         && table_visual_height > 0.0
                     {
                         let table_visual_top = table_visual_end - table_visual_height;

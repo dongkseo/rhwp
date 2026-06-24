@@ -1683,10 +1683,11 @@ fn parse_table(
                                     };
                                 }
                                 b"vertOffset" => {
-                                    table.common.vertical_offset = parse_i32(&attr) as u32;
+                                    table.common.vertical_offset = parse_i32_wrapping(&attr) as u32;
                                 }
                                 b"horzOffset" => {
-                                    table.common.horizontal_offset = parse_i32(&attr) as u32;
+                                    table.common.horizontal_offset =
+                                        parse_i32_wrapping(&attr) as u32;
                                 }
                                 _ => {}
                             }
@@ -6374,7 +6375,7 @@ mod tests {
       <hp:sz width="30613" widthRelTo="ABSOLUTE" height="8580" heightRelTo="ABSOLUTE"/>
       <hp:pos treatAsChar="1" flowWithText="1" allowOverlap="0"
               vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT"
-              vertOffset="0" horzOffset="0"/>
+              vertOffset="4294965296" horzOffset="0"/>
       <hp:outMargin left="141" right="141" top="141" bottom="141"/>
       <hp:inMargin left="0" right="0" top="283" bottom="283"/>
       <hp:tr>
@@ -6396,6 +6397,7 @@ mod tests {
 
         assert!(table.common.treat_as_char);
         assert_eq!(table.common.text_wrap, TextWrap::TopAndBottom);
+        assert_eq!(table.common.vertical_offset as i32, -2000);
         assert_eq!(table.common.attr, 0x082a_2211);
         assert_eq!(table.attr, 0x01);
         assert_eq!(table.raw_table_record_attr, 0x0400_000e);
