@@ -9466,25 +9466,19 @@ impl TypesetEngine {
         let mut para_float_lanes = FloatLaneSet::new();
 
         // 각 컨트롤에 대해 format → fits → place/split
-        // [참고2 순서 역전 fix] para-relative float 표(비-TAC, wrap=위아래, vert=문단)는
-        // 흐름과 무관하게 vertical_offset 위치에 배치되는 out-of-flow 개체다.
-        // para.controls 배열 순서는 시각적 위·아래 순서와 다를 수 있어(한컴은
-        // vertical_offset 으로 위치 결정), 배열 순서대로 처리하면 라벨·표가 역전
-        // 배치된다 (공직기강 참고2: 표 v_off=+3063·라벨 0 → 라벨이 표 뒤 페이지로 밀림).
-        // → vertical_offset 오름차순(시각 위→아래) 안정정렬로 처리 순서를 맞춘다.
-        //   in-flow·TAC 컨트롤은 키 0. 동률은 배열 순서 유지(stable). ctrl_idx 는
-        //   원래 배열 인덱스를 그대로 사용한다 (format_table·measured_tables·
-        //   PageItem 조회가 의존). 국립국어원 pi586(표 v_off=-1796<라벨 0)·pic-in-*
-        //   (전부 0)처럼 표가 라벨보다 먼저인 경우는 정렬상 배열 순서가 유지된다.
+        // [참고2 순서 역전 fix] 빈 host 문단의 para-relative float 표(비-TAC,
+        // wrap=위아래, vert=문단)는 흐름과 무관하게 vertical_offset 위치에 배치되는
+        // out-of-flow 개체다. 빈 host 에서는 para.controls 배열 순서가 시각적 위·아래
+        // 순서와 다를 수 있어 vertical_offset 오름차순 안정정렬을 유지한다(#986/#1088).
+        //
+        // [Issue #1510] visible text 가 있는 host 문단은 한컴이 문서/control 순서와
+        // 선언된 절대 위치를 함께 보존한다. 여기서 vertical_offset 순으로 재정렬하면
+        // 제목 텍스트와 co-anchored float 표의 순서가 뒤집히므로 정렬 대상에서 제외한다.
+        let should_sort_para_float_tables = !para_has_visible_text(para);
         let float_table_voffset = |ctrl: &Control| -> i32 {
             match ctrl {
                 Control::Table(t)
-                    if !t.common.treat_as_char
-                        && matches!(
-                            t.common.text_wrap,
-                            crate::model::shape::TextWrap::TopAndBottom
-                        )
-                        && matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Para) =>
+                    if should_sort_para_float_tables && is_para_topbottom_float(&t.common) =>
                 {
                     t.common.vertical_offset as i32
                 }
@@ -9994,8 +9988,14 @@ impl TypesetEngine {
         is_last_placed: bool,
     ) {
         let vertical_offset = Self::get_table_vertical_offset(table);
+        let is_visible_para_float =
+            is_para_topbottom_float(&table.common) && para_has_visible_text(para);
+        let signed_vertical_offset = vertical_offset as i32;
         let total_lines = fmt.line_heights.len();
-        let pre_table_end_line = if vertical_offset > 0 && !para.text.is_empty() {
+        let pre_table_end_line = if !is_visible_para_float
+            && signed_vertical_offset > 0
+            && !para.text.is_empty()
+        {
             total_lines
         } else if table.common.treat_as_char
             && total_lines > 1
@@ -10068,6 +10068,8 @@ impl TypesetEngine {
             let v_off_px = crate::renderer::hwpunit_to_px(vertical_offset as i32, self.dpi);
             let table_bottom = v_off_px + table_total_height;
             st.current_height += pre_height.max(table_bottom);
+        } else if is_visible_para_float {
+            st.current_height += pre_height;
         } else if tac_wrap_split {
             st.current_height += table_total_height;
         } else {

@@ -5120,6 +5120,17 @@ impl LayoutEngine {
                     )
                 })
                 .unwrap_or(false);
+            let is_current_visible_para_float = para
+                .controls
+                .get(control_index)
+                .map(|c| {
+                    matches!(
+                        c,
+                        Control::Table(t)
+                            if is_para_topbottom_float(&t.common) && para_has_visible_text(para)
+                    )
+                })
+                .unwrap_or(false);
             let is_first_empty_para_float_control = is_current_empty_para_float
                 && para.controls.iter().position(|c| {
                     matches!(
@@ -5450,6 +5461,8 @@ impl LayoutEngine {
                         lane_top
                     } else if let Some((_, iy)) = inline_pos {
                         iy
+                    } else if is_current_visible_para_float {
+                        para_y_for_table
                     } else if let Some(anchor_y) = square_anchor_y {
                         table_visual_shift = (anchor_y - y_offset).max(0.0);
                         anchor_y
@@ -5515,7 +5528,13 @@ impl LayoutEngine {
                         );
                     }
                     table_y_end = table_visual_end;
-                    y_offset = if table_visual_shift > 0.0 {
+                    y_offset = if is_current_visible_para_float {
+                        if signed_hwpunit(t.common.vertical_offset) > 0 {
+                            table_y_before
+                        } else {
+                            table_y_before.max(table_visual_end)
+                        }
+                    } else if table_visual_shift > 0.0 {
                         (table_visual_end - table_visual_shift).max(table_y_before)
                     } else {
                         table_visual_end
@@ -5672,7 +5691,7 @@ impl LayoutEngine {
             } else {
                 false
             };
-            if !tac_seg_applied && !is_outside_body {
+            if !tac_seg_applied && !is_outside_body && !is_current_visible_para_float {
                 let comp = composed.get(para_index);
                 let para_style_id = comp
                     .map(|c| c.para_style_id as usize)
