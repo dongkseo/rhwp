@@ -140,6 +140,15 @@ pub fn fit_measured_table_to_declared_height(
     let target_row_sum = (target_body_height - cell_spacing_total).max(0.0);
     let current_row_sum = fitted.row_heights.iter().sum::<f64>();
 
+    // 선언 높이 보정은 #1510처럼 측정값과 저장값이 근소하게 어긋난 fixed-size 표에만
+    // 적용한다. 콘텐츠가 선언 높이보다 훨씬 큰 표를 강제로 압축하면 행/중첩 표 분할
+    // 페이지가 앞당겨진다(#1073).
+    let min_reasonable = current_row_sum * 0.75;
+    let max_reasonable = current_row_sum * 1.35;
+    if target_row_sum < min_reasonable || target_row_sum > max_reasonable {
+        return fitted;
+    }
+
     if target_row_sum > 0.0 && (current_row_sum - target_row_sum).abs() > 0.5 {
         if current_row_sum > 0.0 {
             let scale = target_row_sum / current_row_sum;
