@@ -250,6 +250,64 @@ test('past download (onChanged only, no onCreated) does not open the viewer', as
   });
 });
 
+// #1498 v2: Chrome 이 과거 완료 항목을 onCreated 로 전달해도 뷰어를 열지 않는다.
+test('past completed download delivered through onCreated does not open the viewer', async () => {
+  const env = createChromeMock();
+
+  await withChromeMock(env, async ({ listeners, calls }) => {
+    listeners.onCreated[0]({
+      id: 902,
+      url: 'https://example.com/old-created.hwp',
+      finalUrl: 'https://example.com/old-created.hwp',
+      filename: 'old-created.hwp',
+      mime: 'application/x-hwp',
+      state: 'complete',
+      startTime: '2000-01-01T00:00:00.000Z',
+      endTime: '2000-01-01T00:00:01.000Z',
+      fileSize: 1024,
+    });
+    await flushAsyncWork();
+
+    assert.deepEqual(calls.tabsCreate, [], '과거 완료 항목 onCreated 는 뷰어를 열지 않아야 함');
+    assert.deepEqual(calls.cancel, []);
+    assert.deepEqual(calls.erase, []);
+  });
+});
+
+// #1498 v2: onChanged 재조회 결과가 과거 항목이면 seen 에 있어도 뷰어를 열지 않는다.
+test('past download returned from onChanged search does not open the viewer', async () => {
+  const env = createChromeMock();
+
+  await withChromeMock(env, async ({ listeners, calls, searchItems }) => {
+    listeners.onCreated[0]({
+      id: 903,
+      url: 'https://example.com/download?id=903',
+      filename: 'download',
+      mime: 'application/octet-stream',
+    });
+    await flushAsyncWork();
+
+    searchItems.set(903, {
+      id: 903,
+      url: 'https://example.com/old-search.hwp',
+      filename: 'old-search.hwp',
+      mime: 'application/x-hwp',
+      state: 'complete',
+      startTime: '2000-01-01T00:00:00.000Z',
+      endTime: '2000-01-01T00:00:01.000Z',
+    });
+    await listeners.onChanged[0]({
+      id: 903,
+      filename: { current: '/Users/melee/Downloads/old-search.hwp' },
+      state: { current: 'complete' },
+    });
+    await flushAsyncWork();
+
+    assert.deepEqual(calls.search, [{ id: 903 }]);
+    assert.deepEqual(calls.tabsCreate, [], '재조회된 과거 항목은 뷰어를 열지 않아야 함');
+  });
+});
+
 // #1498: onCreated 로 관측한 새 다운로드는 onChanged 재판정으로 정상 오픈된다.
 test('new download seen via onCreated is opened on onChanged recheck', async () => {
   const env = createChromeMock();

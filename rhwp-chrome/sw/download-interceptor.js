@@ -14,6 +14,8 @@ import { openViewer } from './viewer-launcher.js';
 import { shouldInterceptDownload } from './download-interceptor-common.js';
 
 const handled = new Set();
+const workerStartedAt = Date.now();
+const DOWNLOAD_FRESH_GRACE_MS = 5_000;
 // #1498: onCreated 로 관측한 다운로드 id (= service worker 기동 이후 새로 시작된 다운로드).
 // onChanged 는 과거 다운로드 기록에도 발화할 수 있으므로, seen 에 있는 id 에 한해서만 재판정한다.
 // SW 재기동 후 과거 항목이 뷰어로 다발 열리던 회귀를 막는다 (#1471/#1480 회귀 정정).
@@ -32,6 +34,29 @@ function shouldRecheckDownload(delta) {
   return Boolean(delta?.filename?.current || delta?.finalUrl?.current || delta?.state?.current === 'complete');
 }
 
+function parseDownloadTime(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * #1498 v2: onCreated 로 들어온 항목도 과거 다운로드 기록일 수 있다.
+ * startTime/endTime 이 service worker 기동 시각보다 충분히 오래 전이면 재시작/복원된 과거 항목으로 보고 무시한다.
+ */
+function isFreshDownloadItem(item) {
+  if (!item) return false;
+  const startMs = parseDownloadTime(item.startTime);
+  if (startMs === null) return true;
+  const freshBoundary = workerStartedAt - DOWNLOAD_FRESH_GRACE_MS;
+  if (startMs < freshBoundary) return false;
+
+  const endMs = parseDownloadTime(item.endTime);
+  if (endMs !== null && endMs < freshBoundary) return false;
+
+  return true;
+}
+
 /**
  * 다운로드 관찰자를 설정한다.
  *
@@ -41,7 +66,7 @@ function shouldRecheckDownload(delta) {
  */
 export function setupDownloadInterceptor() {
   chrome.downloads.onCreated.addListener((item) => {
-    if (item) seen.add(item.id);
+    if (item && isFreshDownloadItem(item)) seen.add(item.id);
     processDownloadItem(item);
   });
 
@@ -51,7 +76,9 @@ export function setupDownloadInterceptor() {
     if (seen.has(delta.id) && !handled.has(delta.id) && shouldRecheckDownload(delta)) {
       try {
         const [item] = await chrome.downloads.search({ id: delta.id });
-        processDownloadItem(item);
+        if (isFreshDownloadItem(item)) {
+          processDownloadItem(item);
+        }
       } catch (err) {
         console.error('[rhwp] 다운로드 항목 재조회 오류:', err);
       }
@@ -68,6 +95,7 @@ export function setupDownloadInterceptor() {
 
 function processDownloadItem(item) {
   if (!item || handled.has(item.id)) return;
+  if (!isFreshDownloadItem(item)) return;
   if (!shouldInterceptDownload(item)) return;
 
   handled.add(item.id);
