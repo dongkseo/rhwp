@@ -4237,24 +4237,38 @@ impl LayoutEngine {
             0.0
         };
         let inner_width = (cell_w - pad_left - pad_right).max(0.0);
+        let is_block_rowbreak_table = matches!(
+            table.page_break,
+            crate::model::table::TablePageBreak::RowBreak
+        ) && !table.common.treat_as_char;
         let has_visible_text_with_nested_table = table.cells.iter().any(|cell| {
             cell.paragraphs.iter().any(|p| {
                 !p.text.trim().is_empty()
                     && p.controls.iter().any(|c| matches!(c, Control::Table(_)))
             })
         });
-        let use_vpos_unit_positions = matches!(
-            table.page_break,
-            crate::model::table::TablePageBreak::RowBreak
-        ) && !table.common.treat_as_char
-            && table.row_count > 1
-            && has_visible_text_with_nested_table;
         // [Task #700] vpos 동기화 가드와 동일 — 한컴 정상 인코딩(첫 문단 vpos=0) 한정.
         let cell_first_vpos = cell
             .paragraphs
             .first()
             .and_then(|p| p.line_segs.first().map(|s| s.vertical_pos))
             .unwrap_or(-1);
+        let preserve_linear_single_cell_vpos = is_block_rowbreak_table
+            && table.row_count == 1
+            && table.col_count == 1
+            && (table.common.vertical_offset as i32) == 0
+            && cell_first_vpos >= 0;
+        let use_vpos_unit_positions = is_block_rowbreak_table
+            && ((table.row_count > 1 && has_visible_text_with_nested_table)
+                || preserve_linear_single_cell_vpos);
+        let vpos_origin = if preserve_linear_single_cell_vpos {
+            cell_first_vpos.max(0)
+        } else {
+            0
+        };
+        let normalized_vpos_px = |vertical_pos: i32| -> f64 {
+            hwpunit_to_px((vertical_pos - vpos_origin).max(0), self.dpi)
+        };
         let para_count = cell.paragraphs.len();
         let cell_has_visible_content = cell
             .paragraphs
@@ -4308,11 +4322,18 @@ impl LayoutEngine {
             crate::renderer::composer::recompose_for_cell_width(&mut comp, p, inner_width, styles);
             let para_style = styles.para_styles.get(p.para_shape_id as usize);
             let is_empty_spacer_para = p.text.trim().is_empty() && p.controls.is_empty();
+            let preserve_vpos_empty_spacer = preserve_linear_single_cell_vpos
+                && is_empty_spacer_para
+                && p.line_segs.len() == 1
+                && p.line_segs
+                    .first()
+                    .is_some_and(|seg| seg.vertical_pos >= cell_first_vpos);
             let collapse_empty_rowbreak_spacer = is_block_rowbreak
                 && table.row_count == 1
                 && table.col_count == 1
                 && is_empty_spacer_para
-                && cell_has_visible_content;
+                && cell_has_visible_content
+                && !preserve_vpos_empty_spacer;
             let is_last_para = pi + 1 == para_count;
             let raw_spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
             let spacing_before = if pi > 0 {
@@ -4343,6 +4364,13 @@ impl LayoutEngine {
                     .unwrap_or(-1);
                 let cur_first = p.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1);
                 cur_first >= 0 && prev_end > 0 && cur_first < prev_end
+            } else {
+                false
+            };
+            let prev_para_has_mixed_nested_table = if pi > 0 {
+                let prev = &cell.paragraphs[pi - 1];
+                !prev.text.trim().is_empty()
+                    && prev.controls.iter().any(|c| matches!(c, Control::Table(_)))
             } else {
                 false
             };
@@ -4453,7 +4481,7 @@ impl LayoutEngine {
                         let mut vpos_gap_before = vpos_gap_before_para && ri == 0;
                         if use_vpos_unit_positions && ri == 0 && !hard_break_before {
                             if let Some(seg) = p.line_segs.first() {
-                                let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                                let target_top = normalized_vpos_px(seg.vertical_pos);
                                 if target_top > unit_cum {
                                     uh += target_top - unit_cum;
                                     vpos_gap_before = true;
@@ -4538,7 +4566,7 @@ impl LayoutEngine {
                         };
                         if use_vpos_unit_positions {
                             if let Some(seg) = p.line_segs.get(li) {
-                                let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                                let target_top = normalized_vpos_px(seg.vertical_pos);
                                 if target_top > unit_cum {
                                     lh += target_top - unit_cum;
                                     vpos_gap_before = true;
@@ -4593,6 +4621,35 @@ impl LayoutEngine {
                             }
                         } else {
                             let current_h: f64 = fragment_heights.iter().map(|(h, _, _)| *h).sum();
+                            let hwpx_rowbreak_top_pad = if self.is_hwpx_source.get()
+                                && is_block_rowbreak
+                                && !has_internal_line_reset
+                            {
+                                p.controls
+                                    .iter()
+                                    .filter_map(|ctrl| {
+                                        if let Control::Table(t) = ctrl {
+                                            let top_pad = t
+                                                .cells
+                                                .iter()
+                                                .filter(|cell| cell.row == 0)
+                                                .map(|cell| {
+                                                    let (_, _, pad_top, _) =
+                                                        self.resolve_cell_padding(cell, t);
+                                                    pad_top
+                                                })
+                                                .fold(0.0f64, f64::max);
+                                            Some(top_pad)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .sum::<f64>()
+                            } else {
+                                0.0
+                            };
+                            let top_up = (target_h - current_h).max(0.0);
+                            let target_h = target_h - hwpx_rowbreak_top_pad.min(top_up);
                             if target_h > current_h + 0.5 {
                                 if let Some((first, _, content_h)) = fragment_heights.first_mut() {
                                     *first += target_h - current_h;
@@ -4689,10 +4746,16 @@ impl LayoutEngine {
                 let mut vpos_gap_before = vpos_gap_before_para;
                 if use_vpos_unit_positions {
                     if let Some(seg) = p.line_segs.first() {
-                        let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                        let target_top = normalized_vpos_px(seg.vertical_pos);
                         if target_top > unit_cum {
-                            para_h += target_top - unit_cum;
-                            vpos_gap_before = true;
+                            let delta = target_top - unit_cum;
+                            let suppress_hwpx_mixed_nested_gap = self.is_hwpx_source.get()
+                                && prev_para_has_mixed_nested_table
+                                && delta <= 24.0;
+                            if !suppress_hwpx_mixed_nested_gap {
+                                para_h += delta;
+                                vpos_gap_before = true;
+                            }
                         }
                     }
                 }
@@ -4753,10 +4816,17 @@ impl LayoutEngine {
                     };
                     if use_vpos_unit_positions {
                         if let Some(seg) = p.line_segs.get(li) {
-                            let target_top = hwpunit_to_px(seg.vertical_pos, self.dpi);
+                            let target_top = normalized_vpos_px(seg.vertical_pos);
                             if target_top > unit_cum {
-                                lh += target_top - unit_cum;
-                                vpos_gap_before = true;
+                                let delta = target_top - unit_cum;
+                                let suppress_hwpx_mixed_nested_gap = self.is_hwpx_source.get()
+                                    && li == 0
+                                    && prev_para_has_mixed_nested_table
+                                    && delta <= 24.0;
+                                if !suppress_hwpx_mixed_nested_gap {
+                                    lh += delta;
+                                    vpos_gap_before = true;
+                                }
                             }
                         }
                     }
@@ -5495,19 +5565,39 @@ impl LayoutEngine {
         // Shrinking the clip to the first non-trailing unit keeps the flow
         // advance but clips the nested table content above the cell on page 8.
         let visible: f64 = flow_visible;
+        let first_visible_content_height = visible_units
+            .iter()
+            .find_map(|(height, trailing)| (!*trailing).then_some(*height))
+            .unwrap_or(0.0);
+        let offset_within_start = (offset - first_visible_content_height).max(0.0);
+        let is_offset_continuation = offset_within_start > 0.5;
+        let visible_height = if is_offset_continuation {
+            // Mixed text+nested-table units include a small layout allowance
+            // (`nested_h + 4.0`) so pagination has enough flow room. That
+            // allowance must not expand the visible nested border, otherwise
+            // the continuation box encloses the following host paragraph.
+            (flow_visible + first_visible_content_height - 4.0).max(visible)
+        } else {
+            visible
+        };
         if total <= 0.5 || visible <= 0.5 {
             return None;
         }
         let remaining = (total - offset).max(0.0);
+        let flow_height = if is_offset_continuation {
+            flow_visible + first_visible_content_height
+        } else {
+            flow_visible.min(remaining)
+        };
         Some(NestedTableSplit {
             start_row: 0,
             end_row: 1,
-            visible_height: visible.min(remaining),
-            flow_height: flow_visible.min(remaining),
-            // The selected cell-unit range already represents the continuation
-            // slice; applying the absolute mixed-nested offset again moves that
-            // slice above the cell clip and hides the visible content.
-            offset_within_start: 0.0,
+            visible_height,
+            flow_height,
+            // Keep one visible content unit reserved in bbox/flow so the
+            // border wraps only that tail line and the following paragraph in
+            // the host cell starts below it.
+            offset_within_start,
         })
     }
 
@@ -5560,6 +5650,63 @@ impl LayoutEngine {
         !para.text.trim().is_empty() || !para.controls.is_empty()
     }
 
+    fn mixed_nested_flow_extra_from_cut(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        start_unit: usize,
+        end_unit: usize,
+    ) -> f64 {
+        if self.is_hwpx_source.get() {
+            return 0.0;
+        }
+
+        let units = self.cell_units(cell, table, styles);
+        let lo = start_unit.min(units.len());
+        let hi = end_unit.min(units.len()).max(lo);
+        let mut extra = 0.0;
+
+        for para_idx in 0..cell.paragraphs.len() {
+            let mut offset = 0.0;
+            let mut total = 0.0;
+            let mut visible_units: Vec<(f64, bool)> = Vec::new();
+            for (idx, unit) in units.iter().enumerate() {
+                if unit.para_idx != para_idx || !unit.mixed_nested_fragment {
+                    continue;
+                }
+                total += unit.height;
+                if idx < lo {
+                    offset += unit.height;
+                }
+                if idx >= lo && idx < hi {
+                    visible_units.push((unit.height, unit.mixed_nested_trailing));
+                }
+            }
+
+            if total <= 0.5 || offset <= 0.5 {
+                continue;
+            }
+            while visible_units.last().is_some_and(|(_, trailing)| *trailing) {
+                visible_units.pop();
+            }
+            let flow_visible: f64 = visible_units.iter().map(|(height, _)| *height).sum();
+            if flow_visible <= 0.5 {
+                continue;
+            }
+            let first_visible_content_height = visible_units
+                .iter()
+                .find_map(|(height, trailing)| (!*trailing).then_some(*height))
+                .unwrap_or(0.0);
+            let offset_within_start = (offset - first_visible_content_height).max(0.0);
+            if offset_within_start > 0.5 {
+                extra += first_visible_content_height;
+            }
+        }
+
+        extra
+    }
+
     /// [Task #993 / #1022] 분할 행에서 컷 범위 `[start_cut, end_cut)` 사이의
     /// **행 총 높이**(패딩 포함)를 반환한다. HeightMeasurer 와 정합 — 셀별로
     /// `max(cell.height, content + pad_cell)` 를 산출해 행 max.
@@ -5595,7 +5742,13 @@ impl LayoutEngine {
                 .copied()
                 .unwrap_or(units.len())
                 .clamp(su, units.len());
-            let content: f64 = units[su..eu].iter().map(|u| u.height).sum();
+            let mixed_nested_extra = if is_whole_row {
+                0.0
+            } else {
+                self.mixed_nested_flow_extra_from_cut(cell, table, styles, su, eu)
+            };
+            let content: f64 =
+                units[su..eu].iter().map(|u| u.height).sum::<f64>() + mixed_nested_extra;
             let (_, _, pad_top, pad_bottom) = self.resolve_cell_padding(cell, table);
             let pad_cell = pad_top + pad_bottom;
             let cell_h_px = if cell.height < 0x8000_0000 {

@@ -8478,6 +8478,7 @@ impl TypesetEngine {
             allow_vpos_rewind: false,
             allow_start_height_backtrack: false,
             suppress_large_forward_jump: false,
+            suppress_hwpx_stale_forward: st.is_hwpx_source,
             endnote_between_notes_hu: 0,
             prev_item_content_bottom_y: None,
             last_compacted_endnote_title_gap: false,
@@ -10818,7 +10819,7 @@ impl TypesetEngine {
                 }
             };
             let page_avail = if is_continuation {
-                base_available
+                table_available
             } else {
                 (table_available
                     - st.current_height

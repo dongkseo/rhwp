@@ -842,6 +842,24 @@ impl LayoutEngine {
 
             let mut para_y = text_y_start;
             let mut has_preceding_text = false;
+            let preserve_linear_single_cell_vpos = cut_units.is_some_and(|(su, _)| su == 0)
+                && matches!(
+                    table.page_break,
+                    crate::model::table::TablePageBreak::RowBreak
+                )
+                && !table.common.treat_as_char
+                && table.row_count == 1
+                && table.col_count == 1
+                && (table.common.vertical_offset as i32) == 0;
+            let vpos_origin = if preserve_linear_single_cell_vpos {
+                cell.paragraphs
+                    .first()
+                    .and_then(|p| p.line_segs.first().map(|seg| seg.vertical_pos))
+                    .unwrap_or(0)
+                    .max(0)
+            } else {
+                0
+            };
             for (cp_idx, (composed, para)) in composed_paras
                 .iter()
                 .zip(cell.paragraphs.iter())
@@ -875,6 +893,21 @@ impl LayoutEngine {
                     && !visible_non_inline_controls
                 {
                     continue;
+                }
+
+                if preserve_linear_single_cell_vpos {
+                    let target_seg = para
+                        .line_segs
+                        .get(start_line)
+                        .or_else(|| para.line_segs.first());
+                    if let Some(seg) = target_seg {
+                        let target_top =
+                            hwpunit_to_px((seg.vertical_pos - vpos_origin).max(0), self.dpi);
+                        let current_top = (para_y - text_y_start).max(0.0);
+                        if target_top > current_top {
+                            para_y += target_top - current_top;
+                        }
+                    }
                 }
 
                 let cell_context = CellContext {
@@ -1214,6 +1247,21 @@ impl LayoutEngine {
                                         shape_for_layout.common_mut().horizontal_offset = 0;
                                         shape_for_layout.common_mut().horz_align =
                                             crate::model::shape::HorzAlign::Center;
+                                        if start_line >= end_line
+                                            && matches!(
+                                                shape.common().text_wrap,
+                                                crate::model::shape::TextWrap::Square
+                                                    | crate::model::shape::TextWrap::Tight
+                                                    | crate::model::shape::TextWrap::Through
+                                            )
+                                            && matches!(
+                                                shape.common().vert_rel_to,
+                                                crate::model::shape::VertRelTo::Para
+                                            )
+                                            && (shape.common().vertical_offset as i32) > 0
+                                        {
+                                            shape_for_layout.common_mut().vertical_offset = 0;
+                                        }
                                     }
                                     self.layout_cell_shape(
                                         tree,

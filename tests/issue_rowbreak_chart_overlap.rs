@@ -87,24 +87,6 @@ fn max_text_line_bottom(root: &RenderNode) -> Option<f64> {
         })
 }
 
-fn text_line_vertical_extent(root: &RenderNode) -> Option<(f64, f64)> {
-    let own = if matches!(root.node_type, RenderNodeType::TextLine(_)) {
-        Some((root.bbox.y, root.bbox.y + root.bbox.height))
-    } else {
-        None
-    };
-
-    root.children
-        .iter()
-        .filter_map(text_line_vertical_extent)
-        .fold(own, |acc, (top, bottom)| {
-            Some(match acc {
-                Some((cur_top, cur_bottom)) => (cur_top.min(top), cur_bottom.max(bottom)),
-                None => (top, bottom),
-            })
-        })
-}
-
 fn collect_rectangles_with_text<'a>(root: &'a RenderNode, out: &mut Vec<&'a RenderNode>) {
     if matches!(root.node_type, RenderNodeType::Rectangle(_))
         && max_text_line_bottom(root).is_some()
@@ -195,6 +177,39 @@ fn rowbreak_page13_textbox_shapes_cover_their_text() {
             "textbox-backed rectangle clips text: rect=[{:.2}..{:.2}], text_bottom={text_bottom:.2}",
             rect.bbox.y,
             rect_bottom
+        );
+    }
+}
+
+#[test]
+fn rowbreak_page13_preserves_linear_empty_spacer_in_excerpt_table() {
+    for sample in [SAMPLE, HWP_SAMPLE] {
+        let doc = load_doc(sample);
+        let tree = doc
+            .build_page_render_tree(12)
+            .unwrap_or_else(|e| panic!("render {sample} page 13: {e}"));
+        let table = find_table_node(&tree.root, 13, 0).expect("page 13 excerpt table pi=13 ci=0");
+
+        let mut rectangles = Vec::new();
+        collect_rectangles_with_text(table, &mut rectangles);
+        let mut wide_text_rectangles: Vec<_> = rectangles
+            .into_iter()
+            .filter(|node| node.bbox.width > 300.0 && node.bbox.height > 20.0)
+            .collect();
+        wide_text_rectangles.sort_by(|a, b| a.bbox.y.partial_cmp(&b.bbox.y).unwrap());
+        let first_textbox = wide_text_rectangles
+            .first()
+            .unwrap_or_else(|| panic!("{sample} page 13 should render the first blue textbox"));
+        let table_bottom = table.bbox.y + table.bbox.height;
+
+        assert!(
+            first_textbox.bbox.y >= 572.0,
+            "{sample} page 13 collapses the caption spacer before the first textbox: first_textbox_y={:.2}",
+            first_textbox.bbox.y
+        );
+        assert!(
+            table_bottom >= 995.0,
+            "{sample} page 13 excerpt table is too short after spacer collapse: table_bottom={table_bottom:.2}"
         );
     }
 }
@@ -297,6 +312,28 @@ fn rowbreak_page17_keeps_final_database_table_tail_like_hancom_pdf() {
     );
 }
 
+#[test]
+fn rowbreak_page17_keeps_database_separation_line_before_example_box() {
+    for sample in [SAMPLE, HWP_SAMPLE] {
+        let doc = load_doc(sample);
+        let page17 = doc
+            .build_page_render_tree(16)
+            .unwrap_or_else(|e| panic!("render {sample} page 17: {e}"));
+        let database_line = text_line_bbox_containing(&page17.root, "별도")
+            .unwrap_or_else(|| panic!("{sample} page 17 should render the separate-table line"));
+        let example_caption = text_line_bbox_containing(&page17.root, "예시")
+            .unwrap_or_else(|| panic!("{sample} page 17 should render the example caption"));
+        let database_line_bottom = database_line.y + database_line.height;
+
+        assert!(
+            example_caption.y >= database_line_bottom - 0.5,
+            "{sample} page 17 overlaps the separate-table line with the example caption: line=[{:.2}..{database_line_bottom:.2}], caption_y={:.2}",
+            database_line.y,
+            example_caption.y
+        );
+    }
+}
+
 fn collect_table_cells<'a>(
     root: &'a RenderNode,
     target_pi: usize,
@@ -356,6 +393,21 @@ fn text_line_bbox_containing(root: &RenderNode, needle: &str) -> Option<Bounding
     root.children
         .iter()
         .find_map(|child| text_line_bbox_containing(child, needle))
+}
+
+fn first_nested_table_bbox(root: &RenderNode) -> Option<BoundingBox> {
+    for child in &root.children {
+        if let RenderNodeType::Table(t) = &child.node_type {
+            if t.para_index.is_none() && t.control_index.is_none() {
+                return Some(child.bbox);
+            }
+        }
+        if let Some(bbox) = first_nested_table_bbox(child) {
+            return Some(bbox);
+        }
+    }
+
+    None
 }
 
 #[test]
@@ -427,17 +479,139 @@ fn rowbreak_page7_nested_table_paragraph_keeps_host_text() {
         .iter()
         .find(|cell| matches!(&cell.node_type, RenderNodeType::TableCell(c) if c.row == 3 && c.col == 1))
         .expect("page 8 continued row detail cell should render");
-    let (continued_text_top, continued_text_bottom) = text_line_vertical_extent(page8_top_detail)
-        .expect("page 8 continued row should contain visible text after the dotted fragment");
+    let following = text_line_bbox_containing(page8_top_detail, "과학기술정보통신부장관")
+        .expect("page 8 continued row should render the paragraph after the dotted fragment");
     assert!(
-        continued_text_top >= page8_top_detail.bbox.y - 0.5,
-        "page 8 continued text is clipped above the detail cell: text_top={continued_text_top:.2}, cell_top={:.2}",
+        following.y >= page8_top_detail.bbox.y - 0.5,
+        "page 8 continued paragraph is clipped above the detail cell: text_top={:.2}, cell_top={:.2}",
+        following.y,
         page8_top_detail.bbox.y
     );
     let page8_cell_bottom = page8_top_detail.bbox.y + page8_top_detail.bbox.height;
+    let following_bottom = following.y + following.height;
     assert!(
-        continued_text_bottom <= page8_cell_bottom + 0.5,
-        "page 8 continued text is clipped below the detail cell: text_bottom={continued_text_bottom:.2}, cell_bottom={page8_cell_bottom:.2}"
+        following_bottom <= page8_cell_bottom + 0.5,
+        "page 8 continued paragraph is clipped below the detail cell: text_bottom={following_bottom:.2}, cell_bottom={page8_cell_bottom:.2}"
+    );
+}
+
+#[test]
+fn rowbreak_hwpx_page1_ignores_stale_initial_vpos() {
+    let doc = load_doc(SAMPLE);
+    let page1 = doc
+        .build_page_render_tree(0)
+        .unwrap_or_else(|e| panic!("render HWPX page 1: {e}"));
+    let body = find_body_node(&page1.root).expect("HWPX page 1 body should render");
+    let definition = text_line_bbox_containing(&page1.root, "(정의)")
+        .expect("HWPX page 1 definition paragraph should render");
+
+    assert!(
+        definition.y <= body.bbox.y + 90.0,
+        "HWPX page 1 stale vpos pushes the first content down: body_top={:.2}, definition_y={:.2}",
+        body.bbox.y,
+        definition.y
+    );
+}
+
+#[test]
+fn rowbreak_hwpx_page5_table_split_keeps_page6_notes_off_page5() {
+    let doc = load_doc(SAMPLE);
+    let page4 = doc
+        .build_page_render_tree(3)
+        .unwrap_or_else(|e| panic!("render HWPX page 4: {e}"));
+    let page5 = doc
+        .build_page_render_tree(4)
+        .unwrap_or_else(|e| panic!("render HWPX page 5: {e}"));
+    let page6 = doc
+        .build_page_render_tree(5)
+        .unwrap_or_else(|e| panic!("render HWPX page 6: {e}"));
+
+    assert!(
+        !text_line_exists(&page4.root, "테스트키 배포"),
+        "HWPX page 4 should not pull the next-page table header/row forward"
+    );
+    assert!(
+        text_line_exists(&page5.root, "테스트키 배포"),
+        "HWPX page 5 should start the continued table at 연계 개발 및 테스트"
+    );
+    assert!(
+        !text_line_exists(&page5.root, "가용성, 응답성"),
+        "HWPX page 5 should not pull the page 6 quality notes forward"
+    );
+    assert!(
+        text_line_exists(&page6.root, "가용성, 응답성"),
+        "HWPX page 6 should start with the quality/performance note"
+    );
+}
+
+#[test]
+fn rowbreak_hwpx_page8_keeps_continued_nested_reference_line() {
+    let doc = load_doc(SAMPLE);
+    let page8 = doc
+        .build_page_render_tree(7)
+        .unwrap_or_else(|e| panic!("render HWPX page 8: {e}"));
+
+    let cells = collect_table_cells(&page8.root, 21, 0);
+    let row26_detail = cells
+        .iter()
+        .find(|cell| matches!(&cell.node_type, RenderNodeType::TableCell(c) if c.row == 3 && c.col == 1))
+        .expect("HWPX page 8 row 26 detail cell should render");
+    let line = text_line_bbox_containing(row26_detail, "매개하는 자를")
+        .expect("HWPX page 8 should keep the first continued nested reference line");
+    let following = text_line_bbox_containing(row26_detail, "과학기술정보통신부장관")
+        .expect("HWPX page 8 should render the paragraph after the continued nested reference");
+    let nested_table =
+        first_nested_table_bbox(row26_detail).expect("HWPX page 8 continued nested table bbox");
+    let cell_bottom = row26_detail.bbox.y + row26_detail.bbox.height;
+    let line_bottom = line.y + line.height;
+    let nested_bottom = nested_table.y + nested_table.height;
+
+    assert!(
+        line.y >= row26_detail.bbox.y - 0.5,
+        "HWPX page 8 continued line is clipped above the cell: line_top={:.2}, cell_top={:.2}",
+        line.y,
+        row26_detail.bbox.y
+    );
+    assert!(
+        line_bottom <= cell_bottom + 0.5,
+        "HWPX page 8 continued line is clipped below the cell: line_bottom={:.2}, cell_bottom={cell_bottom:.2}",
+        line_bottom
+    );
+    assert!(
+        following.y >= line_bottom - 0.5,
+        "HWPX page 8 continued line overlaps the following paragraph: line_bottom={line_bottom:.2}, following_top={:.2}",
+        following.y
+    );
+    assert!(
+        nested_bottom <= following.y + 0.5,
+        "HWPX page 8 continued nested table border includes the following paragraph: nested_bottom={nested_bottom:.2}, following_top={:.2}",
+        following.y
+    );
+}
+
+#[test]
+fn rowbreak_hwpx_page10_keeps_csap_table_near_title() {
+    let doc = load_doc(SAMPLE);
+    let page10 = doc
+        .build_page_render_tree(9)
+        .unwrap_or_else(|e| panic!("render HWPX page 10: {e}"));
+    let body = find_body_node(&page10.root).expect("HWPX page 10 body should render");
+    let title = text_line_bbox_containing(&page10.root, "서비스 보안인증제도")
+        .expect("HWPX page 10 title should render");
+    let table = find_table_bbox(&page10.root, 1, 0).expect("HWPX page 10 CSAP table should render");
+
+    assert!(
+        table.y <= body.bbox.y + 120.0,
+        "HWPX page 10 stale vpos pushes the CSAP table to the page bottom: body_top={:.2}, table_y={:.2}",
+        body.bbox.y,
+        table.y
+    );
+    assert!(
+        table.y >= title.y + title.height - 0.5,
+        "HWPX page 10 CSAP table overlaps the title: title=[{:.2}..{:.2}], table_y={:.2}",
+        title.y,
+        title.y + title.height,
+        table.y
     );
 }
 
@@ -455,6 +629,68 @@ fn rowbreak_page12_reference_text_stays_inside_body() {
     assert!(
         text_bottom <= body_bottom + 0.5,
         "page 12 text is clipped by the Body clip: text_bottom={text_bottom:.2}, body_bottom={body_bottom:.2}"
+    );
+}
+
+#[test]
+fn rowbreak_hwp_page8_keeps_continued_nested_reference_line() {
+    let doc = load_doc(HWP_SAMPLE);
+    let page8 = doc
+        .build_page_render_tree(7)
+        .unwrap_or_else(|e| panic!("render HWP page 8: {e}"));
+
+    let cells = collect_table_cells(&page8.root, 21, 0);
+    let row26_detail = cells
+        .iter()
+        .find(|cell| matches!(&cell.node_type, RenderNodeType::TableCell(c) if c.row == 3 && c.col == 1))
+        .expect("HWP page 8 row 26 detail cell should render");
+    let line = text_line_bbox_containing(row26_detail, "매개하는 자를")
+        .expect("HWP page 8 should keep the first continued nested reference line");
+    let following = text_line_bbox_containing(row26_detail, "과학기술정보통신부장관")
+        .expect("HWP page 8 should render the paragraph after the continued nested reference");
+    let nested_table =
+        first_nested_table_bbox(row26_detail).expect("HWP page 8 continued nested table bbox");
+    let cell_bottom = row26_detail.bbox.y + row26_detail.bbox.height;
+    let line_bottom = line.y + line.height;
+    let nested_bottom = nested_table.y + nested_table.height;
+
+    assert!(
+        line.y >= row26_detail.bbox.y - 0.5,
+        "HWP page 8 continued line is clipped above the cell: line_top={:.2}, cell_top={:.2}",
+        line.y,
+        row26_detail.bbox.y
+    );
+    assert!(
+        line_bottom <= cell_bottom + 0.5,
+        "HWP page 8 continued line is clipped below the cell: line_bottom={:.2}, cell_bottom={cell_bottom:.2}",
+        line_bottom
+    );
+    assert!(
+        following.y >= line_bottom - 0.5,
+        "HWP page 8 continued line overlaps the following paragraph: line_bottom={line_bottom:.2}, following_top={:.2}",
+        following.y
+    );
+    assert!(
+        nested_bottom <= following.y + 0.5,
+        "HWP page 8 continued nested table border includes the following paragraph: nested_bottom={nested_bottom:.2}, following_top={:.2}",
+        following.y
+    );
+}
+
+#[test]
+fn rowbreak_hwp_page12_reference_text_stays_inside_body() {
+    let doc = load_doc(HWP_SAMPLE);
+    let page12 = doc
+        .build_page_render_tree(11)
+        .unwrap_or_else(|e| panic!("render HWP page 12: {e}"));
+    let body = find_body_node(&page12.root).expect("HWP page 12 body should render");
+    let body_bottom = body.bbox.y + body.bbox.height;
+    let text_bottom =
+        max_text_line_bottom(body).expect("HWP page 12 body should contain visible text lines");
+
+    assert!(
+        text_bottom <= body_bottom + 0.5,
+        "HWP page 12 text is clipped by the Body clip: text_bottom={text_bottom:.2}, body_bottom={body_bottom:.2}"
     );
 }
 
