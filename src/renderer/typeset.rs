@@ -8478,6 +8478,7 @@ impl TypesetEngine {
             allow_vpos_rewind: false,
             allow_start_height_backtrack: false,
             suppress_large_forward_jump: false,
+            suppress_hwpx_stale_forward: st.is_hwpx_source,
             endnote_between_notes_hu: 0,
             prev_item_content_bottom_y: None,
             last_compacted_endnote_title_gap: false,
@@ -9219,6 +9220,39 @@ impl TypesetEngine {
                 end_line = cursor_line + 1;
             }
 
+            let next_para_is_rowbreak_anchor_table = paragraphs
+                .get(para_idx + 1)
+                .map(|next_para| {
+                    next_para.controls.iter().any(|ctrl| {
+                        if let Control::Table(table) = ctrl {
+                            !table.common.treat_as_char
+                                && matches!(
+                                    table.common.text_wrap,
+                                    crate::model::shape::TextWrap::TopAndBottom
+                                )
+                                && matches!(
+                                    table.common.vert_rel_to,
+                                    crate::model::shape::VertRelTo::Para
+                                )
+                                && matches!(
+                                    table.page_break,
+                                    crate::model::table::TablePageBreak::RowBreak
+                                )
+                        } else {
+                            false
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            if cursor_line == 0
+                && end_line > cursor_line + 1
+                && end_line < line_count
+                && next_para_is_rowbreak_anchor_table
+            {
+                end_line -= 1;
+                cumulative = fmt.line_advances_sum(cursor_line..end_line);
+            }
+
             let part_line_height = fmt.line_advances_sum(cursor_line..end_line);
             let part_sp_after = if end_line >= line_count {
                 fmt.spacing_after
@@ -9507,7 +9541,6 @@ impl TypesetEngine {
             .map(|a| a.width)
             .unwrap_or(st.layout.body_area.width);
         let fmt = self.format_paragraph(para, composed, styles, Some(host_col_w));
-
         // TAC 표 카운트 및 플러시 판단
         let tac_count = para
             .controls
@@ -9579,8 +9612,20 @@ impl TypesetEngine {
                 _ => 0,
             }
         };
+        let table_flow_tiebreak = |ctrl: &Control| -> u8 {
+            match ctrl {
+                Control::Table(t) if !self.is_effective_tac_table(para, t, &fmt) => 0,
+                Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => 1,
+                _ => 1,
+            }
+        };
         let mut ctrl_order: Vec<usize> = (0..para.controls.len()).collect();
-        ctrl_order.sort_by_key(|&i| float_table_voffset(&para.controls[i]));
+        ctrl_order.sort_by_key(|&i| {
+            (
+                float_table_voffset(&para.controls[i]),
+                table_flow_tiebreak(&para.controls[i]),
+            )
+        });
         // is_first_table/is_last_table 는 배열순서가 아닌 "놓이는 순서(ctrl_order)"
         // 기준으로 잡아, pre/post 텍스트와 spacing 이 실제 배치 첫/마지막 표에 붙도록 한다.
         let first_placed_table = ctrl_order
@@ -10415,6 +10460,38 @@ impl TypesetEngine {
         }
 
         // fits: 전체가 현재 페이지에 들어가는가?
+        let is_rowbreak_para_topbottom_block = !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            && matches!(table.common.vert_rel_to, VertRelTo::Para)
+            && matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+            && table.cells.iter().any(|cell| {
+                cell.paragraphs.iter().any(|p| {
+                    !p.text.trim().is_empty()
+                        && p.controls
+                            .iter()
+                            .any(|c| matches!(c, crate::model::control::Control::Table(_)))
+                })
+            });
+        if is_rowbreak_para_topbottom_block {
+            if let Some(first_seg) = para.line_segs.first() {
+                let target_y =
+                    crate::renderer::hwpunit_to_px(first_seg.vertical_pos as i32, self.dpi);
+                let previous_item_is_continued_paragraph = matches!(
+                    st.current_items.last(),
+                    Some(PageItem::PartialParagraph { start_line, .. }) if *start_line > 0
+                );
+                if !previous_item_is_continued_paragraph
+                    && target_y > st.current_height
+                    && target_y < available
+                {
+                    st.current_height = target_y;
+                }
+            }
+        }
+
         if st.current_height + table_total <= available {
             self.place_table_with_text(
                 st,
@@ -10483,7 +10560,10 @@ impl TypesetEngine {
         let cs = mt.cell_spacing;
         let can_intra_split = !mt.cells.is_empty();
         let base_available = st.base_available_height();
-        let table_available = available; // 각주/존 오프셋 차감된 가용 높이
+        // Partial table borders are rendered against the visible body area. The paginator-level
+        // bottom tolerance is useful for text fit heuristics, but if row cuts spend it here the
+        // table fragment can be painted into the footer/body edge and get clipped.
+        let table_available = (available - st.layout.pagination_tolerance_px).max(0.0);
 
         // [Task #993] advance_row_cut 호출용 LayoutEngine — 컷 측정은 dpi 와
         // 셀 패딩/중첩 표 높이 계산에만 의존하므로 ad hoc 인스턴스로 충분하다.
@@ -10739,7 +10819,7 @@ impl TypesetEngine {
                 }
             };
             let page_avail = if is_continuation {
-                base_available
+                table_available
             } else {
                 (table_available
                     - st.current_height

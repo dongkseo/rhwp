@@ -252,7 +252,11 @@ impl LayoutEngine {
                     // (resolve_row_heights) 유지. 단 RowBreak 의 큰 rowspan 블록 내부
                     // 행을 typeset 이 per-row cut 으로 분할한 split boundary 에서는
                     // 렌더러도 같은 cut 높이를 적용해야 한다.
-                    if rowspan_touched && su.is_empty() && eu.is_empty() {
+                    let has_single_row_cells = table
+                        .cells
+                        .iter()
+                        .any(|c| c.row as usize == r && c.row_span == 1);
+                    if rowspan_touched && su.is_empty() && eu.is_empty() && !has_single_row_cells {
                         continue;
                     }
                     let h = self.row_cut_content_height(table, r, su, eu, styles);
@@ -678,6 +682,21 @@ impl LayoutEngine {
                         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
                         total += spacing_after;
                     }
+                    if start < end {
+                        total += para
+                            .controls
+                            .iter()
+                            .map(|ctrl| match ctrl {
+                                Control::Picture(pic) => {
+                                    self.cell_non_inline_control_flow_height(&pic.common)
+                                }
+                                Control::Shape(shape) => {
+                                    self.cell_non_inline_control_flow_height(shape.common())
+                                }
+                                _ => 0.0,
+                            })
+                            .sum::<f64>();
+                    }
                 }
                 total
             } else {
@@ -688,6 +707,7 @@ impl LayoutEngine {
                     .iter()
                     .any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))));
                 if has_nested {
+                    let unit_content_h = self.cell_units_content_height(cell, table, styles);
                     let last_seg_end: i32 = cell
                         .paragraphs
                         .iter()
@@ -706,6 +726,7 @@ impl LayoutEngine {
                     vpos_h
                         .max(line_h)
                         .max(nested_bottom)
+                        .max(unit_content_h)
                         .max(self.calc_non_inline_controls_flow_height(&cell.paragraphs))
                         .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs))
                 } else {
@@ -821,6 +842,24 @@ impl LayoutEngine {
 
             let mut para_y = text_y_start;
             let mut has_preceding_text = false;
+            let preserve_linear_single_cell_vpos = cut_units.is_some_and(|(su, _)| su == 0)
+                && matches!(
+                    table.page_break,
+                    crate::model::table::TablePageBreak::RowBreak
+                )
+                && !table.common.treat_as_char
+                && table.row_count == 1
+                && table.col_count == 1
+                && (table.common.vertical_offset as i32) == 0;
+            let vpos_origin = if preserve_linear_single_cell_vpos {
+                cell.paragraphs
+                    .first()
+                    .and_then(|p| p.line_segs.first().map(|seg| seg.vertical_pos))
+                    .unwrap_or(0)
+                    .max(0)
+            } else {
+                0
+            };
             for (cp_idx, (composed, para)) in composed_paras
                 .iter()
                 .zip(cell.paragraphs.iter())
@@ -836,13 +875,39 @@ impl LayoutEngine {
                 } else {
                     (0, composed.lines.len())
                 };
+                let mixed_nested_split = cut_units.and_then(|(su, eu)| {
+                    self.mixed_nested_split_from_cut(cell, table, styles, su, eu, cp_idx)
+                });
+                let visible_non_inline_controls = cut_units.is_some_and(|(su, eu)| {
+                    self.cell_cut_contains_non_inline_control_units(
+                        cell, table, styles, su, eu, cp_idx,
+                    )
+                });
 
                 // [Task #993] 컷 범위 밖 문단은 이전/다음 페이지 소속 — 이 페이지에서
                 // 스킵한다. cell_line_ranges_from_cut 이 가시 유닛만 범위에 넣으므로
                 // (중첩 표/빈 문단 포함) start_line>=end_line 이면 비가시가 확정이다.
                 // content_y_accum 은 가시 콘텐츠만 추적하므로 스킵 시 전진하지 않는다.
-                if start_line >= end_line {
+                if start_line >= end_line
+                    && mixed_nested_split.is_none()
+                    && !visible_non_inline_controls
+                {
                     continue;
+                }
+
+                if preserve_linear_single_cell_vpos {
+                    let target_seg = para
+                        .line_segs
+                        .get(start_line)
+                        .or_else(|| para.line_segs.first());
+                    if let Some(seg) = target_seg {
+                        let target_top =
+                            hwpunit_to_px((seg.vertical_pos - vpos_origin).max(0), self.dpi);
+                        let current_top = (para_y - text_y_start).max(0.0);
+                        if target_top > current_top {
+                            para_y += target_top - current_top;
+                        }
+                    }
                 }
 
                 let cell_context = CellContext {
@@ -880,7 +945,12 @@ impl LayoutEngine {
 
                 // 표 컨트롤이 없는 문단: 텍스트 먼저, 컨트롤 나중 (기존 동작)
                 // 표 컨트롤이 있는 문단: 문단 앞 간격 적용 → 표 먼저 배치 → 텍스트(엔터 등) 나중
-                if !has_table_ctrl {
+                if !has_table_ctrl
+                    || composed
+                        .lines
+                        .iter()
+                        .any(|line| line.runs.iter().any(|run| !run.text.trim().is_empty()))
+                {
                     let is_last_para = cp_idx == last_rendered_para_idx;
                     let numbered_comp = if start_line == 0 {
                         self.apply_paragraph_numbering(
@@ -950,6 +1020,12 @@ impl LayoutEngine {
                     for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
                         match ctrl {
                             Control::Picture(pic) => {
+                                if !pic.common.treat_as_char
+                                    && cut_units.is_some()
+                                    && !visible_non_inline_controls
+                                {
+                                    continue;
+                                }
                                 if pic.common.treat_as_char {
                                     let pic_w = hwpunit_to_px(pic.common.width as i32, self.dpi);
                                     // layout_composed_paragraph에서 텍스트 흐름 안에 렌더링됐는지 확인:
@@ -1109,6 +1185,12 @@ impl LayoutEngine {
                                 has_preceding_text = true;
                             }
                             Control::Shape(shape) => {
+                                if !shape.common().treat_as_char
+                                    && cut_units.is_some()
+                                    && !visible_non_inline_controls
+                                {
+                                    continue;
+                                }
                                 if shape.common().treat_as_char {
                                     // 인라인 도형: 순차 X 위치로 배치
                                     let shape_w =
@@ -1160,10 +1242,31 @@ impl LayoutEngine {
                                         cp_idx,
                                         ctrl_idx,
                                     ));
+                                    let mut shape_for_layout = shape.clone();
+                                    if cut_units.is_some() && visible_non_inline_controls {
+                                        shape_for_layout.common_mut().horizontal_offset = 0;
+                                        shape_for_layout.common_mut().horz_align =
+                                            crate::model::shape::HorzAlign::Center;
+                                        if start_line >= end_line
+                                            && matches!(
+                                                shape.common().text_wrap,
+                                                crate::model::shape::TextWrap::Square
+                                                    | crate::model::shape::TextWrap::Tight
+                                                    | crate::model::shape::TextWrap::Through
+                                            )
+                                            && matches!(
+                                                shape.common().vert_rel_to,
+                                                crate::model::shape::VertRelTo::Para
+                                            )
+                                            && (shape.common().vertical_offset as i32) > 0
+                                        {
+                                            shape_for_layout.common_mut().vertical_offset = 0;
+                                        }
+                                    }
                                     self.layout_cell_shape(
                                         tree,
                                         &mut cell_node,
-                                        shape,
+                                        &shape_for_layout,
                                         &inner_area,
                                         shape_anchor_y,
                                         para_alignment,
@@ -1172,6 +1275,29 @@ impl LayoutEngine {
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
                                     );
+                                    let mut shape_flow_h =
+                                        self.cell_non_inline_control_flow_height(shape.common());
+                                    if shape_flow_h <= 0.0 {
+                                        shape_flow_h =
+                                            if cut_units.is_some() && visible_non_inline_controls {
+                                                hwpunit_to_px(
+                                                    shape.common().height as i32,
+                                                    self.dpi,
+                                                ) + hwpunit_to_px(
+                                                    (shape.common().vertical_offset as i32).max(0),
+                                                    self.dpi,
+                                                ) + hwpunit_to_px(
+                                                    shape.common().margin.top as i32,
+                                                    self.dpi,
+                                                ) + hwpunit_to_px(
+                                                    shape.common().margin.bottom as i32,
+                                                    self.dpi,
+                                                )
+                                            } else {
+                                                0.0
+                                            };
+                                    }
+                                    para_y += shape_flow_h;
                                 }
                             }
                             Control::Equation(eq) => {
@@ -1297,64 +1423,76 @@ impl LayoutEngine {
                                     };
 
                                     // 중첩 표가 가용 공간을 초과하면 NestedTableSplit 적용
-                                    let split_info = if let Some((su, eu)) = nested_cut_range {
-                                        // [Task #1073] 페이지네이션 컷(중첩행 범위)으로 직접
-                                        // NestedTableSplit 구성 — 연속 페이지가 start_row 부터
-                                        // 렌더(available_h 휴리스틱의 row0 재렌더 결함 정정).
-                                        let ncol = nested_table.col_count as usize;
-                                        let nrow = nested_table.row_count as usize;
-                                        let nrow_heights = self.resolve_row_heights(
-                                            nested_table,
-                                            ncol,
-                                            nrow,
-                                            None,
-                                            styles,
-                                        );
-                                        let ncs = hwpunit_to_px(
-                                            nested_table.cell_spacing as i32,
-                                            self.dpi,
-                                        );
-                                        let start_row = su.min(nrow);
-                                        let end_row = eu.min(nrow);
-                                        let mut vis_h = 0.0;
-                                        for r in start_row..end_row {
-                                            vis_h += nrow_heights[r];
-                                            if r + 1 < end_row {
-                                                vis_h += ncs;
+                                    let split_info =
+                                        if let Some(split) = mixed_nested_split.as_ref() {
+                                            Some(NestedTableSplit {
+                                                start_row: split.start_row,
+                                                end_row: split.end_row,
+                                                visible_height: split.visible_height,
+                                                flow_height: split.flow_height,
+                                                offset_within_start: split.offset_within_start,
+                                            })
+                                        } else if let Some((su, eu)) = nested_cut_range {
+                                            // [Task #1073] 페이지네이션 컷(중첩행 범위)으로 직접
+                                            // NestedTableSplit 구성 — 연속 페이지가 start_row 부터
+                                            // 렌더(available_h 휴리스틱의 row0 재렌더 결함 정정).
+                                            let ncol = nested_table.col_count as usize;
+                                            let nrow = nested_table.row_count as usize;
+                                            let nrow_heights = self.resolve_row_heights(
+                                                nested_table,
+                                                ncol,
+                                                nrow,
+                                                None,
+                                                styles,
+                                            );
+                                            let ncs = hwpunit_to_px(
+                                                nested_table.cell_spacing as i32,
+                                                self.dpi,
+                                            );
+                                            let start_row = su.min(nrow);
+                                            let end_row = eu.min(nrow);
+                                            let mut vis_h = 0.0;
+                                            for r in start_row..end_row {
+                                                vis_h += nrow_heights[r];
+                                                if r + 1 < end_row {
+                                                    vis_h += ncs;
+                                                }
                                             }
-                                        }
-                                        Some(NestedTableSplit {
-                                            start_row,
-                                            end_row,
-                                            visible_height: vis_h,
-                                            offset_within_start: 0.0,
-                                        })
-                                    } else if nested_h > available_h + 0.5 {
-                                        let ncol = nested_table.col_count as usize;
-                                        let nrow = nested_table.row_count as usize;
-                                        let nrow_heights = self.resolve_row_heights(
-                                            nested_table,
-                                            ncol,
-                                            nrow,
-                                            None,
-                                            styles,
-                                        );
-                                        let ncell_spacing = hwpunit_to_px(
-                                            nested_table.cell_spacing as i32,
-                                            self.dpi,
-                                        );
-                                        Some(calc_nested_split_rows(
-                                            &nrow_heights,
-                                            ncell_spacing,
-                                            0.0,
-                                            available_h,
-                                        ))
-                                    } else {
-                                        None
-                                    };
+                                            Some(NestedTableSplit {
+                                                start_row,
+                                                end_row,
+                                                visible_height: vis_h,
+                                                flow_height: vis_h,
+                                                offset_within_start: 0.0,
+                                            })
+                                        } else if nested_h > available_h + 0.5 {
+                                            let ncol = nested_table.col_count as usize;
+                                            let nrow = nested_table.row_count as usize;
+                                            let nrow_heights = self.resolve_row_heights(
+                                                nested_table,
+                                                ncol,
+                                                nrow,
+                                                None,
+                                                styles,
+                                            );
+                                            let ncell_spacing = hwpunit_to_px(
+                                                nested_table.cell_spacing as i32,
+                                                self.dpi,
+                                            );
+                                            Some(calc_nested_split_rows(
+                                                &nrow_heights,
+                                                ncell_spacing,
+                                                0.0,
+                                                available_h,
+                                            ))
+                                        } else {
+                                            None
+                                        };
                                     let split_ref = split_info.as_ref().filter(|s| {
                                         s.start_row > 0
                                             || s.end_row < nested_table.row_count as usize
+                                            || s.offset_within_start > 0.5
+                                            || s.visible_height + 0.5 < nested_h
                                     });
 
                                     let nested_ctx = cell_context_opt.as_ref().map(|ctx| {
@@ -1390,7 +1528,11 @@ impl LayoutEngine {
                                         false,
                                         clamp_header_negative_para_offset,
                                     );
-                                    para_y = nested_y + table_h_rendered;
+                                    let visible_table_h = mixed_nested_split
+                                        .as_ref()
+                                        .map(|split| split.flow_height)
+                                        .unwrap_or(table_h_rendered);
+                                    para_y = nested_y + visible_table_h;
                                     has_preceding_text = true;
                                 }
                             }
@@ -1399,7 +1541,7 @@ impl LayoutEngine {
                     }
                 }
 
-                if has_table_ctrl {
+                if has_table_ctrl && mixed_nested_split.is_none() {
                     // LINE_SEG vpos 기반으로 para_y 보정.
                     let is_last_para = cp_idx + 1 == composed_paras.len();
                     if !is_last_para {

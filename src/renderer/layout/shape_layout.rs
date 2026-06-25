@@ -1701,6 +1701,37 @@ impl LayoutEngine {
         }
     }
 
+    fn max_descendant_bottom(node: &RenderNode) -> Option<f64> {
+        node.children.iter().fold(None, |acc, child| {
+            let child_bottom = child.bbox.y + child.bbox.height;
+            let descendant_bottom = Self::max_descendant_bottom(child).unwrap_or(child_bottom);
+            Some(acc.map_or(descendant_bottom, |current: f64| {
+                current.max(descendant_bottom)
+            }))
+        })
+    }
+
+    fn expand_inline_textbox_to_content(
+        shape_node: &mut RenderNode,
+        textbox_node: &mut RenderNode,
+        bottom_padding: f64,
+    ) {
+        let Some(content_bottom) = Self::max_descendant_bottom(textbox_node) else {
+            return;
+        };
+
+        let textbox_bottom = textbox_node.bbox.y + textbox_node.bbox.height;
+        if content_bottom > textbox_bottom {
+            textbox_node.bbox.height = content_bottom - textbox_node.bbox.y;
+        }
+
+        let shape_bottom = shape_node.bbox.y + shape_node.bbox.height;
+        let required_shape_bottom = content_bottom + bottom_padding;
+        if required_shape_bottom > shape_bottom {
+            shape_node.bbox.height = required_shape_bottom - shape_node.bbox.y;
+        }
+    }
+
     /// 도형 내 TextBox 콘텐츠를 레이아웃한다.
     /// parent_cell_path: 상위 글상자/표의 경로 (최상위이면 빈 슬라이스)
     #[allow(clippy::too_many_arguments)]
@@ -1882,6 +1913,13 @@ impl LayoutEngine {
                 }
             }
             if !textbox_node.children.is_empty() {
+                if parent_treat_as_char {
+                    Self::expand_inline_textbox_to_content(
+                        shape_node,
+                        &mut textbox_node,
+                        margin_bottom,
+                    );
+                }
                 shape_node.children.push(textbox_node);
             }
             return;
@@ -1936,6 +1974,13 @@ impl LayoutEngine {
                 parent_cell_path,
             );
             if !textbox_node.children.is_empty() {
+                if parent_treat_as_char {
+                    Self::expand_inline_textbox_to_content(
+                        shape_node,
+                        &mut textbox_node,
+                        margin_bottom,
+                    );
+                }
                 shape_node.children.push(textbox_node);
             }
             return;
@@ -2460,6 +2505,13 @@ impl LayoutEngine {
             }
         }
         if !textbox_node.children.is_empty() {
+            if parent_treat_as_char {
+                Self::expand_inline_textbox_to_content(
+                    shape_node,
+                    &mut textbox_node,
+                    margin_bottom,
+                );
+            }
             shape_node.children.push(textbox_node);
         }
     }

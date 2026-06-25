@@ -3353,6 +3353,7 @@ impl LayoutEngine {
             col_content.endnote_flow && col_content.start_height < -0.5,
             col_content.endnote_flow,
         );
+        hcursor.suppress_hwpx_stale_forward = self.is_hwpx_source.get();
         // [Task #1246] 미주 흐름 컬럼에만 between-notes 마진(HU)을 주입 → HeightCursor 가 새 미주
         // 제목 forward 흐름의 min-gap 보정에 사용. 본문 컬럼은 0 (무영향).
         if col_content.endnote_flow {
@@ -5863,7 +5864,7 @@ impl LayoutEngine {
                         y_offset += para_style.spacing_after;
                     }
                 }
-                // [Task #1147 v2] HWPX 원본의 빈 앵커 TopAndBottom 비-TAC 표는 다음
+                // [Task #1147 v2] 빈 앵커 TopAndBottom 비-TAC 표는 다음
                 // 항목이 일반 문단일 때 host_line_spacing=0 으로 맞춘다. 단, [Task
                 // #1133] 다음 항목도 빈 앵커 TopAndBottom 표이면 해당 line_spacing 이
                 // 표-표 사이 간격이므로 HWP처럼 보존한다.
@@ -5871,9 +5872,8 @@ impl LayoutEngine {
                     .get(para_index + 1)
                     .map(para_is_empty_topbottom_table_anchor)
                     .unwrap_or(false);
-                let suppress_empty_anchor_spacing = self.is_hwpx_source.get()
-                    && is_current_empty_para_float
-                    && !next_is_empty_topbottom_table_anchor;
+                let suppress_empty_anchor_spacing =
+                    is_current_empty_para_float && !next_is_empty_topbottom_table_anchor;
                 if let Some(seg) = para.line_segs.last() {
                     let gap = if suppress_empty_anchor_spacing {
                         0
@@ -5894,7 +5894,16 @@ impl LayoutEngine {
                 let reserved_height = (y_offset - lane_top).max(0.0);
                 let lanes = para_float_lanes.entry(para_index).or_default();
                 lanes.place(x_start, x_end, raw_top, reserved_height);
-                y_offset = global_y_before.max(lanes.max_bottom());
+                let lane_flow_bottom = if is_current_empty_para_float {
+                    // Empty-anchor TopAndBottom tables can encode a visual
+                    // vertical offset separately from the flow height measured
+                    // by pagination. Keep the table painted at lane_top, but
+                    // advance following items by the reserved table height only.
+                    global_y_before + reserved_height
+                } else {
+                    lanes.max_bottom()
+                };
+                y_offset = global_y_before.max(lane_flow_bottom);
             }
             if tac_seg_applied {
                 // [hwpdf cycle#3 — 폴백 한정] control_index 는 컨트롤 배열 인덱스지 줄
