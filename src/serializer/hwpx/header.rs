@@ -79,6 +79,7 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
     write_char_properties(&mut w, &doc.doc_info, ctx)?;
     write_tab_properties(&mut w, &doc.doc_info)?;
     write_numberings(&mut w, &doc.doc_info)?;
+    write_bullets(&mut w, &doc.doc_info)?;
     write_para_properties(&mut w, &doc.doc_info, ctx)?;
     write_styles(&mut w, &doc.doc_info, ctx)?;
     end_tag(&mut w, "hh:refList")?;
@@ -827,6 +828,63 @@ fn write_numbering<W: Write>(
         )?;
     }
     end_tag(w, "hh:numbering")?;
+    Ok(())
+}
+
+// =====================================================================
+// <hh:bullets> — 글머리표 정의
+//
+// 종전 직렬화는 bullets 를 전혀 쓰지 않아 라운드트립에서 글머리표 정의(❏/※/❍ 등)가
+// 소실되고, 글머리표 문단의 마커 글리프가 렌더에서 사라졌다. 파서(parse_bullet_hwpx)는
+// `char`/`useImage` 만 읽으므로 그 둘 + paraHead 뼈대를 방출하면 round-trip 무손실이다.
+// =====================================================================
+fn write_bullets<W: Write>(w: &mut Writer<W>, doc_info: &DocInfo) -> Result<(), SerializeError> {
+    if doc_info.bullets.is_empty() {
+        return Ok(());
+    }
+    start_tag_attrs(
+        w,
+        "hh:bullets",
+        &[("itemCnt", &doc_info.bullets.len().to_string())],
+    )?;
+    for (idx, b) in doc_info.bullets.iter().enumerate() {
+        write_bullet(w, idx as u16, b)?;
+    }
+    end_tag(w, "hh:bullets")?;
+    Ok(())
+}
+
+fn write_bullet<W: Write>(
+    w: &mut Writer<W>,
+    id: u16,
+    b: &crate::model::style::Bullet,
+) -> Result<(), SerializeError> {
+    let id_s = (id + 1).to_string(); // 관찰: 1-based, ParaShape.numbering_id 참조와 정합
+    let char_s = b.bullet_char.to_string();
+    let use_image = if b.image_bullet > 0 { "1" } else { "0" };
+    start_tag_attrs(
+        w,
+        "hh:bullet",
+        &[("id", &id_s), ("char", &char_s), ("useImage", use_image)],
+    )?;
+    // paraHead 뼈대 (파서는 무시하나 OWPML 유효성/한컴 호환 위해 방출).
+    empty_tag(
+        w,
+        "hh:paraHead",
+        &[
+            ("level", "0"),
+            ("align", "LEFT"),
+            ("useInstWidth", "0"),
+            ("autoIndent", "1"),
+            ("widthAdjust", &b.width_adjust.to_string()),
+            ("textOffsetType", "PERCENT"),
+            ("textOffset", "50"),
+            ("numFormat", "DIGIT"),
+            ("charPrIDRef", &u32::MAX.to_string()),
+            ("checkable", "0"),
+        ],
+    )?;
+    end_tag(w, "hh:bullet")?;
     Ok(())
 }
 
