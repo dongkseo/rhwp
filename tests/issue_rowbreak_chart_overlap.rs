@@ -52,6 +52,14 @@ fn find_body_bbox(root: &RenderNode) -> Option<BoundingBox> {
     root.children.iter().find_map(find_body_bbox)
 }
 
+fn find_body_node(root: &RenderNode) -> Option<&RenderNode> {
+    if matches!(root.node_type, RenderNodeType::Body { .. }) {
+        return Some(root);
+    }
+
+    root.children.iter().find_map(find_body_node)
+}
+
 fn find_textrun_bbox_containing(root: &RenderNode, needle: &str) -> Option<BoundingBox> {
     if let RenderNodeType::TextRun(run) = &root.node_type {
         if run.text.contains(needle) {
@@ -76,6 +84,24 @@ fn max_text_line_bottom(root: &RenderNode) -> Option<f64> {
         .filter_map(max_text_line_bottom)
         .fold(own_bottom, |acc, bottom| {
             Some(acc.map_or(bottom, |current| current.max(bottom)))
+        })
+}
+
+fn text_line_vertical_extent(root: &RenderNode) -> Option<(f64, f64)> {
+    let own = if matches!(root.node_type, RenderNodeType::TextLine(_)) {
+        Some((root.bbox.y, root.bbox.y + root.bbox.height))
+    } else {
+        None
+    };
+
+    root.children
+        .iter()
+        .filter_map(text_line_vertical_extent)
+        .fold(own, |acc, (top, bottom)| {
+            Some(match acc {
+                Some((cur_top, cur_bottom)) => (cur_top.min(top), cur_bottom.max(bottom)),
+                None => (top, bottom),
+            })
         })
 }
 
@@ -401,9 +427,34 @@ fn rowbreak_page7_nested_table_paragraph_keeps_host_text() {
         .iter()
         .find(|cell| matches!(&cell.node_type, RenderNodeType::TableCell(c) if c.row == 3 && c.col == 1))
         .expect("page 8 continued row detail cell should render");
+    let (continued_text_top, continued_text_bottom) = text_line_vertical_extent(page8_top_detail)
+        .expect("page 8 continued row should contain visible text after the dotted fragment");
     assert!(
-        max_text_line_bottom(page8_top_detail).is_some(),
-        "page 8 continued row should contain visible text after the dotted fragment"
+        continued_text_top >= page8_top_detail.bbox.y - 0.5,
+        "page 8 continued text is clipped above the detail cell: text_top={continued_text_top:.2}, cell_top={:.2}",
+        page8_top_detail.bbox.y
+    );
+    let page8_cell_bottom = page8_top_detail.bbox.y + page8_top_detail.bbox.height;
+    assert!(
+        continued_text_bottom <= page8_cell_bottom + 0.5,
+        "page 8 continued text is clipped below the detail cell: text_bottom={continued_text_bottom:.2}, cell_bottom={page8_cell_bottom:.2}"
+    );
+}
+
+#[test]
+fn rowbreak_page12_reference_text_stays_inside_body() {
+    let doc = load_doc(SAMPLE);
+    let page12 = doc
+        .build_page_render_tree(11)
+        .unwrap_or_else(|e| panic!("render page 12: {e}"));
+    let body = find_body_node(&page12.root).expect("page 12 body should render");
+    let body_bottom = body.bbox.y + body.bbox.height;
+    let text_bottom =
+        max_text_line_bottom(body).expect("page 12 body should contain visible text lines");
+
+    assert!(
+        text_bottom <= body_bottom + 0.5,
+        "page 12 text is clipped by the Body clip: text_bottom={text_bottom:.2}, body_bottom={body_bottom:.2}"
     );
 }
 

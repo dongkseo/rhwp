@@ -5894,7 +5894,16 @@ impl LayoutEngine {
                 let reserved_height = (y_offset - lane_top).max(0.0);
                 let lanes = para_float_lanes.entry(para_index).or_default();
                 lanes.place(x_start, x_end, raw_top, reserved_height);
-                y_offset = global_y_before.max(lanes.max_bottom());
+                let lane_flow_bottom = if self.is_hwpx_source.get() && is_current_empty_para_float {
+                    // HWPX empty-anchor TopAndBottom tables encode a visual
+                    // vertical offset separately from the flow height measured
+                    // by pagination. Keep the table painted at lane_top, but
+                    // advance following items by the reserved table height only.
+                    global_y_before + reserved_height
+                } else {
+                    lanes.max_bottom()
+                };
+                y_offset = global_y_before.max(lane_flow_bottom);
             }
             if tac_seg_applied {
                 // [hwpdf cycle#3 — 폴백 한정] control_index 는 컨트롤 배열 인덱스지 줄

@@ -5471,18 +5471,9 @@ impl LayoutEngine {
         let hi = end_unit.min(units.len()).max(lo);
         let mut total = 0.0;
         let mut offset = 0.0;
-        let mut visible_units: Vec<(f64, bool, f64)> = Vec::new();
-        let mut has_following_visible_para = false;
+        let mut visible_units: Vec<(f64, bool)> = Vec::new();
         for (idx, unit) in units.iter().enumerate() {
             if unit.para_idx != para_idx || !unit.mixed_nested_fragment {
-                if idx >= lo
-                    && idx < hi
-                    && unit.para_idx > para_idx
-                    && unit.vis_start < unit.vis_end
-                    && !unit.empty_spacer
-                {
-                    has_following_visible_para = true;
-                }
                 continue;
             }
             total += unit.height;
@@ -5490,55 +5481,33 @@ impl LayoutEngine {
                 offset += unit.height;
             }
             if idx >= lo && idx < hi {
-                visible_units.push((
-                    unit.height,
-                    unit.mixed_nested_trailing,
-                    unit.mixed_nested_content_height,
-                ));
+                visible_units.push((unit.height, unit.mixed_nested_trailing));
             }
         }
         if offset > 0.5 {
-            while visible_units
-                .last()
-                .is_some_and(|(_, trailing, _)| *trailing)
-            {
+            while visible_units.last().is_some_and(|(_, trailing)| *trailing) {
                 visible_units.pop();
             }
         }
-        let flow_visible: f64 = visible_units.iter().map(|(h, _, _)| *h).sum();
-        let compact_tail_unit = offset > 0.5 && has_following_visible_para;
-        let visible: f64 = if compact_tail_unit {
-            visible_units
-                .iter()
-                .find_map(|(h, trailing, _)| (!*trailing).then_some(*h))
-                .unwrap_or(0.0)
-        } else {
-            flow_visible
-        };
+        let flow_visible: f64 = visible_units.iter().map(|(h, _)| *h).sum();
+        // Continuation pages still need the whole visible slice clipped in, even
+        // when the same host cell has following paragraphs in the current cut.
+        // Shrinking the clip to the first non-trailing unit keeps the flow
+        // advance but clips the nested table content above the cell on page 8.
+        let visible: f64 = flow_visible;
         if total <= 0.5 || visible <= 0.5 {
             return None;
         }
         let remaining = (total - offset).max(0.0);
-        let visual_offset_adjust = if compact_tail_unit {
-            visible_units
-                .iter()
-                .find_map(|(h, trailing, content_h)| {
-                    if !*trailing && *content_h > 0.5 && *h > *content_h {
-                        Some((*h - *content_h) / 2.0)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
         Some(NestedTableSplit {
             start_row: 0,
             end_row: 1,
             visible_height: visible.min(remaining),
             flow_height: flow_visible.min(remaining),
-            offset_within_start: offset + visual_offset_adjust,
+            // The selected cell-unit range already represents the continuation
+            // slice; applying the absolute mixed-nested offset again moves that
+            // slice above the cell clip and hides the visible content.
+            offset_within_start: 0.0,
         })
     }
 
