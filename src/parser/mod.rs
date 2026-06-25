@@ -322,10 +322,16 @@ fn parse_hwp_with_cfb(
                 // [Task #1037 → #1042 정정] ParaShape unit semantic normalize.
                 // HWP3 vs HWP5 variant 비교 결과 (diag_1042_hwp3_vs_hwp5_paragraph):
                 //   - margin_left/right: HWP5 raw = HWP3 raw 동일 → /2 적용은 wrong
-                //   - indent / spacing_before / spacing_after: HWP5 raw = HWP3 × 2 → /2 정합
+                //   - spacing_before / spacing_after: HWP5 raw = HWP3 × 2 → /2 정합
                 // margin_left/right /2 제거 — HWP3 정답 paragraph 분포 정합.
+                //
+                // [Task #1472] indent /2 제거 — IR 은 정답(full HWPUNIT, HWPX 일치)로 둔다.
+                //   종전 indent /2 는 본문 내어쓰기를 절반으로 훼손(한컴/HWPX 와 어긋남)하면서,
+                //   미주 TAC 수식 흐름의 available_width 계산이 indent_scale=2.0 으로 이를 되돌려
+                //   "수식 effective indent = (indent/2)×2 = full" 로 페이지네이션을 한컴과 정합시켰다.
+                //   재설계: IR indent 는 full 로 두고, 미주 수식 흐름의 indent_scale 을 변환본에서만
+                //   절반(2.0→1.0)으로 낮춰 effective indent(=full) 를 불변 유지한다(아래 렌더러).
                 for ps in &mut doc.doc_info.para_shapes {
-                    ps.indent /= 2;
                     ps.spacing_before /= 2;
                     ps.spacing_after /= 2;
                 }

@@ -439,12 +439,14 @@ impl HeightMeasurer {
                     let margin_l = para_style.map(|s| s.margin_left).unwrap_or(0.0);
                     let margin_r = para_style.map(|s| s.margin_right).unwrap_or(0.0);
                     let indent = para_style.map(|s| s.indent).unwrap_or(0.0);
+                    // [Task #1472] 변환본은 effective indent 불변 위해 scale 절반(2.0→1.0).
+                    let eq_scale = 2.0 * if self.is_hwp3_variant { 0.5 } else { 1.0 };
                     let effective_margin_l = crate::renderer::equation_tac_flow::
                         paragraph_effective_margin_left_with_indent_scale(
                             margin_l,
                             indent,
                             visual_line_idx,
-                            2.0,
+                            eq_scale,
                         );
                     (cw - effective_margin_l - margin_r).max(0.0)
                 })

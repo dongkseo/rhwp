@@ -142,6 +142,9 @@ pub struct TypesetEngine {
     dpi: f64,
     /// 현재 조판 중인 입력이 HWPX 원본인지 여부.
     is_hwpx_source: std::cell::Cell<bool>,
+    /// [Task #1472] HWP3-origin 변환본 여부 — format_paragraph 의 미주 TAC 수식
+    /// indent_scale 보정(effective indent 불변)에 사용. typeset 진입 시 set.
+    is_hwp3_variant: std::cell::Cell<bool>,
 }
 
 /// 조판 중 현재 페이지/단 상태
@@ -1393,6 +1396,7 @@ impl TypesetEngine {
         Self {
             dpi,
             is_hwpx_source: std::cell::Cell::new(false),
+            is_hwp3_variant: std::cell::Cell::new(false),
         }
     }
 
@@ -1631,6 +1635,8 @@ impl TypesetEngine {
         );
         st.hide_empty_line = hide_empty_line;
         st.is_hwp3_variant = is_hwp3_variant;
+        // [Task #1472] format_paragraph 의 미주 수식 indent_scale 보정용.
+        self.is_hwp3_variant.set(is_hwp3_variant);
         st.is_hwpx_source = is_hwpx_source;
         st.skip_spacing_before_prededuct = skip_spacing_before_prededuct;
         st.current_zone_design_spacing_px = column_def_design_spacing_px(column_def, self.dpi);
@@ -8592,6 +8598,8 @@ impl TypesetEngine {
                     (cw - effective_margin_l - margin_r).max(0.0)
                 })
             };
+            // [Task #1472] 변환본은 미주 수식 effective indent 불변 위해 scale 절반(2.0→1.0).
+            let eq_indent_scale = 2.0 * if self.is_hwp3_variant.get() { 0.5 } else { 1.0 };
             let equation_line_available_width_px = |visual_line_idx: usize| {
                 column_width_px.map(|cw| {
                     let margin_l = para_style.map(|s| s.margin_left).unwrap_or(0.0);
@@ -8602,7 +8610,7 @@ impl TypesetEngine {
                             margin_l,
                             indent,
                             visual_line_idx,
-                            2.0,
+                            eq_indent_scale,
                         );
                     (cw - effective_margin_l - margin_r).max(0.0)
                 })
