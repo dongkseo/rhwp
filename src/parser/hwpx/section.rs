@@ -21,7 +21,7 @@ use crate::model::page::{
     BindingMethod, ColumnDef, ColumnDirection, ColumnType, PageBorderBasis, PageBorderFill,
     PageBorderUiBasis, PageDef,
 };
-use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
+use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, OrphanFieldEnd, Paragraph};
 use crate::model::shape::{
     ArcShape, CommonObjAttr, CurveShape, DrawingObjAttr, EllipseShape, GroupShape, HorzAlign,
     HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject,
@@ -396,6 +396,9 @@ fn parse_paragraph(
     let mut text_parts: Vec<String> = Vec::new();
     let mut current_char_shape_id: u32 = 0;
     let mut char_shape_changes: Vec<(u32, u32)> = Vec::new(); // (utf16_pos, char_shape_id)
+                                                              // [Task #1556] fieldEnd 의 (beginIDRef, fieldid) 를 출현 순서대로 보관 — text_parts 의
+                                                              // `\u{0004}` 와 1:1 대응. 고아 fieldEnd 복원에 사용.
+    let mut field_end_attrs: Vec<(u32, u32)> = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -495,7 +498,13 @@ fn parse_paragraph(
                         para.controls.push(group);
                     }
                     b"ctrl" => {
-                        parse_ctrl(ce, reader, &mut para.controls, &mut text_parts)?;
+                        parse_ctrl(
+                            ce,
+                            reader,
+                            &mut para.controls,
+                            &mut text_parts,
+                            &mut field_end_attrs,
+                        )?;
                     }
                     b"compose" => {
                         // 글자겹침 (CharOverlap)
@@ -593,9 +602,11 @@ fn parse_paragraph(
     // HWPX 파싱 결과를 HWP로 다시 저장할 때 FIELD_END를 복원하려면, visible text
     // 범위와 해당 Field 컨트롤 index를 field_ranges에 남겨야 한다.
     let mut field_ranges: Vec<FieldRange> = Vec::new();
+    let mut orphan_field_ends: Vec<OrphanFieldEnd> = Vec::new();
     let mut field_stack: Vec<(usize, usize)> = Vec::new();
     let mut control_idx: usize = 0;
     let mut visible_char_idx: usize = 0;
+    let mut field_end_idx: usize = 0;
 
     for part in &text_parts {
         match part.as_str() {
@@ -606,11 +617,24 @@ fn parse_paragraph(
                 control_idx += 1;
             }
             "\u{0004}" => {
+                let (begin_id_ref, field_id) = field_end_attrs
+                    .get(field_end_idx)
+                    .copied()
+                    .unwrap_or((0, 0));
+                field_end_idx += 1;
                 if let Some((start_char_idx, control_idx)) = field_stack.pop() {
                     field_ranges.push(FieldRange {
                         start_char_idx,
                         end_char_idx: visible_char_idx,
                         control_idx,
+                    });
+                } else {
+                    // [Task #1556] 짝 fieldBegin 이 다른 문단에 있는 다단락 필드의 종료 마커.
+                    // 현 문단에 컨트롤·FieldRange 가 없으므로 위치+attrs 를 기록해 직렬화기가 복원.
+                    orphan_field_ends.push(OrphanFieldEnd {
+                        char_idx: visible_char_idx,
+                        begin_id_ref,
+                        field_id,
                     });
                 }
             }
@@ -627,6 +651,7 @@ fn parse_paragraph(
         }
     }
     para.field_ranges = field_ranges;
+    para.orphan_field_ends = orphan_field_ends;
 
     // 텍스트 조립: 제어 문자(\u{0002}, \u{0003}, \u{0004})는 HWP와 동일하게 텍스트에서 제외
     // HWP에서 컨트롤 위치는 char_offsets의 갭으로 표현되므로 원본 순서를 유지해 계산한다.
@@ -3851,6 +3876,7 @@ fn parse_ctrl(
     reader: &mut Reader<&[u8]>,
     controls: &mut Vec<Control>,
     text_parts: &mut Vec<String>,
+    field_end_attrs: &mut Vec<(u32, u32)>,
 ) -> Result<(), HwpxError> {
     let mut buf = Vec::new();
     loop {
@@ -3907,6 +3933,8 @@ fn parse_ctrl(
                         text_parts.push("\u{0003}".to_string());
                     }
                     b"fieldEnd" => {
+                        // [Task #1556] beginIDRef/fieldid 포착 (고아 fieldEnd 복원용).
+                        field_end_attrs.push(parse_field_end_attrs(ce));
                         skip_element(reader, b"fieldEnd")?;
                         // FIELD_END 제어 문자 추가 (Task #11)
                         text_parts.push("\u{0004}".to_string());
@@ -3988,6 +4016,8 @@ fn parse_ctrl(
                         text_parts.push("\u{0003}".to_string());
                     }
                     b"fieldEnd" => {
+                        // [Task #1556] 자기닫힘 fieldEnd — beginIDRef/fieldid 포착.
+                        field_end_attrs.push(parse_field_end_attrs(ce));
                         text_parts.push("\u{0004}".to_string());
                     }
                     b"hiddenComment" => {}
@@ -4014,6 +4044,20 @@ fn parse_ctrl(
 fn parse_bool_attr(attr: &quick_xml::events::attributes::Attribute) -> bool {
     let s = attr_str(attr);
     s == "1" || s == "true"
+}
+
+/// `<hp:fieldEnd beginIDRef=".." fieldid="..">` 속성 → (begin_id_ref, field_id) (Task #1556).
+fn parse_field_end_attrs(e: &quick_xml::events::BytesStart) -> (u32, u32) {
+    let mut begin_id_ref = 0u32;
+    let mut field_id = 0u32;
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"beginIDRef" => begin_id_ref = parse_u32(&attr),
+            b"fieldid" => field_id = parse_u32(&attr),
+            _ => {}
+        }
+    }
+    (begin_id_ref, field_id)
 }
 
 fn parse_page_hiding_attrs(e: &quick_xml::events::BytesStart) -> PageHide {
@@ -6626,6 +6670,71 @@ mod tests {
             }
             buf.clear();
         }
+    }
+
+    // ---------- #1556: 다단락 필드의 고아 fieldEnd ----------
+
+    #[test]
+    fn task1556_orphan_field_end_recorded_in_end_paragraph() {
+        // fieldBegin 은 문단 0, fieldEnd 는 문단 1 (다단락 누름틀 필드).
+        // 문단 1 은 컨트롤·field_range 없이 8유닛 슬롯만 갖는다 → orphan_field_ends 로 기록.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="1878228493" type="CLICK_HERE" name="본문" fieldid="627272811"/></hp:ctrl><hp:t>본문시작</hp:t></hp:run>
+  </hp:p>
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="3"><hp:t>끝.</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="1878228493" fieldid="627272811"/></hp:ctrl></hp:run>
+    <hp:run charPrIDRef="30"><hp:t/></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        // 문단 0: fieldBegin 보존 (Control::Field), 고아 없음.
+        let p0 = &section.paragraphs[0];
+        assert!(
+            matches!(p0.controls.first(), Some(Control::Field(_))),
+            "문단 0 은 fieldBegin 컨트롤 보존"
+        );
+        assert!(p0.orphan_field_ends.is_empty(), "문단 0 고아 없음");
+
+        // 문단 1: 텍스트 "끝." (2자) + 고아 fieldEnd 8유닛.
+        let p1 = &section.paragraphs[1];
+        assert_eq!(p1.text, "끝.");
+        assert_eq!(p1.orphan_field_ends.len(), 1, "고아 fieldEnd 1개 기록");
+        let ofe = &p1.orphan_field_ends[0];
+        assert_eq!(ofe.char_idx, 2, "텍스트 끝(인덱스 2) 위치");
+        assert_eq!(ofe.begin_id_ref, 1_878_228_493);
+        assert_eq!(ofe.field_id, 627_272_811);
+        // char_count = 텍스트 2 + fieldEnd 8 + 끝마커 1 = 11.
+        assert_eq!(
+            p1.char_count, 11,
+            "고아 fieldEnd 8유닛이 char_count 에 반영"
+        );
+        // 두 번째 char_shape(run charPrIDRef=30)는 offsets 축 10 (텍스트 2 + 8).
+        assert_eq!(
+            p1.char_shapes
+                .iter()
+                .map(|c| (c.start_pos, c.char_shape_id))
+                .collect::<Vec<_>>(),
+            vec![(0, 3), (10, 30)],
+        );
+    }
+
+    #[test]
+    fn task1556_same_paragraph_field_uses_range_not_orphan() {
+        // 동일 문단 내 begin+end 는 종전대로 field_ranges 로만 처리 (고아 0) — 회귀 가드.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="100" type="HYPERLINK" name="" fieldid="100"/></hp:ctrl><hp:t>링크</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="100" fieldid="100"/></hp:ctrl></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let section = parse_hwpx_section(xml).unwrap();
+        let p = &section.paragraphs[0];
+        assert_eq!(p.field_ranges.len(), 1, "동일 문단 필드는 field_range");
+        assert!(p.orphan_field_ends.is_empty(), "고아 기록 없음");
     }
 
     /// #1512: 비-Memo 필드도 고유 OWPML `id` 를 field_id 로 써야 한다. 같은 종류 필드가
