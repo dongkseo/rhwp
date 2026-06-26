@@ -577,11 +577,19 @@ impl LayoutEngine {
             return 0.0;
         }
 
-        let mut total_height = 0.0;
+        let mut line_seg_height = 0.0f64;
+        let mut composed_height = 0.0f64;
         for para in &caption.paragraphs {
+            if let (Some(first), Some(last)) = (para.line_segs.first(), para.line_segs.last()) {
+                let para_top = first.vertical_pos.min(0);
+                let para_bottom = last.vertical_pos + last.line_height;
+                line_seg_height =
+                    line_seg_height.max(hwpunit_to_px(para_bottom - para_top, self.dpi));
+            }
+
             let composed = compose_paragraph(para);
             if composed.lines.is_empty() {
-                total_height += hwpunit_to_px(400, self.dpi); // 기본 줄 높이
+                composed_height += hwpunit_to_px(400, self.dpi); // 기본 줄 높이
             } else {
                 for (i, line) in composed.lines.iter().enumerate() {
                     let line_h = hwpunit_to_px(line.line_height, self.dpi);
@@ -590,12 +598,12 @@ impl LayoutEngine {
                     } else {
                         0.0 // 마지막 줄은 line_spacing 제외
                     };
-                    total_height += line_h + spacing;
+                    composed_height += line_h + spacing;
                 }
             }
         }
 
-        total_height
+        line_seg_height.max(composed_height)
     }
 
     /// 캡션을 레이아웃한다.
