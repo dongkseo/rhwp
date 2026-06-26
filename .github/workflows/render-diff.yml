@@ -149,6 +149,8 @@ jobs:
               if (!candidateSha) {
                 candidateSha = pr.base.sha;
                 core.info(`all PR commits are allowed review docs; using base SHA ${candidateSha}`);
+                setResult(true, 'all-review-docs-no-render-impact', candidateSha);
+                return;
               }
 
               const checkRuns = await github.paginate(github.rest.checks.listForRef, {
