@@ -64,3 +64,7 @@ PR #1550은 workflow 파일 변경이 포함되어 fast-pass 대상이 아니었
 - PR 본문은 `관련 이슈: #1547`만 포함하고 `Closes #1547` 형식이 아니므로 #1547은 자동 close되지 않았다.
 - #1547 수동 close와 PR/Issue 코멘트는 작업지시자 별도 승인 후 처리한다.
 - PR #1550이 도입한 fast-pass의 실제 review 문서 전용 후속 커밋 E2E 검증은 별도 PR에서 확인해야 한다.
+
+## 5. fast-pass 후속 검증
+
+- #1574/#1576 보정 후 review 문서 전용 PR에서 preflight 생성과 heavy job skip 여부를 재확인한다.
