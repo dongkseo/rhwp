@@ -29,13 +29,13 @@ use crate::model::document::{Document, Section};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::page::{ColumnDef, ColumnDirection, ColumnType};
-use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
+use crate::model::paragraph::{ColumnBreakType, LineSeg, OrphanFieldEnd, Paragraph};
 use crate::model::shape::{
     CommonObjAttr, HorzAlign, HorzRelTo, ShapeObject, TextWrap, VertAlign, VertRelTo,
 };
 
 use super::context::SerializeContext;
-use super::field::{write_bookmark, write_field_begin, write_field_end};
+use super::field::{write_bookmark, write_field_begin, write_field_end, write_field_end_full};
 use super::utils::xml_escape;
 use super::SerializeError;
 use super::{picture, table};
@@ -358,6 +358,15 @@ fn emit_field_end(out: &mut String, para: &Paragraph, control_idx: usize) {
     }
 }
 
+/// 고아(다단락) fieldEnd 를 `<hp:ctrl><hp:fieldEnd .../></hp:ctrl>` 로 방출 (Task #1556).
+fn emit_orphan_field_end(out: &mut String, ofe: &OrphanFieldEnd) {
+    if let Ok(xml) = writer_to_string(|w| write_field_end_full(w, ofe.begin_id_ref, ofe.field_id)) {
+        out.push_str("<hp:ctrl>");
+        out.push_str(&xml);
+        out.push_str("</hp:ctrl>");
+    }
+}
+
 /// 문단 텍스트 전체를 char_shapes 경계로 분할하며 `splitter` 에 누적한다.
 ///
 /// `char_offsets` 로 문자 idx → UTF-16 위치를 매핑하므로 IR 내 컨트롤(8 유닛 갭)이
@@ -430,8 +439,12 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
 
     let mut tab_idx = 0usize;
 
-    // fast path: 슬롯·필드·경계 없음 — 텍스트 전체를 단일 run 으로
-    if slots.is_empty() && para.field_ranges.is_empty() && splitter.single_run() {
+    // fast path: 슬롯·필드·고아 fieldEnd·경계 없음 — 텍스트 전체를 단일 run 으로
+    if slots.is_empty()
+        && para.field_ranges.is_empty()
+        && para.orphan_field_ends.is_empty()
+        && splitter.single_run()
+    {
         let t = render_hp_t_content(&para.text, &para.tab_extended, &mut tab_idx);
         splitter.content.push_str(&t);
         return splitter.finish();
@@ -443,6 +456,11 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
         for slot in &slots {
             render_control_slot(&mut splitter.content, slot, ctx);
         }
+        // [Task #1556] 위치 추정 불가 경로에서도 고아 fieldEnd 의 8유닛 슬롯은 복원한다
+        // (정확한 위치 대신 말미 일괄 — 최소한 char_count 보존).
+        for ofe in &para.orphan_field_ends {
+            emit_orphan_field_end(&mut splitter.content, ofe);
+        }
         return splitter.finish();
     }
 
@@ -451,6 +469,9 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
     let mut slot_idx = 0usize;
     let mut expected_utf16_pos = 0u32;
     let mut field_end_emitted = vec![false; para.field_ranges.len()];
+    // [Task #1556] 고아 fieldEnd 방출 추적.
+    let mut orphan_emitted = vec![false; para.orphan_field_ends.len()];
+    let text_char_count = para.text.chars().count();
 
     // 빈 문단(text == "")의 0-length 필드: 메인 루프가 실행되지 않아
     // pre-char 검사를 통과하지 못하므로 루프 전에 slots → fieldEnd 순으로 방출한다.
@@ -467,6 +488,15 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
                 emit_field_end(&mut splitter.content, para, fr.control_idx);
                 expected_utf16_pos = expected_utf16_pos.saturating_add(8);
                 field_end_emitted[i] = true;
+            }
+        }
+        // [Task #1556] 빈 문단의 고아 fieldEnd (char_idx == 0).
+        for (i, ofe) in para.orphan_field_ends.iter().enumerate() {
+            if ofe.char_idx == 0 && !orphan_emitted[i] {
+                splitter.cut_before(expected_utf16_pos);
+                emit_orphan_field_end(&mut splitter.content, ofe);
+                expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+                orphan_emitted[i] = true;
             }
         }
     }
@@ -492,6 +522,22 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
             render_control_slot(&mut splitter.content, slots[slot_idx], ctx);
             slot_idx += 1;
             expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+        }
+
+        // [Task #1556] 고아 fieldEnd (char_idx == idx): 문자 push 전에 8유닛 슬롯 방출.
+        for (i, ofe) in para.orphan_field_ends.iter().enumerate() {
+            if ofe.char_idx == idx && !orphan_emitted[i] {
+                flush_text_fragment(
+                    &mut splitter.content,
+                    &mut text_buf,
+                    &para.tab_extended,
+                    &mut tab_idx,
+                );
+                splitter.cut_before(expected_utf16_pos);
+                emit_orphan_field_end(&mut splitter.content, ofe);
+                expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+                orphan_emitted[i] = true;
+            }
         }
 
         // 0-length 필드(start == end == idx): fieldBegin 방출 직후, 문자 push 전에 fieldEnd 방출.
@@ -606,6 +652,20 @@ fn render_runs(para: &Paragraph, ctx: &mut SerializeContext) -> String {
         }
     }
 
+    // [Task #1556] 텍스트 끝(char_idx == text_char_count) 의 고아 fieldEnd — para 0.16 케이스.
+    for (i, ofe) in para.orphan_field_ends.iter().enumerate() {
+        if !orphan_emitted[i] {
+            debug_assert!(
+                ofe.char_idx >= text_char_count,
+                "미방출 고아 fieldEnd 는 텍스트 끝이어야 함"
+            );
+            splitter.cut_before(expected_utf16_pos);
+            emit_orphan_field_end(&mut splitter.content, ofe);
+            expected_utf16_pos = expected_utf16_pos.saturating_add(8);
+            orphan_emitted[i] = true;
+        }
+    }
+
     while slot_idx < slots.len() {
         splitter.cut_before(expected_utf16_pos);
         render_control_slot(&mut splitter.content, slots[slot_idx], ctx);
@@ -649,9 +709,11 @@ fn inferred_control_slot_count(para: &Paragraph) -> usize {
 
     // fieldEnd는 8 code unit 슬롯이지만 para.controls[]에 대응 컨트롤이 없다.
     // field_ranges.len()이 fieldEnd 수와 정확히 일치하므로 빼서 보정한다.
+    // [Task #1556] 고아(다단락) fieldEnd 도 컨트롤 없는 8유닛 슬롯이므로 동일하게 차감.
     from_char_count
         .max(from_offsets)
-        .saturating_sub(para.field_ranges.len() as u32) as usize
+        .saturating_sub(para.field_ranges.len() as u32)
+        .saturating_sub(para.orphan_field_ends.len() as u32) as usize
 }
 
 pub(crate) fn is_hwpx_inline_slot(control: &Control) -> bool {
@@ -2062,6 +2124,113 @@ mod tests {
         assert!(
             xml.contains(r#"vertsize="2000""#),
             "IR value 2000 must be used, not fallback 1000"
+        );
+    }
+
+    // ---------- #1556: 고아(다단락) fieldEnd 방출 ----------
+
+    #[test]
+    fn task1556_orphan_field_end_emitted_at_text_end() {
+        // 다단락 필드의 end 문단(para 0.16 동형): 텍스트 "끝." 뒤에 고아 fieldEnd 8유닛.
+        use crate::model::paragraph::{CharShapeRef, OrphanFieldEnd};
+        let mut para = Paragraph::default();
+        para.text = "끝.".to_string();
+        para.char_offsets = vec![0, 1];
+        para.char_count = 11; // 텍스트 2 + fieldEnd 8 + 끝마커 1
+        para.char_shapes = vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 3,
+            },
+            CharShapeRef {
+                start_pos: 10,
+                char_shape_id: 30,
+            },
+        ];
+        para.orphan_field_ends = vec![OrphanFieldEnd {
+            char_idx: 2,
+            begin_id_ref: 1_878_228_493,
+            field_id: 627_272_811,
+        }];
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains(r#"<hp:fieldEnd beginIDRef="1878228493" fieldid="627272811"/>"#),
+            "고아 fieldEnd 가 attrs 와 함께 방출되어야 함: {xml}"
+        );
+        // 텍스트가 fieldEnd 보다 앞에 나온다 (run 말미 fieldEnd 패턴).
+        let t_pos = xml.find("끝.").expect("텍스트");
+        let fe_pos = xml.find("<hp:fieldEnd").expect("fieldEnd");
+        assert!(t_pos < fe_pos, "텍스트가 fieldEnd 앞: {xml}");
+    }
+
+    #[test]
+    fn task1556_multipara_field_parse_serialize_parse_roundtrip() {
+        // 합성 다단락 필드(begin=문단0, end=문단1) → parse → serialize → re-parse.
+        // end 문단의 char_count/text/char_offsets/orphan 이 보존되어야 한다 (IR diff=0).
+        use crate::parser::hwpx::section::parse_hwpx_section;
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:ctrl><hp:fieldBegin id="1878228493" type="CLICK_HERE" name="본문" fieldid="627272811"/></hp:ctrl><hp:t>본문</hp:t></hp:run>
+  </hp:p>
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="3"><hp:t>끝.</hp:t><hp:ctrl><hp:fieldEnd beginIDRef="1878228493" fieldid="627272811"/></hp:ctrl></hp:run>
+    <hp:run charPrIDRef="30"><hp:t/></hp:run>
+  </hp:p>
+</hs:sec>"#;
+        let sec1 = parse_hwpx_section(xml).unwrap();
+        let mut doc = Document::default();
+        doc.sections.push(sec1.clone());
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&sec1, &doc, 0, &mut ctx).unwrap();
+        let xml2 = String::from_utf8(bytes).unwrap();
+        let sec2 = parse_hwpx_section(&xml2).unwrap();
+
+        // 두 번째 문단(고아 fieldEnd 보유) IR 보존.
+        let a = &sec1.paragraphs[1];
+        let b = &sec2.paragraphs[1];
+        assert_eq!(b.text, a.text, "text 보존");
+        assert_eq!(
+            b.char_count, a.char_count,
+            "char_count 보존 (8유닛 소실 없음)"
+        );
+        assert_eq!(b.char_offsets, a.char_offsets, "char_offsets 보존");
+        assert_eq!(
+            b.char_shapes
+                .iter()
+                .map(|c| (c.start_pos, c.char_shape_id))
+                .collect::<Vec<_>>(),
+            a.char_shapes
+                .iter()
+                .map(|c| (c.start_pos, c.char_shape_id))
+                .collect::<Vec<_>>(),
+            "char_shape 경계 보존"
+        );
+        assert_eq!(b.orphan_field_ends.len(), 1, "고아 fieldEnd 재파싱 보존");
+        assert_eq!(b.orphan_field_ends[0].begin_id_ref, 1_878_228_493);
+    }
+
+    #[test]
+    fn task1556_orphan_field_end_zero_fieldid_omits_attr() {
+        use crate::model::paragraph::OrphanFieldEnd;
+        let mut para = Paragraph::default();
+        para.text = "a".to_string();
+        para.char_offsets = vec![0];
+        para.char_count = 10; // 1 + 8 + 1
+        para.orphan_field_ends = vec![OrphanFieldEnd {
+            char_idx: 1,
+            begin_id_ref: 42,
+            field_id: 0,
+        }];
+        let (doc, section) = make_doc_with_paragraph(para);
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_section(&section, &doc, 0, &mut ctx).unwrap()).unwrap();
+        assert!(
+            xml.contains(r#"<hp:fieldEnd beginIDRef="42"/>"#),
+            "field_id 0 이면 fieldid 속성 생략: {xml}"
         );
     }
 
