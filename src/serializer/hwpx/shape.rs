@@ -20,7 +20,8 @@ use quick_xml::Writer;
 
 use crate::model::shape::{
     CommonObjAttr, DrawingObjAttr, HorzAlign, HorzRelTo, LineShape, ObjectNumberingType,
-    RectangleShape, ShapeComponentAttr, TextBox, TextFlow, TextWrap, VertAlign, VertRelTo,
+    OleDrawingAspect, OleShape, RectangleShape, ShapeComponentAttr, TextBox, TextFlow, TextWrap,
+    VertAlign, VertRelTo,
 };
 use crate::model::style::{Fill, FillType, ImageFillMode, ShapeBorderLine, SolidFill};
 use crate::model::ColorRef;
@@ -233,6 +234,76 @@ pub fn write_container_close<W: Write>(
     // 설명 (#1392) — caption 직후
     write_shape_comment(w, common)?;
     end_tag(w, "hp:container")
+}
+
+// =====================================================================
+// <hp:ole> — OLE 개체 (차트 등 포함)
+//
+// 종전 직렬화는 OLE 를 legacy 공용 경로(sz/pos/outMargin 만)로 내보내 binaryItemIDRef·
+// extent·shape_attr 를 빠뜨렸다. 그 결과 라운드트립에서 OLE 데이터 참조가 소실되어
+// 렌더가 placeholder 로 강등됐다(143E: RawSvg→Placeholder). picture 패턴으로 복원한다.
+// =====================================================================
+pub(crate) fn write_ole<W: Write>(
+    w: &mut Writer<W>,
+    ole: &OleShape,
+    ctx: &mut SerializeContext,
+) -> Result<(), SerializeError> {
+    let c = &ole.common;
+    let id_str = c.instance_id.to_string();
+    let z_order = c.z_order.to_string();
+    let tw = text_wrap_str(c.text_wrap);
+    let tf = text_flow_str(c.text_flow);
+    // owned 으로 변환해 ctx 불변 borrow 를 즉시 해제(이후 write_caption 의 &mut 사용).
+    let bidref = ctx
+        .resolve_bin_id(ole.bin_data_id as u16)
+        .unwrap_or("")
+        .to_string();
+    let draw_aspect = match ole.drawing_aspect {
+        OleDrawingAspect::Icon => "ICON",
+        OleDrawingAspect::Thumbnail => "THUMBNAIL",
+        OleDrawingAspect::DocPrint => "DOCPRINT",
+        OleDrawingAspect::Content => "CONTENT",
+    };
+
+    start_tag_attrs(
+        w,
+        "hp:ole",
+        &[
+            ("id", &id_str),
+            ("zOrder", &z_order),
+            ("numberingType", numbering_type_str(c.numbering_type)),
+            ("textWrap", tw),
+            ("textFlow", tf),
+            ("lock", "0"),
+            ("dropcapstyle", "None"),
+            ("href", ""),
+            ("groupLevel", "0"),
+            ("instid", &id_str),
+            ("objectType", "UNKNOWN"),
+            ("binaryItemIDRef", &bidref),
+            ("hasMoniker", "0"),
+            ("drawAspect", draw_aspect),
+            ("eqBaseLine", "0"),
+        ],
+    )?;
+
+    // shape_attr 블록 (offset/orgSz/curSz/flip/rotationInfo/renderingInfo)
+    write_shape_component_block(w, &ole.drawing.shape_attr)?;
+    // 개체 영역
+    let ex = ole.extent_x.to_string();
+    let ey = ole.extent_y.to_string();
+    empty_tag(w, "hc:extent", &[("x", &ex), ("y", &ey)])?;
+    write_line_shape(w, &ole.drawing.border_line)?;
+    write_sz(w, c)?;
+    write_pos(w, c)?;
+    write_out_margin(w, c)?;
+    if let Some(cap) = &ole.caption {
+        write_caption(w, cap, ctx)?;
+    }
+    write_shape_comment(w, c)?;
+
+    end_tag(w, "hp:ole")?;
+    Ok(())
 }
 
 // =====================================================================

@@ -1179,7 +1179,15 @@ fn render_shape(shape: &ShapeObject, ctx: &mut SerializeContext) -> String {
             };
         }
         ShapeObject::Chart(ch) => ("chart", &ch.common, &ch.caption, None),
-        ShapeObject::Ole(o) => ("ole", &o.common, &o.caption, None),
+        ShapeObject::Ole(o) => {
+            return match writer_to_string(|w| super::shape::write_ole(w, o, ctx)) {
+                Ok(xml) => xml,
+                Err(e) => {
+                    eprintln!("[hwpx] Shape::Ole 직렬화 실패: {e}");
+                    String::new()
+                }
+            };
+        }
     };
     render_common_shape_xml(tag, c, caption, sa, ctx)
 }
