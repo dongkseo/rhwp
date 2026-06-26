@@ -34,7 +34,10 @@ pub fn write_header(doc: &Document, ctx: &SerializeContext) -> Result<Vec<u8>, S
     write_xml_decl(&mut w)?;
 
     // <hh:head> 루트 + 전체 네임스페이스 (parser가 기대하는 접두어 모두 선언)
-    let sec_cnt = doc.doc_properties.section_count.max(1).to_string();
+    // secCnt 는 실제 직렬화하는 섹션 파일 수(`doc.sections`)와 일치해야 한다 (#1557).
+    // doc_properties.section_count 는 파서가 갱신하지 않아 stale(1)일 수 있어, 그대로
+    // 쓰면 secCnt < 실제 섹션 수가 되어 한글이 뒤 구역을 로드하지 않고 페이지가 붕괴한다.
+    let sec_cnt = doc.sections.len().max(1).to_string();
     // HWPML 스키마 버전: 원본 보존값(문서별 상이, 1.2~1.5). 없으면 "1.2" 폴백.
     let hwpml_version = doc.doc_info.hwpml_version.as_deref().unwrap_or("1.2");
     start_tag_attrs(
@@ -1251,6 +1254,23 @@ mod tests {
         );
         // [Finding 17] hwpml_version 미지정 시 "1.2" 폴백.
         assert!(xml.contains(r#"version="1.2""#), "기본 버전 폴백은 1.2");
+    }
+
+    #[test]
+    fn write_header_seccnt_matches_section_count() {
+        // #1557: secCnt 는 실제 직렬화 섹션 수(doc.sections)와 일치해야 한다.
+        // doc_properties.section_count 가 stale(1) 이어도 섹션 수가 우선 — 불일치 시
+        // 한글이 뒤 구역을 로드하지 않아 다중 페이지 문서가 1쪽으로 붕괴한다.
+        use crate::model::document::Section;
+        let mut doc = Document::default();
+        doc.sections = vec![Section::default(), Section::default(), Section::default()];
+        doc.doc_properties.section_count = 1; // stale 모사
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let xml = String::from_utf8(write_header(&doc, &ctx).expect("write_header")).unwrap();
+        assert!(
+            xml.contains(r#"secCnt="3""#),
+            "secCnt 가 섹션 수(3)와 일치해야 함(붕괴 회귀 가드)"
+        );
     }
 
     #[test]
