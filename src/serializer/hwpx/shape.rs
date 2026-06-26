@@ -982,8 +982,8 @@ mod tests {
         assert_eq!(line_shape_style(0), "NONE"); // 정본 코드 0 = NONE
         assert_eq!(line_shape_style(1), "SOLID"); // 1 = SOLID
         assert_eq!(line_shape_style(2), "DASH"); // 2 = DASH (회귀 방지)
-                                                 // NONE + endCap=FLAT(1<<6): endCap 비트가 style(NONE)을 오염시키지 않아야 함.
-        assert_eq!(line_shape_style(0 | (1 << 6)), "NONE");
+        let none_with_flat_end_cap = 1 << 6;
+        assert_eq!(line_shape_style(none_with_flat_end_cap), "NONE");
     }
 
     fn cs(start_pos: u32, char_shape_id: u32) -> crate::model::paragraph::CharShapeRef {
