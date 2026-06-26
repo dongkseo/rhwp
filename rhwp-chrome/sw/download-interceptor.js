@@ -12,49 +12,24 @@
 
 import { openViewer } from './viewer-launcher.js';
 import { shouldInterceptDownload } from './download-interceptor-common.js';
+import {
+  DEFAULT_STATE_TTL_MS,
+  evaluateDownloadChanged,
+  evaluateDownloadCreated,
+  isDownloadStateExpired,
+  isTerminalDelta,
+  markDownloadHandled,
+  markDownloadTerminal,
+  shouldRecheckDownload,
+} from './download-observer-state.js';
 
-const handled = new Set();
-const workerStartedAt = Date.now();
-const DOWNLOAD_FRESH_GRACE_MS = 5_000;
-// #1498: onCreated 로 관측한 다운로드 id (= service worker 기동 이후 새로 시작된 다운로드).
-// onChanged 는 과거 다운로드 기록에도 발화할 수 있으므로, seen 에 있는 id 에 한해서만 재판정한다.
-// SW 재기동 후 과거 항목이 뷰어로 다발 열리던 회귀를 막는다 (#1471/#1480 회귀 정정).
-const seen = new Set();
+const STORAGE_PREFIX = 'rhwpDownloadState:';
+const TERMINAL_CLEANUP_MS = 30_000;
+const memoryStateFallback = new Map();
 
 /** 다운로드 항목이 로컬 file:// 인지 판별. */
 function isLocalFileDownload(item) {
   return typeof item?.url === 'string' && item.url.startsWith('file:');
-}
-
-function isTerminalDelta(delta) {
-  return delta?.state?.current === 'complete' || delta?.state?.current === 'interrupted' || Boolean(delta?.error);
-}
-
-function shouldRecheckDownload(delta) {
-  return Boolean(delta?.filename?.current || delta?.finalUrl?.current || delta?.state?.current === 'complete');
-}
-
-function parseDownloadTime(value) {
-  if (typeof value !== 'string' || value.length === 0) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-/**
- * #1498 v2: onCreated 로 들어온 항목도 과거 다운로드 기록일 수 있다.
- * startTime/endTime 이 service worker 기동 시각보다 충분히 오래 전이면 재시작/복원된 과거 항목으로 보고 무시한다.
- */
-function isFreshDownloadItem(item) {
-  if (!item) return false;
-  const startMs = parseDownloadTime(item.startTime);
-  if (startMs === null) return true;
-  const freshBoundary = workerStartedAt - DOWNLOAD_FRESH_GRACE_MS;
-  if (startMs < freshBoundary) return false;
-
-  const endMs = parseDownloadTime(item.endTime);
-  if (endMs !== null && endMs < freshBoundary) return false;
-
-  return true;
 }
 
 /**
@@ -66,43 +41,67 @@ function isFreshDownloadItem(item) {
  */
 export function setupDownloadInterceptor() {
   chrome.downloads.onCreated.addListener((item) => {
-    if (item && isFreshDownloadItem(item)) seen.add(item.id);
-    processDownloadItem(item);
+    void handleCreated(item);
   });
 
   chrome.downloads.onChanged.addListener(async (delta) => {
-    // #1498: onCreated 로 관측한(= 새로 시작된) 다운로드만 재판정한다. onChanged 단독으로
-    // 들어온 과거 기록 항목은 seen 에 없으므로 뷰어를 열지 않는다.
-    if (seen.has(delta.id) && !handled.has(delta.id) && shouldRecheckDownload(delta)) {
-      try {
-        const [item] = await chrome.downloads.search({ id: delta.id });
-        if (isFreshDownloadItem(item)) {
-          processDownloadItem(item);
-        }
-      } catch (err) {
-        console.error('[rhwp] 다운로드 항목 재조회 오류:', err);
-      }
-    }
-
-    if (isTerminalDelta(delta)) {
-      setTimeout(() => {
-        handled.delete(delta.id);
-        seen.delete(delta.id);
-      }, 30000);
-    }
+    await handleChanged(delta);
   });
 }
 
-function processDownloadItem(item) {
-  if (!item || handled.has(item.id)) return;
-  if (!isFreshDownloadItem(item)) return;
+async function handleCreated(item) {
+  const now = Date.now();
+  const previousState = await getDownloadState(item?.id, now);
+  const decision = evaluateDownloadCreated(item, previousState, now);
+
+  if (decision.action !== 'track') return;
+  await setDownloadState(decision.state);
+  await processDownloadCandidate(item, decision.state);
+}
+
+async function handleChanged(delta) {
+  const now = Date.now();
+  const state = await getDownloadState(delta?.id, now);
+
+  if (state && !state.handledAt && shouldRecheckDownload(delta)) {
+    try {
+      const [item] = await chrome.downloads.search({ id: delta.id });
+      const decision = evaluateDownloadChanged(delta, item, state, now);
+      if (decision.action === 'candidate') {
+        await setDownloadState(decision.state);
+        await processDownloadCandidate(item, decision.state);
+      }
+    } catch (err) {
+      console.error('[rhwp] 다운로드 항목 재조회 오류:', err);
+    }
+  }
+
+  if (isTerminalDelta(delta)) {
+    const terminalState = markDownloadTerminal(state, now);
+    if (terminalState) {
+      await setDownloadState(terminalState);
+    }
+    scheduleRemoveDownloadState(delta.id);
+  }
+}
+
+async function processDownloadCandidate(item, state) {
+  if (!item || state?.handledAt) return;
   if (!shouldInterceptDownload(item)) return;
 
-  handled.add(item.id);
-  handleHwpDownload(item);
+  try {
+    const settings = await chrome.storage.sync.get({ autoOpen: true });
+    const reason = settings.autoOpen ? 'opened' : 'auto-open-disabled';
+    await setDownloadState(markDownloadHandled(state, Date.now(), reason));
+    if (!settings.autoOpen) return;
 
-  if (isLocalFileDownload(item)) {
-    suppressLocalDownload(item);
+    handleHwpDownload(item);
+
+    if (isLocalFileDownload(item)) {
+      void suppressLocalDownload(item);
+    }
+  } catch (err) {
+    console.error('[rhwp] 다운로드 인터셉터 오류:', err);
   }
 }
 
@@ -125,21 +124,83 @@ async function suppressLocalDownload(item) {
   }
 }
 
-async function handleHwpDownload(item) {
-  try {
-    const settings = await chrome.storage.sync.get({ autoOpen: true });
-    if (!settings.autoOpen) return;
-
-    // 대용량 파일 경고 (50MB 초과)
-    if (item.fileSize > 50 * 1024 * 1024) {
-      console.warn(`[rhwp] 대용량 파일: ${item.filename} (${(item.fileSize / 1024 / 1024).toFixed(1)}MB)`);
-    }
-
-    openViewer({
-      url: item.url,
-      filename: item.filename,
-    });
-  } catch (err) {
-    console.error('[rhwp] 다운로드 인터셉터 오류:', err);
+function handleHwpDownload(item) {
+  // 대용량 파일 경고 (50MB 초과)
+  if (item.fileSize > 50 * 1024 * 1024) {
+    console.warn(`[rhwp] 대용량 파일: ${item.filename} (${(item.fileSize / 1024 / 1024).toFixed(1)}MB)`);
   }
+
+  openViewer({
+    url: item.url,
+    filename: item.filename,
+  });
+}
+
+function stateKey(id) {
+  return `${STORAGE_PREFIX}${id}`;
+}
+
+function getSessionStorage() {
+  return chrome.storage?.session || null;
+}
+
+async function getDownloadState(id, now = Date.now()) {
+  if (typeof id !== 'number') return null;
+
+  const key = stateKey(id);
+  const session = getSessionStorage();
+  let state = null;
+
+  if (session) {
+    const result = await session.get(key);
+    state = result?.[key] || null;
+  } else {
+    state = memoryStateFallback.get(id) || null;
+  }
+
+  if (state && isDownloadStateExpired(state, now, DEFAULT_STATE_TTL_MS)) {
+    await removeDownloadState(id);
+    return null;
+  }
+
+  return state;
+}
+
+async function setDownloadState(state) {
+  if (!state || typeof state.id !== 'number') return;
+
+  const session = getSessionStorage();
+  if (session) {
+    await session.set({ [stateKey(state.id)]: state });
+    return;
+  }
+
+  memoryStateFallback.set(state.id, state);
+}
+
+async function removeDownloadState(id) {
+  if (typeof id !== 'number') return;
+
+  const session = getSessionStorage();
+  if (session) {
+    await session.remove(stateKey(id));
+    return;
+  }
+
+  memoryStateFallback.delete(id);
+}
+
+function scheduleRemoveDownloadState(id) {
+  if (typeof id !== 'number') return;
+
+  const session = getSessionStorage();
+  const key = stateKey(id);
+  const timer = setTimeout(() => {
+    if (session) {
+      void session.remove(key);
+      return;
+    }
+    memoryStateFallback.delete(id);
+  }, TERMINAL_CLEANUP_MS);
+  if (typeof timer?.unref === 'function') timer.unref();
 }
