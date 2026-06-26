@@ -3186,7 +3186,9 @@ fn parse_line_shape_attr(e: &quick_xml::events::BytesStart) -> ShapeBorderLine {
             b"style" => {
                 // 선 스타일 → attr 비트 플래그 (하위 바이트)
                 let style_val: u32 = match attr_str(&attr).as_str() {
-                    "NONE" => 0x40,
+                    // 정본 코드 0=NONE(표 borderFill·HWP5 doc_info 와 동일). 종전 0x40 은
+                    // bit 6 이 endCap(bit 6~9)에 겹쳐 써져 소실됐다(#1531).
+                    "NONE" => 0,
                     "SOLID" => 1,
                     "DASH" => 2,
                     "DOT" => 3,

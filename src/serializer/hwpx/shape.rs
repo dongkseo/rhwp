@@ -565,9 +565,12 @@ fn write_line_shape<W: Write>(
 ) -> Result<(), SerializeError> {
     let color = color_to_hex(bl.color);
     let width = bl.width.to_string();
-    // style 은 attr 하위 6비트 (NONE=0x40 은 endCap 파싱이 겹쳐 쓰면 소실되는
-    // 파서 자체 제약 — 복원 불가 시 SOLID).
+    // style 은 attr 하위 6비트. 정본 코드(0=NONE/1=SOLID/2=DASH…)는 표 borderFill 의
+    // border_line_type_from_code 및 HWP5 doc_info 와 동일. 종전에는 0 이 _ => SOLID 로
+    // 떨어져 "선 없음" 도형 외곽선이 라운드트립에서 사각형 박스로 살아났다(#1531).
     let style = match bl.attr & 0x3F {
+        0 => "NONE",
+        1 => "SOLID",
         2 => "DASH",
         3 => "DOT",
         4 => "DASH_DOT",
@@ -1028,6 +1031,30 @@ mod tests {
         let mut ctx = SerializeContext::collect_from_document(&Default::default());
         write_line(&mut w, line, &mut ctx).expect("write_line");
         String::from_utf8(w.into_inner()).unwrap()
+    }
+
+    fn line_shape_style(attr: u32) -> String {
+        use crate::model::style::ShapeBorderLine;
+        let bl = ShapeBorderLine {
+            attr,
+            ..Default::default()
+        };
+        let mut w: Writer<Vec<u8>> = Writer::new(Vec::new());
+        write_line_shape(&mut w, &bl).expect("write_line_shape");
+        let xml = String::from_utf8(w.into_inner()).unwrap();
+        let i = xml.find("style=\"").expect("style attr") + 7;
+        xml[i..].split('"').next().unwrap().to_string()
+    }
+
+    /// #1531: 선 없음(style code 0) 도형 외곽선이 라운드트립에서 SOLID(사각형 박스)로
+    /// 살아나면 안 된다. endCap(bit 6~9)이 함께 설정돼도 NONE 이 보존돼야 한다.
+    #[test]
+    fn task1531_line_shape_none_preserved() {
+        assert_eq!(line_shape_style(0), "NONE"); // 정본 코드 0 = NONE
+        assert_eq!(line_shape_style(1), "SOLID"); // 1 = SOLID
+        assert_eq!(line_shape_style(2), "DASH"); // 2 = DASH (회귀 방지)
+        let none_with_flat_end_cap = 1 << 6;
+        assert_eq!(line_shape_style(none_with_flat_end_cap), "NONE");
     }
 
     fn cs(start_pos: u32, char_shape_id: u32) -> crate::model::paragraph::CharShapeRef {
