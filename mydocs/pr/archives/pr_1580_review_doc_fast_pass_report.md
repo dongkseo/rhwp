@@ -41,3 +41,15 @@ fast-pass하도록 보강했다.
 - `Analyze (*)`: skipped
 - `Render Diff preflight`: review 문서 전용 fast-pass
 - `Canvas visual diff`: skipped
+
+## 후속 fast-pass 확인 결과
+
+PR #1581 최초 head 기준으로 기대 동작을 확인했다.
+
+- `CI preflight`: pass, `fast_pass=true reason=all-review-docs-no-code-impact`
+- `Build & Test`: skipped
+- `CodeQL preflight`: pass, `fast_pass=true reason=all-review-docs-no-code-impact`
+- `Analyze (${{ matrix.language }})`: skipped
+- `Render Diff preflight`: pass, `fast_pass=true reason=all-review-docs-no-render-impact`
+- `Canvas visual diff`: skipped
+- `WASM Build`: skipped
