@@ -21,7 +21,6 @@ on:
   pull_request:
     branches: [main, devel]
     paths-ignore:
-      - 'mydocs/**'
       - 'docs/**'
       - 'samples/**'
       - 'assets/**'
@@ -104,8 +103,8 @@ jobs:
                 per_page: 100,
               });
 
-              if (commits.length < 2) {
-                setResult(false, 'not-enough-commits');
+              if (commits.length === 0) {
+                setResult(false, 'no-pr-commits');
                 return;
               }
 
@@ -146,8 +145,8 @@ jobs:
                 return;
               }
               if (!candidateSha) {
-                setResult(false, 'no-code-candidate');
-                return;
+                candidateSha = pr.base.sha;
+                core.info(`all PR commits are allowed review docs; using base SHA ${candidateSha}`);
               }
 
               const checkRuns = await github.paginate(github.rest.checks.listForRef, {
