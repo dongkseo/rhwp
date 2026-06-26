@@ -4335,6 +4335,10 @@ impl LayoutEngine {
                 && cell_has_visible_content
                 && !preserve_vpos_empty_spacer;
             let is_last_para = pi + 1 == para_count;
+            // [Task #1488] 가시 텍스트 문단 여부 — 비가시(빈) 오버레이 스페이서 문단이 만든
+            // vpos 리셋을 하드 브레이크(강제 페이지 분할)에서 제외하기 위한 게이트.
+            // 가시 텍스트 문단 사이 리셋(Task #993 의도)은 그대로 하드 브레이크로 보존한다.
+            let para_has_visible_text = p.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}');
             let raw_spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
             let spacing_before = if pi > 0 {
                 raw_spacing_before
@@ -4761,7 +4765,11 @@ impl LayoutEngine {
                 }
                 units.push(CellUnit {
                     height: para_h,
-                    hard_break_before,
+                    // [Task #1488] 비가시 빈 문단(중첩표 없음)의 오버레이 리셋은 페이지를
+                    // 강제 분할하지 않는다 — 여분 빈 연속 페이지 방지. 중첩표가 있으면
+                    // 가시 콘텐츠를 가지므로 리셋 보존.
+                    hard_break_before: hard_break_before
+                        && (has_table_in_para || para_has_visible_text),
                     vpos_gap_before: vpos_gap_before && !collapse_empty_rowbreak_spacer,
                     para_idx: pi,
                     vis_start: 0,
@@ -4832,7 +4840,12 @@ impl LayoutEngine {
                     }
                     units.push(CellUnit {
                         height: lh,
-                        hard_break_before,
+                        // [Task #1488] 비가시(빈 텍스트) 오버레이 스페이서 문단이 만든 vpos
+                        // 리셋은 페이지를 강제 분할하지 않는다. 셀 안에서 본문 텍스트 위에
+                        // 겹쳐 놓인 빈 문단(동일/역방향 vpos)들이 리셋마다 페이지를 1장씩
+                        // 양산하던 여분 빈 연속 페이지 회귀를 제거한다. 가시 텍스트 문단 사이
+                        // 리셋(Task #993 의도)은 그대로 하드 브레이크로 보존한다.
+                        hard_break_before: hard_break_before && para_has_visible_text,
                         vpos_gap_before: vpos_gap_before && !collapse_empty_rowbreak_spacer,
                         para_idx: pi,
                         vis_start: if collapse_empty_rowbreak_spacer {
@@ -5978,7 +5991,8 @@ mod row_cut_tests {
     use crate::renderer::style_resolver::ResolvedStyleSet;
 
     /// line_height=1200 HU (=16 px @96dpi), line_spacing=0 인 N줄 텍스트 문단.
-    /// vpos 는 vpos_start 부터 1200 HU 간격.
+    /// vpos 는 vpos_start 부터 1200 HU 간격. `.text` 가 비어 있어 [Task #1488]
+    /// 가시성 게이트 기준으로 **비가시(빈)** 문단으로 취급된다.
     fn text_para(n_lines: usize, vpos_start: i32) -> Paragraph {
         Paragraph {
             text: "x".repeat(n_lines.max(1)),
@@ -5992,6 +6006,27 @@ mod row_cut_tests {
                 })
                 .collect(),
             ..Default::default()
+        }
+    }
+
+    /// `text_para` 와 동일한 line_seg 구조에 가시 텍스트를 더한 문단. [Task #1488]
+    /// 가시성 게이트가 가시 문단으로 인식하므로 vpos 리셋이 하드 브레이크로 보존된다.
+    /// line_seg 가 있으면 compose 가 line_seg 수만큼 줄을 만들므로 유닛 수는 보존된다.
+    fn visible_text_para(n_lines: usize, vpos_start: i32) -> Paragraph {
+        Paragraph {
+            text: "가나다".to_string(),
+            ..text_para(n_lines, vpos_start)
+        }
+    }
+
+    /// [Task #1488] 비가시(빈 텍스트) 오버레이 스페이서 문단 — line_seg 만 갖고 가시
+    /// 텍스트는 없다. `text_para` 가 (#stabilize-rowbreak 이후) 가시 "x" 를 갖게 되어,
+    /// 빈-오버레이 게이트 검증용으로 빈 텍스트 문단을 별도 헬퍼로 분리한다.
+    fn empty_overlay_para(n_lines: usize, vpos_start: i32) -> Paragraph {
+        Paragraph {
+            text: String::new(),
+            char_count: 0,
+            ..text_para(n_lines, vpos_start)
         }
     }
 
@@ -6122,11 +6157,16 @@ mod row_cut_tests {
 
     #[test]
     fn test_advance_row_cut_vpos_reset_hard_break() {
-        // 문단0(3줄 vpos 0..2400) + 문단1(2줄 vpos 1000..) — 문단1 시작 vpos 가
-        // 문단0 끝(3600)보다 작아 vpos 리셋 → 문단1 앞에서 강제 분할.
+        // 가시 텍스트 문단0(3줄 vpos 0..2400) + 가시 문단1(2줄 vpos 1000..) — 문단1
+        // 시작 vpos 가 문단0 끝(3600)보다 작아 vpos 리셋 → 문단1 앞에서 강제 분할.
+        // [Task #1488] 가시 문단 사이 리셋은 하드 브레이크로 보존(Task #993 의도).
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
-        let t = table(vec![cell(0, 0, vec![text_para(3, 0), text_para(2, 1000)])]);
+        let t = table(vec![cell(
+            0,
+            0,
+            vec![visible_text_para(3, 0), visible_text_para(2, 1000)],
+        )]);
         // avail 충분해도 리셋에서 정지.
         let r = eng.advance_row_cut(&t, 0, &[], 1000.0, &styles);
         assert_eq!(r.end_cut, vec![3]);
@@ -6139,10 +6179,34 @@ mod row_cut_tests {
     }
 
     #[test]
+    fn test_advance_row_cut_empty_overlay_reset_no_hard_break() {
+        // [Task #1488] 비가시(빈 텍스트) 오버레이 스페이서 문단이 만든 vpos 리셋은
+        // 하드 브레이크가 아니다 — 셀 본문 위에 겹친 빈 문단들이 리셋마다 여분 빈
+        // 페이지를 양산하던 회귀(rowbreak-problem-pages.hwpx sec1 pi=28)를 방지한다.
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let t = table(vec![cell(
+            0,
+            0,
+            vec![empty_overlay_para(3, 0), empty_overlay_para(2, 1000)],
+        )]);
+        let r = eng.advance_row_cut(&t, 0, &[], 1000.0, &styles);
+        assert!(
+            !r.hit_hard_break,
+            "빈 오버레이 문단 리셋은 강제 분할하지 않음"
+        );
+        assert_eq!(r.end_cut, vec![5]);
+        assert!(r.fully_consumed);
+    }
+
+    #[test]
     fn test_advance_row_cut_rowbreak_rewinds_internal_hard_break_orphan() {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
+        // [Task #1488] 가시 텍스트 문단으로 구성 — 가시 문단 사이 리셋은 하드 브레이크
+        // 보존(Task #993 의도)이라 rewind-orphan 로직이 그대로 검증된다.
         let internal_reset = Paragraph {
+            text: "가나다".to_string(),
             line_segs: vec![
                 LineSeg {
                     vertical_pos: 0,
@@ -6160,11 +6224,15 @@ mod row_cut_tests {
             ..Default::default()
         };
         let t = rowbreak_table(vec![
-            rscell(0, 0, 2, vec![text_para(1, 0)]),
+            rscell(0, 0, 2, vec![visible_text_para(1, 0)]),
             cell(
                 1,
                 1,
-                vec![text_para(1, 0), text_para(1, 1200), internal_reset],
+                vec![
+                    visible_text_para(1, 0),
+                    visible_text_para(1, 1200),
+                    internal_reset,
+                ],
             ),
         ]);
 

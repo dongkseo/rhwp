@@ -3186,7 +3186,9 @@ fn parse_line_shape_attr(e: &quick_xml::events::BytesStart) -> ShapeBorderLine {
             b"style" => {
                 // 선 스타일 → attr 비트 플래그 (하위 바이트)
                 let style_val: u32 = match attr_str(&attr).as_str() {
-                    "NONE" => 0x40,
+                    // 정본 코드 0=NONE(표 borderFill·HWP5 doc_info 와 동일). 종전 0x40 은
+                    // bit 6 이 endCap(bit 6~9)에 겹쳐 써져 소실됐다(#1531).
+                    "NONE" => 0,
                     "SOLID" => 1,
                     "DASH" => 2,
                     "DOT" => 3,
@@ -4140,11 +4142,12 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
             _ => {}
         }
     }
-    f.field_id = if matches!(f.field_type, FieldType::Memo) {
-        id_attr.or(fieldid_attr).unwrap_or(0)
-    } else {
-        fieldid_attr.or(id_attr).unwrap_or(0)
-    };
+    // field_id 는 필드별 고유 식별자여야 한다(모델 계약 "문서 내 고유 ID").
+    // OWPML `id` 가 필드마다 고유하고, `<hp:fieldEnd beginIDRef>` 가 이 `id` 를
+    // 참조하며, 직렬화도 `id="{field_id}"` 로 쓴다. 반면 `fieldid` 는 같은 종류 필드
+    // (예: FORMULA 다수)에서 공유될 수 있어, 이를 우선하면 모든 필드가 동일 ID 로
+    // 반환된다(#1512). Memo/비-Memo 모두 고유 `id` 우선으로 통일한다.
+    f.field_id = id_attr.or(fieldid_attr).unwrap_or(0);
     // [Task #852 Stage 2.5] field_type → ctrl_id 매핑.
     // 정답지 (samples/form-01.hwp) reverse engineering: ClickHere CTRL_HEADER 의 ctrl_id 가
     // "%clk" (FIELD_CLICKHERE). HWPX parser 가 이전엔 ctrl_id 미설정 → serializer 가
@@ -6623,6 +6626,41 @@ mod tests {
             }
             buf.clear();
         }
+    }
+
+    /// #1512: 비-Memo 필드도 고유 OWPML `id` 를 field_id 로 써야 한다. 같은 종류 필드가
+    /// 공유하는 `fieldid` 를 우선하면 모든 필드가 동일 ID 로 반환된다(누름틀 구분 불가).
+    #[test]
+    fn task1512_non_memo_field_uses_unique_id() {
+        fn parse_one(xml: &str) -> Field {
+            let mut reader = Reader::from_str(xml);
+            let mut buf = Vec::new();
+            loop {
+                match reader.read_event_into(&mut buf).unwrap() {
+                    Event::Empty(ref e) | Event::Start(ref e)
+                        if local_name(e.name().as_ref()) == b"fieldBegin" =>
+                    {
+                        return parse_field_begin_attrs(e);
+                    }
+                    Event::Eof => panic!("fieldBegin not found"),
+                    _ => {}
+                }
+            }
+        }
+        // 공유 fieldid(627469685) + 서로 다른 고유 id → field_id 는 고유 id 여야 한다.
+        let ns = "http://www.hancom.co.kr/hwpml/2011/paragraph";
+        let a = parse_one(&format!(
+            r#"<hp:fieldBegin xmlns:hp="{ns}" type="FORMULA" id="1685705574" fieldid="627469685"/>"#
+        ));
+        let b = parse_one(&format!(
+            r#"<hp:fieldBegin xmlns:hp="{ns}" type="FORMULA" id="1685705575" fieldid="627469685"/>"#
+        ));
+        assert_eq!(a.field_id, 1_685_705_574);
+        assert_eq!(b.field_id, 1_685_705_575);
+        assert_ne!(
+            a.field_id, b.field_id,
+            "공유 fieldid 가 아닌 고유 id 로 구분돼야 함"
+        );
     }
 
     #[test]
