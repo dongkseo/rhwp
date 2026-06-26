@@ -102,7 +102,10 @@ pub fn run(args: &[String]) {
     if let Some(path) = tsv {
         match write_tsv(&path, &rows) {
             Ok(()) => println!("\nTSV: {path}"),
-            Err(e) => eprintln!("TSV 쓰기 실패: {e}"),
+            Err(e) => {
+                eprintln!("TSV 쓰기 실패: {e}");
+                failures += 1;
+            }
         }
     }
 
