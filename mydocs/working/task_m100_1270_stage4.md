@@ -13,11 +13,11 @@
 
 | 검증 | 결과 |
 |------|------|
-| `cargo test --test issue_1270_caption_inline_image` | 통과 — 1 passed |
+| `cargo test --test issue_1270_caption_inline_image` | 통과 — 2 passed |
 | `cargo test --test issue_1139_inline_picture_duplicate` | 통과 — 85 passed |
 | `cargo test --test issue_1352_table_cell_tac_picture_text` | 통과 — 1 passed |
 | `cargo test --test issue_1459_topbottom_picture_reflow` | 통과 — 3 passed |
-| `cargo test --lib` | 통과 — 1937 passed, 6 ignored |
+| `cargo test --lib` | 통과 — 1959 passed, 6 ignored |
 | `cargo clippy --lib -- -D warnings` | 통과 |
 | `cargo test --test issue_530` | 통과 — 1 passed |
 | `cargo test --test issue_1486_hwpx_partial_tac_table` | 통과 — 6 passed |
@@ -31,10 +31,11 @@ cargo test --test issue_1270_caption_inline_image
 ```
 
 ```text
-running 1 test
+running 2 tests
 test table_caption_inline_tac_picture_emits_image_node ... ok
+test table_caption_picture_only_tac_paragraph_emits_image_node ... ok
 
-test result: ok. 1 passed; 0 failed
+test result: ok. 2 passed; 0 failed
 ```
 
 ### 인라인 picture 중복 방지
@@ -84,7 +85,7 @@ cargo test --lib
 ```
 
 ```text
-test result: ok. 1937 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 110.91s
+test result: ok. 1959 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out
 ```
 
 ### clippy
@@ -130,7 +131,7 @@ test result: ok. 6 passed; 0 failed
 
 Stage 4 회귀 검증은 통과로 판정한다.
 
-- 신규 테스트가 캡션 내 인라인 TAC picture의 `ImageNode` 방출을 검증한다.
+- 신규 테스트가 텍스트 포함 캡션 및 picture-only 캡션의 인라인 TAC picture `ImageNode` 방출을 검증한다.
 - 기존 인라인 picture 중복 방지 테스트가 통과했다.
 - 기존 표 셀 TAC picture와 TopAndBottom picture 흐름 테스트가 통과했다.
 - 표 Top caption 및 partial TAC table 경로 테스트도 통과했다.

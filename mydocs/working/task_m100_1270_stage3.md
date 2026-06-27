@@ -76,6 +76,11 @@ src/renderer/layout/table_partial.rs:1684
 4. `build_page_render_tree(0)`를 실행한다.
 5. caption sentinel context(`cell_index = 65534`)를 가진 `ImageNode`가 정확히 1개 방출되고, 이미지 payload가 존재하는지 확인한다.
 
+검증 케이스:
+
+- 텍스트가 함께 있는 캡션 TAC picture 문단
+- 텍스트 없이 TAC picture만 있는 캡션 문단
+
 검증 기준:
 
 ```rust
@@ -84,17 +89,19 @@ caption_images == vec![(caption_bin_id, true)]
 
 이 테스트는 수정 전 구조에서는 `layout_caption()`이 `para` / `bin_data_content`를 넘기지 않아 caption 이미지가 방출되지 않는 조건을 직접 겨냥한다.
 
-## 범위 조정
+## 리뷰 보완
 
-구현 계획서에서 “필요 시”로 둔 `paragraph_layout.rs`의 빈 문단 caption sentinel 예외는 적용하지 않았다.
+리뷰 중 표 캡션의 picture-only 문단 경계 조건을 추가 확인했다. 표 캡션은 실제 표 셀이 아니지만 `cell_ctx`에 `cell_index = 65534` 센티널을 사용한다. 기존 빈 줄 TAC picture 렌더링 분기는 `cell_ctx.is_none()`일 때만 동작하므로, 텍스트 없이 TAC picture만 있는 표 캡션 문단은 여전히 누락될 수 있었다.
 
-사유:
+보완 내용:
 
-- 신규 인라인 캡션 테스트는 스레딩만으로 통과했다.
-- 이번 Stage 3의 메인테이너 지시 범위는 `layout_caption()` 인라인 스레딩이다.
-- 실제 표 셀 내부 TAC picture 중복 방지 조건을 건드리지 않는 편이 더 안전하다.
+- `src/renderer/layout/paragraph_layout.rs`
+  - 빈 줄 TAC picture 렌더링 허용 조건에 `cell_index == 65534` 캡션 센티널 예외 추가
+  - 실제 표 셀 내부 중복 렌더링 방지 조건은 유지
+- `tests/issue_1270_caption_inline_image.rs`
+  - picture-only 캡션 TAC 문단 회귀 테스트 추가
 
-따라서 `paragraph_layout.rs`의 빈 줄 TAC 조건은 변경하지 않았다.
+이 보완은 구현 계획서에서 “필요 시”로 둔 좁은 예외 적용이다.
 
 ## 검증 결과
 
@@ -107,10 +114,11 @@ cargo test --test issue_1270_caption_inline_image
 결과:
 
 ```text
-running 1 test
+running 2 tests
 test table_caption_inline_tac_picture_emits_image_node ... ok
+test table_caption_picture_only_tac_paragraph_emits_image_node ... ok
 
-test result: ok. 1 passed; 0 failed
+test result: ok. 2 passed; 0 failed
 ```
 
 ### 관련 기존 테스트
@@ -184,15 +192,16 @@ src/renderer/layout/picture_footnote.rs
 src/renderer/layout/shape_layout.rs
 src/renderer/layout/table_layout.rs
 src/renderer/layout/table_partial.rs
+src/renderer/layout/paragraph_layout.rs
 tests/issue_1270_caption_inline_image.rs
 ```
 
 ## Stage 3 결론
 
 - 캡션 문단의 인라인 TAC picture 렌더링에 필요한 `para` / `bin_data_content` 스레딩을 구현했다.
-- 신규 회귀 테스트로 caption 내 인라인 TAC picture가 `ImageNode`로 방출되는 것을 확인했다.
+- 신규 회귀 테스트로 텍스트 포함 캡션 및 picture-only 캡션의 인라인 TAC picture가 `ImageNode`로 방출되는 것을 확인했다.
 - 기존 셀 TAC picture / TopAndBottom picture 흐름 테스트는 통과했다.
-- `paragraph_layout.rs`의 빈 줄 TAC 조건은 변경하지 않아 기존 표 셀 중복 방지 범위를 보존했다.
+- `paragraph_layout.rs`의 빈 줄 TAC 조건은 캡션 센티널에 한해서만 완화했고, 기존 표 셀 중복 방지 범위는 보존했다.
 - 첨부 샘플의 완전 해소는 후속 플로팅 캡션 이미지 작업 범위로 유지한다.
 
 ## 다음 단계

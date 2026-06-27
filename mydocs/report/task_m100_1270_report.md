@@ -30,6 +30,9 @@
 - `src/renderer/layout/table_layout.rs`
 - `src/renderer/layout/table_partial.rs`
   - `layout_caption()` 호출부에 `bin_data_content` 전달
+- `src/renderer/layout/paragraph_layout.rs`
+  - 텍스트 없이 TAC picture만 있는 표 캡션 문단을 위해 빈 줄 TAC picture 렌더링 조건에 `cell_index == 65534` 캡션 센티널 예외 추가
+  - 실제 표 셀 내부 중복 렌더링 방지 조건은 유지
 
 기존 좌표 계산, 캡션 높이 계산, caption y advance, 표/그림 본문 배치 정책은 변경하지 않았다.
 
@@ -41,6 +44,7 @@
   - 기존 fixture에서 실제 파싱된 TAC picture 문단을 찾아 첫 top-level 표의 TOP caption으로 복제
   - `build_page_render_tree(0)` 후 caption sentinel context의 `ImageNode`가 정확히 1개 방출되는지 검증
   - 이미지 payload 존재 여부도 함께 확인
+  - 텍스트가 함께 있는 캡션 문단과 picture-only 캡션 문단을 모두 검증
 
 ## 검증 결과
 
@@ -49,11 +53,11 @@
 | 검증 | 결과 |
 |------|------|
 | `cargo fmt --check` | 통과 |
-| `cargo test --test issue_1270_caption_inline_image` | 통과 — 1 passed |
+| `cargo test --test issue_1270_caption_inline_image` | 통과 — 2 passed |
 | `cargo test --test issue_1139_inline_picture_duplicate` | 통과 — 85 passed |
 | `cargo test --test issue_1352_table_cell_tac_picture_text` | 통과 — 1 passed |
 | `cargo test --test issue_1459_topbottom_picture_reflow` | 통과 — 3 passed |
-| `cargo test --lib` | 통과 — 1937 passed, 6 ignored |
+| `cargo test --lib` | 통과 — 1959 passed, 6 ignored |
 | `cargo clippy --lib -- -D warnings` | 통과 |
 | `cargo test --test issue_530` | 통과 — 1 passed |
 | `cargo test --test issue_1486_hwpx_partial_tac_table` | 통과 — 6 passed |
@@ -96,4 +100,4 @@ Out of scope:
 
 ## 결론
 
-메인테이너가 지시한 (a) 인라인 스레딩 범위는 완료했다. 신규 회귀 테스트와 관련 회귀 검증도 통과했다. 첨부 샘플의 완전 시각 해소는 (b) 플로팅 캡션 이미지 후속 범위로 남긴다.
+메인테이너가 지시한 (a) 인라인 스레딩 범위는 완료했다. 신규 회귀 테스트는 텍스트 포함 캡션과 picture-only 캡션을 모두 검증하며, 관련 회귀 검증도 통과했다. 첨부 샘플의 완전 시각 해소는 (b) 플로팅 캡션 이미지 후속 범위로 남긴다.

@@ -45,6 +45,20 @@ fn first_tac_picture_para(paragraphs: &[Paragraph]) -> Option<Paragraph> {
     None
 }
 
+fn tac_picture_bin_id(para: &Paragraph) -> Option<u16> {
+    para.controls.iter().find_map(|ctrl| match ctrl {
+        Control::Picture(pic) if pic.common.treat_as_char => Some(pic.image_attr.bin_data_id),
+        _ => None,
+    })
+}
+
+fn picture_only_caption_para(mut para: Paragraph) -> Paragraph {
+    para.text.clear();
+    para.char_offsets.clear();
+    para.char_count = 0;
+    para
+}
+
 fn attach_top_caption_to_first_table(
     paragraphs: &mut [Paragraph],
     caption_para: Paragraph,
@@ -94,14 +108,8 @@ fn table_caption_inline_tac_picture_emits_image_node() {
 
     let caption_para = first_tac_picture_para(&doc.document().sections[0].paragraphs)
         .expect("fixture must contain a TAC picture paragraph");
-    let caption_bin_id = caption_para
-        .controls
-        .iter()
-        .find_map(|ctrl| match ctrl {
-            Control::Picture(pic) if pic.common.treat_as_char => Some(pic.image_attr.bin_data_id),
-            _ => None,
-        })
-        .expect("caption paragraph must have a TAC picture");
+    let caption_bin_id =
+        tac_picture_bin_id(&caption_para).expect("caption paragraph must have a TAC picture");
     assert!(
         doc.document()
             .bin_data_content
@@ -126,5 +134,38 @@ fn table_caption_inline_tac_picture_emits_image_node() {
         caption_images,
         vec![(caption_bin_id, true)],
         "caption inline TAC picture must be emitted exactly once with image payload"
+    );
+}
+
+#[test]
+fn table_caption_picture_only_tac_paragraph_emits_image_node() {
+    let repo_root = env!("CARGO_MANIFEST_DIR");
+    let path = Path::new(repo_root).join(SAMPLE);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", SAMPLE, e));
+    let mut doc =
+        HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {}", SAMPLE, e));
+
+    let source_para = first_tac_picture_para(&doc.document().sections[0].paragraphs)
+        .expect("fixture must contain a TAC picture paragraph");
+    let caption_bin_id =
+        tac_picture_bin_id(&source_para).expect("caption paragraph must have a TAC picture");
+    let caption_para = picture_only_caption_para(source_para);
+
+    assert!(
+        attach_top_caption_to_first_table(
+            &mut doc.document_mut().sections[0].paragraphs,
+            caption_para
+        ),
+        "fixture must contain a top-level table"
+    );
+
+    let tree = doc.build_page_render_tree(0).expect("render page 1");
+    let mut caption_images = Vec::new();
+    collect_caption_images(&tree.root, &mut caption_images);
+
+    assert_eq!(
+        caption_images,
+        vec![(caption_bin_id, true)],
+        "picture-only caption TAC paragraph must emit exactly one caption image"
     );
 }
