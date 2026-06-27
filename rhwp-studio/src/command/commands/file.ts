@@ -29,16 +29,18 @@ function isUserCancelError(e: unknown): boolean {
       && (e.name === 'AbortError' || e.name === 'NotAllowedError');
 }
 
-function hwpSaveFileName(fileName: string): string {
-  const trimmed = fileName.trim() || 'document.hwp';
+/// 출처 포맷에 맞춘 저장 파일명(.hwp / .hwpx). HWPX 직접 저장 활성화용.
+function saveFileNameFor(fileName: string, isHwpx: boolean): string {
+  const ext = isHwpx ? '.hwpx' : '.hwp';
+  const trimmed = fileName.trim() || `document${ext}`;
   if (/\.(hwp|hwpx)$/i.test(trimmed)) {
-    return trimmed.replace(/\.(hwp|hwpx)$/i, '.hwp');
+    return trimmed.replace(/\.(hwp|hwpx)$/i, ext);
   }
-  return `${trimmed}.hwp`;
+  return `${trimmed}${ext}`;
 }
 
-function hwpSaveBaseName(fileName: string): string {
-  return hwpSaveFileName(fileName).replace(/\.hwp$/i, '');
+function saveBaseNameFor(fileName: string, isHwpx: boolean): string {
+  return saveFileNameFor(fileName, isHwpx).replace(/\.(hwp|hwpx)$/i, '');
 }
 
 function hwpSaveCurrentHandle(
@@ -58,13 +60,12 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
     const saveName = services.wasm.fileName;
     const sourceFormat = services.wasm.getSourceFormat();
     const isHwpx = sourceFormat === 'hwpx';
-    if (isHwpx) {
-      alert('HWPX 형식은 현재 베타 단계라 직접 저장이 비활성화되어 있습니다.');
-      return 'unsupported';
-    }
 
-    const bytes = services.wasm.exportHwp();
-    const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/x-hwp' });
+    // HWPX 출처는 HWPX 로 직접 저장(직렬화 충실도 확보 후 활성화). 그 외는 HWP.
+    const bytes = isHwpx ? services.wasm.exportHwpx() : services.wasm.exportHwp();
+    const blob = new Blob([bytes as unknown as BlobPart], {
+      type: isHwpx ? 'application/hwp+zip' : 'application/x-hwp',
+    });
     console.log(`[file:save] format=${sourceFormat}, isHwpx=${isHwpx}, ${bytes.length} bytes`);
 
     try {
@@ -89,7 +90,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
 
     let downloadName = saveName;
     if (services.wasm.isNewDocument) {
-      const baseName = saveName.replace(/\.hwp$/i, '');
+      const baseName = saveBaseNameFor(saveName, isHwpx);
       const result = await showSaveAs(baseName);
       if (!result) return 'cancelled';
       downloadName = result;
@@ -122,7 +123,7 @@ export async function confirmSaveBeforeReplacingDocument(
 
   const choice = await showUnsavedChangesDialog({
     fileName: services.wasm.fileName,
-    canSave: ctx.sourceFormat !== 'hwpx',
+    canSave: true, // HWPX 직접 저장 활성화로 모든 출처 저장 가능
   });
 
   if (choice === 'cancel') return false;
@@ -246,10 +247,12 @@ export const fileCommands: CommandDef[] = [
       try {
         const sourceFormat = services.wasm.getSourceFormat();
         const isHwpx = sourceFormat === 'hwpx';
-        const saveName = hwpSaveFileName(services.wasm.fileName);
-        const bytes = services.wasm.exportHwp();
-        const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/x-hwp' });
-        console.log(`[file:save-as] format=${sourceFormat}, hwpExport=${isHwpx}, ${bytes.length} bytes`);
+        const saveName = saveFileNameFor(services.wasm.fileName, isHwpx);
+        const bytes = isHwpx ? services.wasm.exportHwpx() : services.wasm.exportHwp();
+        const blob = new Blob([bytes as unknown as BlobPart], {
+          type: isHwpx ? 'application/hwp+zip' : 'application/x-hwp',
+        });
+        console.log(`[file:save-as] format=${sourceFormat}, isHwpx=${isHwpx}, ${bytes.length} bytes`);
 
         try {
           const saveResult = await saveDocumentToFileSystem({
@@ -272,7 +275,7 @@ export const fileCommands: CommandDef[] = [
         }
 
         // 폴백: 파일명 입력 → blob download
-        const baseName = hwpSaveBaseName(saveName);
+        const baseName = saveBaseNameFor(saveName, isHwpx);
         const result = await showSaveAs(baseName);
         if (!result) return;
         const downloadName = result;
