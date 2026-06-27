@@ -46,7 +46,58 @@ use super::utils::find_bin_data;
 use super::{CellContext, CellPathEntry, LayoutEngine};
 
 // 표 수평 정렬: model::shape 타입 사용
-use crate::model::shape::{CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertRelTo};
+use crate::model::shape::{
+    Caption, CaptionDirection, CommonObjAttr, HorzAlign, HorzRelTo, TextWrap, VertRelTo,
+};
+
+fn caption_has_topbottom_picture(caption: &Caption) -> bool {
+    caption.paragraphs.iter().any(|para| {
+        para.controls.iter().any(|ctrl| {
+            matches!(
+                ctrl,
+                Control::Picture(pic) if matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
+            )
+        })
+    })
+}
+
+fn should_render_table_caption(table: &crate::model::table::Table, depth: usize) -> bool {
+    depth == 0
+        || (depth == 1
+            && table
+                .caption
+                .as_ref()
+                .is_some_and(caption_has_topbottom_picture))
+}
+
+fn caption_flow_extra(caption: &Option<Caption>, caption_height: f64, caption_spacing: f64) -> f64 {
+    let is_lr_caption = caption.as_ref().is_some_and(|cap| {
+        matches!(
+            cap.direction,
+            CaptionDirection::Left | CaptionDirection::Right
+        )
+    });
+    if is_lr_caption || caption_height <= 0.0 {
+        0.0
+    } else {
+        caption_height + caption_spacing
+    }
+}
+
+fn top_caption_flow_extra(
+    caption: &Option<Caption>,
+    caption_height: f64,
+    caption_spacing: f64,
+) -> f64 {
+    if caption
+        .as_ref()
+        .is_some_and(|cap| matches!(cap.direction, CaptionDirection::Top))
+    {
+        caption_flow_extra(caption, caption_height, caption_spacing)
+    } else {
+        0.0
+    }
+}
 
 fn build_col_row_y_from_cell_heights(
     table: &crate::model::table::Table,
@@ -684,7 +735,8 @@ impl LayoutEngine {
             paper_w,
         );
 
-        let (caption_height, caption_spacing) = if depth == 0 {
+        let render_caption = should_render_table_caption(table, depth);
+        let (caption_height, caption_spacing) = if render_caption {
             let ch = self.calculate_caption_height(&table.caption, styles);
             let cs = table
                 .caption
@@ -697,7 +749,7 @@ impl LayoutEngine {
         };
 
         // Left 캡션: 표를 캡션 크기만큼 오른쪽으로 이동
-        if depth == 0 {
+        if render_caption {
             if let Some(ref cap) = table.caption {
                 if matches!(cap.direction, crate::model::shape::CaptionDirection::Left) {
                     let cap_w = hwpunit_to_px(cap.width as i32, self.dpi);
@@ -711,17 +763,8 @@ impl LayoutEngine {
         } else {
             crate::model::shape::TextWrap::Square
         };
-        let inline_top_caption_offset = if inline_x_override.is_some() && depth == 0 {
-            if let Some(ref caption) = table.caption {
-                use crate::model::shape::CaptionDirection;
-                if matches!(caption.direction, CaptionDirection::Top) {
-                    caption_height + caption_spacing
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
+        let inline_top_caption_offset = if inline_x_override.is_some() && render_caption {
+            top_caption_flow_extra(&table.caption, caption_height, caption_spacing)
         } else {
             0.0
         };
@@ -731,7 +774,7 @@ impl LayoutEngine {
         let table_y = if inline_x_override.is_some() {
             y_start + inline_top_caption_offset
         } else {
-            self.compute_table_y_position(
+            let computed_y = self.compute_table_y_position(
                 table,
                 table_height,
                 y_start,
@@ -741,7 +784,12 @@ impl LayoutEngine {
                 caption_spacing,
                 para_y,
                 allow_para_top_bleed,
-            )
+            );
+            if depth > 0 && render_caption {
+                computed_y + top_caption_flow_extra(&table.caption, caption_height, caption_spacing)
+            } else {
+                computed_y
+            }
         };
         let inline_table_flow_y_shift = if inline_x_override.is_some() {
             para_y
@@ -870,7 +918,7 @@ impl LayoutEngine {
             bin_data_content,
             depth,
             table_meta,
-            enclosing_cell_ctx,
+            enclosing_cell_ctx.clone(),
             &row_col_x,
             &row_y,
             independent_col_row_y.as_deref(),
@@ -981,7 +1029,7 @@ impl LayoutEngine {
         col_node.children.push(table_node);
 
         // ── 7. 캡션 렌더링 ──
-        if depth == 0 {
+        if render_caption {
             if let Some(ref caption) = table.caption {
                 use crate::model::shape::{CaptionDirection, CaptionVertAlign};
                 let (cap_x, cap_w, cap_y) = match caption.direction {
@@ -1010,15 +1058,26 @@ impl LayoutEngine {
                         (cx, cw, cy)
                     }
                 };
-                let cap_cell_ctx = table_meta.map(|(pi, ci)| CellContext {
-                    parent_para_index: pi,
-                    path: vec![CellPathEntry {
-                        control_index: ci,
-                        cell_index: 65534, // 캡션 식별 센티널
-                        cell_para_index: 0,
-                        text_direction: 0,
-                    }],
-                });
+                let cap_cell_ctx = table_meta
+                    .map(|(pi, ci)| CellContext {
+                        parent_para_index: pi,
+                        path: vec![CellPathEntry {
+                            control_index: ci,
+                            cell_index: 65534, // 캡션 식별 센티널
+                            cell_para_index: 0,
+                            text_direction: 0,
+                        }],
+                    })
+                    .or_else(|| {
+                        enclosing_cell_ctx.as_ref().map(|ctx| {
+                            let mut cc = ctx.clone();
+                            if let Some(last) = cc.path.last_mut() {
+                                last.cell_index = 65534;
+                                last.cell_para_index = 0;
+                            }
+                            cc
+                        })
+                    });
                 self.layout_caption(
                     tree,
                     col_node,
@@ -1076,7 +1135,11 @@ impl LayoutEngine {
             // 중첩 표: outer_margin 포함 높이 반환
             let om_top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
             let om_bottom = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
-            (table_height + om_top + om_bottom).max(0.0)
+            (table_height
+                + caption_flow_extra(&table.caption, caption_height, caption_spacing)
+                + om_top
+                + om_bottom)
+                .max(0.0)
         }
     }
 
