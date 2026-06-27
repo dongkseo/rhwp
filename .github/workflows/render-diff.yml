@@ -12,6 +12,8 @@ on:
       - 'src/wasm_api.rs'
       - 'src/main.rs'
       - 'rhwp-studio/**'
+      - 'mydocs/pr/**'
+      - 'mydocs/orders/*.md'
       - '.github/workflows/render-diff.yml'
   workflow_dispatch:
     inputs:
@@ -103,8 +105,8 @@ jobs:
                 per_page: 100,
               });
 
-              if (commits.length < 2) {
-                setResult(false, 'not-enough-commits');
+              if (commits.length === 0) {
+                setResult(false, 'no-pr-commits');
                 return;
               }
 
@@ -145,7 +147,9 @@ jobs:
                 return;
               }
               if (!candidateSha) {
-                setResult(false, 'no-code-candidate');
+                candidateSha = pr.base.sha;
+                core.info(`all PR commits are allowed review docs; using base SHA ${candidateSha}`);
+                setResult(true, 'all-review-docs-no-render-impact', candidateSha);
                 return;
               }
 

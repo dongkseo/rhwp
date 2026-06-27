@@ -2139,7 +2139,11 @@ impl LayoutEngine {
                         - inline_offset
                         - num_offset,
                 );
-            let equation_indent_scale = if cell_ctx.is_some() { 1.0 } else { 2.0 };
+            // [Task #1472] IR indent 를 full 로 되돌리면서(parser/mod.rs) 미주 TAC 수식
+            // available_width 의 effective indent 를 불변 유지: 변환본은 scale 을 절반으로.
+            // (종전: IR(half)×2.0=full → 현재: IR(full)×1.0=full)
+            let equation_indent_scale = (if cell_ctx.is_some() { 1.0 } else { 2.0 })
+                * if self.is_hwp3_variant.get() { 0.5 } else { 1.0 };
             let equation_first_effective_margin_left =
                 crate::renderer::equation_tac_flow::paragraph_effective_margin_left_with_indent_scale(
                     margin_left,
@@ -4353,11 +4357,12 @@ impl LayoutEngine {
                             margin_left,
                             indent,
                             visual_line_idx,
-                            if equation_tac_line_flow.is_some() && cell_ctx.is_none() {
+                            // [Task #1472] 변환본은 effective indent 불변 위해 scale 절반.
+                            (if equation_tac_line_flow.is_some() && cell_ctx.is_none() {
                                 2.0
                             } else {
                                 1.0
-                            },
+                            }) * if self.is_hwp3_variant.get() { 0.5 } else { 1.0 },
                         );
                     effective_col_x + row_effective_margin_left
                 };

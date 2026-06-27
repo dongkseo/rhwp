@@ -30,6 +30,8 @@ pub struct Paragraph {
     pub range_tags: Vec<RangeTag>,
     /// 필드 텍스트 범위 (0x03~0x04 사이 텍스트 인덱스 + 컨트롤 인덱스)
     pub field_ranges: Vec<FieldRange>,
+    /// 고아 FIELD_END (다단락 필드의 종료 마커 — begin 이 다른 문단). HWPX 전용 (Task #1556).
+    pub orphan_field_ends: Vec<OrphanFieldEnd>,
     /// 컨트롤 목록 (표, 그림, 각주 등)
     pub controls: Vec<Control>,
     /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
@@ -251,6 +253,21 @@ pub struct FieldRange {
     pub end_char_idx: usize,
     /// controls[] 배열 내 인덱스 (해당 Field 컨트롤 참조)
     pub control_idx: usize,
+}
+
+/// 고아 FIELD_END (0x04) — 짝이 되는 FIELD_BEGIN 이 다른 문단에 있는
+/// 다단락 필드의 종료 마커. begin 문단에서 `Control::Field` 로 보존되는 것과 달리,
+/// end 문단에는 컨트롤·FieldRange 가 없어 8유닛 슬롯을 표현할 산출물이 없다.
+/// 이를 기록해 직렬화기가 `<hp:fieldEnd>` 를 같은 위치에 복원한다 (Task #1556).
+#[derive(Debug, Clone, Default)]
+pub struct OrphanFieldEnd {
+    /// text 문자열 내 위치 (이 인덱스 직전에 8유닛 fieldEnd 슬롯이 놓인다).
+    /// 텍스트 끝이면 `text.chars().count()`.
+    pub char_idx: usize,
+    /// `<hp:fieldEnd beginIDRef="..">` — 짝 fieldBegin 의 id 참조.
+    pub begin_id_ref: u32,
+    /// `<hp:fieldEnd fieldid="..">` — 필드 인스턴스 id.
+    pub field_id: u32,
 }
 
 impl Paragraph {
@@ -830,6 +847,7 @@ impl Paragraph {
             line_segs: new_line_segs,
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
+            orphan_field_ends: Vec::new(),
             char_count: new_char_count,
             para_shape_id: self.para_shape_id,
             style_id: self.style_id,

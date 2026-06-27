@@ -35,6 +35,7 @@ const VISUAL_XFAIL: &[(&str, &str)] = &[
     // (<hp:ole binaryItemIDRef>) 직렬화 정정으로 다수 PASS 승격됨.
     // 잔여: k-water-rfp(대형 복합).
     ("k-water-rfp.hwpx", "구조 불일치 2페이지(대형, 복합)"),
+    // opengov 실문서 말뭉치(Task #1564) 신규 편입분은 #1567 직렬화 정정으로 모두 PASS 승격됨.
 ];
 
 /// 검사 제외 — 샘플 자체가 HWPX 패키지가 아님(HWP5 가 .hwpx 확장자로 저장됨).
