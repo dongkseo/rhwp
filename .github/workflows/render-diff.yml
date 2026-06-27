@@ -12,8 +12,7 @@ on:
       - 'src/wasm_api.rs'
       - 'src/main.rs'
       - 'rhwp-studio/**'
-      - 'mydocs/pr/**'
-      - 'mydocs/orders/*.md'
+      - 'mydocs/**'
       - '.github/workflows/render-diff.yml'
   workflow_dispatch:
     inputs:
@@ -60,7 +59,7 @@ jobs:
       candidate_sha: ${{ steps.detect.outputs.candidate_sha || '' }}
 
     steps:
-      - name: Detect review-doc-only fast pass
+      - name: Detect mydocs-only fast pass
         id: detect
         continue-on-error: true
         uses: actions/github-script@v8
@@ -76,9 +75,8 @@ jobs:
               core.info(`fast_pass=${fastPass} reason=${reason} candidate_sha=${candidateSha}`);
             }
 
-            function isAllowedReviewDocPath(filename) {
-              return filename.startsWith('mydocs/pr/')
-                || /^mydocs\/orders\/[^/]+\.md$/.test(filename);
+            function isAllowedMydocsPath(filename) {
+              return filename.startsWith('mydocs/');
             }
 
             function latestRun(runs) {
@@ -110,7 +108,7 @@ jobs:
                 return;
               }
 
-              let trailingDocsOnlyCommits = 0;
+              let trailingMydocsOnlyCommits = 0;
               let candidateSha = '';
 
               for (let index = commits.length - 1; index >= 0; index -= 1) {
@@ -128,13 +126,13 @@ jobs:
                   return;
                 }
 
-                const docsOnly = files.every((file) => isAllowedReviewDocPath(file.filename));
-                if (docsOnly) {
+                const mydocsOnly = files.every((file) => isAllowedMydocsPath(file.filename));
+                if (mydocsOnly) {
                   if ((commit.parents || []).length !== 1) {
-                    setResult(false, `docs-only-merge-commit:${sha}`);
+                    setResult(false, `mydocs-only-merge-commit:${sha}`);
                     return;
                   }
-                  trailingDocsOnlyCommits += 1;
+                  trailingMydocsOnlyCommits += 1;
                   continue;
                 }
 
@@ -142,14 +140,14 @@ jobs:
                 break;
               }
 
-              if (trailingDocsOnlyCommits === 0) {
-                setResult(false, 'no-trailing-review-doc-commits');
+              if (trailingMydocsOnlyCommits === 0) {
+                setResult(false, 'no-trailing-mydocs-commits');
                 return;
               }
               if (!candidateSha) {
                 candidateSha = pr.base.sha;
-                core.info(`all PR commits are allowed review docs; using base SHA ${candidateSha}`);
-                setResult(true, 'all-review-docs-no-render-impact', candidateSha);
+                core.info(`all PR commits are under mydocs; using base SHA ${candidateSha}`);
+                setResult(true, 'all-mydocs-no-render-impact', candidateSha);
                 return;
               }
 
