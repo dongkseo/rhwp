@@ -78,6 +78,25 @@ pub fn write_field_end<W: Write>(w: &mut Writer<W>, field_id: u32) -> Result<(),
     empty_tag(w, "hp:fieldEnd", &[("beginIDRef", &id_str)])
 }
 
+/// `<hp:fieldEnd beginIDRef=".." fieldid="..">` — beginIDRef 와 fieldid 동시 방출.
+/// 다단락 필드의 고아 fieldEnd 복원용 (Task #1556). `field_id == 0` 이면 `fieldid` 생략.
+pub fn write_field_end_full<W: Write>(
+    w: &mut Writer<W>,
+    begin_id_ref: u32,
+    field_id: u32,
+) -> Result<(), SerializeError> {
+    let begin_str = begin_id_ref.to_string();
+    if field_id == 0 {
+        return empty_tag(w, "hp:fieldEnd", &[("beginIDRef", &begin_str)]);
+    }
+    let field_str = field_id.to_string();
+    empty_tag(
+        w,
+        "hp:fieldEnd",
+        &[("beginIDRef", &begin_str), ("fieldid", &field_str)],
+    )
+}
+
 // =====================================================================
 // 하이퍼링크 (필드의 특수형) — <hp:fieldBegin type="HYPERLINK"> 변형
 // =====================================================================

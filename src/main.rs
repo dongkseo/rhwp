@@ -50,7 +50,9 @@ fn main() {
         Some("test-field") => test_field_roundtrip(&args[2..]),
         Some("ir-diff") => ir_diff(&args[2..]),
         Some("hwpx-roundtrip") => rhwp::diagnostics::hwpx_roundtrip_batch::run(&args[2..]),
+        Some("hwp5-roundtrip") => rhwp::diagnostics::hwp5_roundtrip_batch::run(&args[2..]),
         Some("render-diff") => rhwp::diagnostics::render_geom_diff::run(&args[2..]),
+        Some("bench") => rhwp::diagnostics::bench::run(&args[2..]),
         Some("thumbnail") => extract_thumbnail(&args[2..]),
         _ => {
             println!("rhwp v{}", rhwp::version());
@@ -207,12 +209,19 @@ fn print_help() {
     println!("      HWPX → IR → HWPX roundtrip 검증 (Task #1315 baseline)");
     println!("      재조립 .hwpx와 inventory.tsv를 출력 폴더(기본 output/poc/task1315)에 생성");
     println!("      --lineseg-report: 문단별 lineseg diff를 lineseg_diff.tsv로 산출 (#1380 측정)");
+    println!("  hwp5-roundtrip <파일.hwp | --batch 폴더> [-o <출력폴더>]");
+    println!("      HWP5 → IR → HWP5 roundtrip 무손실 검증 (Task #1552)");
+    println!("      재조립 .rt.hwp와 inventory.tsv를 출력 폴더(기본 output/poc/task1552)에 생성");
     println!("  render-diff <파일> [--via hwpx|hwp] [-p <페이지>] [--max-disp <px>]");
     println!("  render-diff <파일A> <파일B> [-p <페이지>] [--max-disp <px>]");
     println!("  render-diff --batch <폴더> [--via hwpx] [-o <출력폴더>] [--max-disp <px>]");
     println!("      라운드트립 시각 정합성 게이트 — 페이지별 RenderNode bbox 변위(px) 정량화");
     println!("      자기 라운드트립(원본 IR vs 직렬화→재로드 IR) 또는 두 파일 직접 비교");
     println!("      배치: geom_inventory.tsv 산출(기본 output/poc/render_diff)");
+    println!("  bench <파일...> | --batch <폴더> [-n <반복수>] [--tsv <출력.tsv>]");
+    println!("      단계별 처리 성능 계측 — parse/layout/render/serialize median(ms)");
+    println!("      워밍업 1회 후 N회(기본 3) 반복. 파일별 크기/쪽수 + total 표 + TSV");
+    println!("      주의: 절대 수치는 머신·빌드 의존, 동일 환경 상대·재현 지표로 해석");
     println!();
     println!("  thumbnail <파일.hwp> [옵션]");
     println!("      HWP 파일에서 썸네일(PrvImage) 추출");

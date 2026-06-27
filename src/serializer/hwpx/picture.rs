@@ -252,12 +252,20 @@ fn write_img<W: Write>(
     ctx: &SerializeContext,
 ) -> Result<(), SerializeError> {
     let bin_id = p.image_attr.bin_data_id;
-    let manifest_id = ctx.resolve_bin_id(bin_id).ok_or_else(|| {
-        SerializeError::XmlError(format!(
-            "<hp:pic> binaryItemIDRef 미등록 bin_data_id={} (BinDataContent 누락)",
-            bin_id
-        ))
-    })?;
+    // #1567: bin_id==0 은 원본 `binaryItemIDRef=""`(이미지 참조 없는 placeholder pic, 표 셀
+    // 등)에 대응한다(파서 `unwrap_or(0)`). resolve 실패해도 빈 ref 를 verbatim 방출해
+    // pic 컨트롤을 보존한다(종전: Err → 호출자 section.rs:701 이 조용히 드롭 → IR_DIFF).
+    // 비-0 미해결은 진짜 BinDataContent 누락이므로 진단(Err)을 유지해 손실 은폐를 막는다.
+    let manifest_id = match ctx.resolve_bin_id(bin_id) {
+        Some(id) => id,
+        None if bin_id == 0 => "",
+        None => {
+            return Err(SerializeError::XmlError(format!(
+                "<hp:pic> binaryItemIDRef 미등록 bin_data_id={} (BinDataContent 누락)",
+                bin_id
+            )))
+        }
+    };
 
     let bright = p.image_attr.brightness.to_string();
     let contrast = p.image_attr.contrast.to_string();
@@ -686,6 +694,21 @@ mod tests {
             "binaryItemIDRef must resolve to manifest id image1: {}",
             xml
         );
+    }
+
+    #[test]
+    fn task1567_empty_binary_ref_pic_preserved() {
+        // #1567: bin_data_id==0(원본 binaryItemIDRef="" placeholder)은 BinDataContent 가
+        // 없어 resolve 실패해도 binaryItemIDRef="" 로 보존되어야 한다(드롭 금지).
+        let doc = Document::default(); // bin 미등록
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let pic = make_picture(0);
+        let xml = serialize(&pic, &mut ctx);
+        assert!(
+            xml.contains(r#"binaryItemIDRef="""#),
+            "빈 ref pic 은 binaryItemIDRef=\"\" 로 보존(드롭 금지): {xml}"
+        );
+        assert!(xml.contains("<hp:pic "), "pic 컨트롤 자체 보존: {xml}");
     }
 
     #[test]

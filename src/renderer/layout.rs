@@ -160,6 +160,10 @@ struct VisibleFloatExclusion {
     /// visible host 문단의 양수 offset 자리차지 표가 후속 본문을 밀어내야 하는 y 구간.
     top: f64,
     bottom: f64,
+    /// 이 zone 을 만든 표가 앵커된 host 문단 index. 같은 문단의 텍스트(섹션 제목)는
+    /// 자기 표가 만든 zone 에 밀리면 안 된다 — 한컴은 제목을 문단 앵커(표 위)에 두고
+    /// 양수 offset 표를 그 아래에 둔다. consume 시 self-owned zone 을 skip 하는 데 쓴다.
+    owner_para: usize,
 }
 
 fn render_node_contains_text_for_para(node: &RenderNode, para_index: usize) -> bool {
@@ -3961,6 +3965,12 @@ impl LayoutEngine {
                 };
                 let mut jump_to = y_offset;
                 for zone in &visible_float_exclusions {
+                    // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
+                    // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 가 다른 후속
+                    // 문단은 그대로 표 아래로 밀린다.
+                    if zone.owner_para == item_para {
+                        continue;
+                    }
                     let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
                     let overlaps_zone = self.is_hwpx_source.get()
                         && item_probe_height > 0.0
@@ -5608,6 +5618,67 @@ impl LayoutEngine {
                     } else {
                         y_offset
                     };
+                    // [Issue #1535] visible-host co-anchored float 표도 문단(아래 visible_float_exclusions
+                    // 소비부)과 동일하게 선행 float 표가 점유한 세로 영역을 벗어나 배치되어야 한다.
+                    // 표 배치는 기존에 exclusion 을 push 만 하고 consult 하지 않아, 연속 문단의
+                    // float 표가 앞 문단 float 표 위에 겹쳐 그려졌다. 표의 자연 상단
+                    // (para_y + outer_margin + v_offset, = compute_table_y_position 의 raw_y)이
+                    // 활성 exclusion 영역 안에서 시작하면 그 영역 하단으로 내려 시작점을 끌어올린다.
+                    // compute_table_y_position 이 raw_y.max(y_start) 로 클램프하므로 table_y_start
+                    // (= y_start)를 올리면 표가 해당 영역 아래로 밀린다.
+                    let table_y_start = if is_para_topbottom_float(&t.common)
+                        && !visible_float_exclusions.is_empty()
+                    {
+                        let v_off =
+                            hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
+                        // 빈-host float 은 base table_y_start(=흐름 위치)가 곧 자연 상단이고,
+                        // visible host 는 para_y+outer+v_off 가 자연 상단이다. 둘 중 큰 값을
+                        // 자연 상단으로 보아 선행 exclusion 밴드 안에서 시작하면 그 하단으로 내린다.
+                        let natural_top = table_y_start
+                            .max(para_y_for_table + visible_outer_top_px + v_off.max(0.0));
+                        let mut floor = table_y_start;
+                        for zone in visible_float_exclusions.iter() {
+                            if natural_top + 0.5 >= zone.top && natural_top < zone.bottom {
+                                // 빈-host(text 없는) float 은 자기 offset 이 선행 exclusion 에
+                                // 흡수되어 표끼리 붙는다. zone 하단 아래로 그 offset 만큼 띄워
+                                // 복원한다(한컴: 표-표 간격 = 후행 표 offset). visible host 는
+                                // part 3(host-title-line)이 간격을 처리하므로 여기선 zone 하단만.
+                                let restore = if is_current_visible_para_float {
+                                    0.0
+                                } else {
+                                    v_off.max(0.0)
+                                };
+                                floor = floor.max(zone.bottom + restore);
+                            }
+                        }
+                        floor
+                    } else {
+                        table_y_start
+                    };
+                    // [Issue #1549] visible-host 의 양수 offset float 표는 host 텍스트(섹션 제목)가
+                    // line 0 으로 그려지는 줄 *아래*에 와야 한다(한컴: 제목 위, 표 아래). 제목과 표는
+                    // 같은 문단 앵커를 공유하고 선행 float exclusion 으로 함께 같은 y 까지 밀리므로,
+                    // 작은 offset 은 흡수되어 둘이 겹친다. 제목이 그려지는 위치(선행 exclusion 아래로
+                    // 밀린 para 흐름) + 제목 줄높이 아래로 표를 내려 겹침을 막는다. 큰 offset 으로 표가
+                    // 이미 더 아래면 max 라 영향 없다.
+                    let table_y_start = if is_current_visible_para_float
+                        && signed_hwpunit(t.common.vertical_offset) > 0
+                    {
+                        let host_line_px = para
+                            .line_segs
+                            .first()
+                            .map(|s| hwpunit_to_px(s.line_height, self.dpi))
+                            .unwrap_or(0.0);
+                        let mut title_flow_y = para_y_for_table;
+                        for zone in visible_float_exclusions.iter() {
+                            if title_flow_y + 0.5 >= zone.top && title_flow_y < zone.bottom {
+                                title_flow_y = title_flow_y.max(zone.bottom);
+                            }
+                        }
+                        table_y_start.max(title_flow_y + host_line_px + visible_outer_top_px)
+                    } else {
+                        table_y_start
+                    };
                     let allow_para_top_bleed = is_current_visible_para_float
                         && signed_hwpunit(t.common.vertical_offset) < 0;
                     let table_visual_height = mt
@@ -5696,9 +5767,15 @@ impl LayoutEngine {
                     {
                         let table_visual_top = table_visual_end - table_visual_height;
                         if table_visual_end > table_visual_top + 0.5 {
+                            // exclusion 하단을 표의 outer_margin_bottom 만큼 늘려, 다음 섹션
+                            // 제목(이 zone 을 consult)이 표 아래로 그 여백만큼 띄워지게 한다
+                            // (한컴: 섹션 표와 다음 섹션 제목 사이 간격 = 표 아래 외곽여백).
+                            let margin_bottom_px =
+                                hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
                             visible_float_exclusions.push(VisibleFloatExclusion {
                                 top: table_visual_top,
-                                bottom: table_visual_end,
+                                bottom: table_visual_end + margin_bottom_px,
+                                owner_para: para_index,
                             });
                         }
                     }
