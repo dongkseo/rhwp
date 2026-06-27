@@ -253,24 +253,37 @@ mv mydocs/pr/pr_N_review_impl.md mydocs/pr/archives/
 
 ### 7.6 로컬/원격 PR 작업 브랜치 정리
 
+PR 처리용으로 별도 worktree 를 만들었다면 브랜치 삭제 전에 worktree 를 먼저 제거한다. worktree 가 남아 있으면
+해당 브랜치가 checkout 중인 상태라 `git branch -D` 가 실패한다.
+
+```bash
+git worktree list
+git worktree remove /path/to/pr-worktree
+```
+
 ```bash
 git branch -D local/prN
 ```
 
 collaborator self-merge 후보처럼 원본 저장소에 PR head 브랜치를 직접 만든 경우에는 merge 후 원격
-작업 브랜치도 삭제한다. 예를 들어 PR head 가 `upstream/task_m100_1470` 형태라면 다음을 수행한다.
+작업 브랜치도 삭제한다. 예를 들어 PR head 가 `upstream/task_m100_1470` 또는
+`upstream/task_m100_1601_mydocs_fast_pass` 형태라면 다음을 수행한다.
 
 ```bash
 git checkout devel
 git merge --ff-only upstream/devel
+git worktree list
+# 해당 브랜치를 checkout 한 별도 worktree 가 있으면 먼저 제거한다.
+git worktree remove /path/to/pr-worktree
 git push upstream --delete task_m100_1470
 git branch -D task_m100_1470
 git fetch upstream --prune
 ```
 
-삭제 후에는 로컬/원격 추적 브랜치가 남지 않았는지 확인한다.
+삭제 후에는 worktree, 로컬 브랜치, 원격 추적 브랜치가 남지 않았는지 확인한다.
 
 ```bash
+git worktree list
 git branch --list 'task_m100_1470'
 git branch -r | rg 'task_m100_1470' || true
 git ls-remote --heads upstream task_m100_1470
