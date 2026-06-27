@@ -163,6 +163,9 @@ pub fn write_line<W: Write>(
     if let Some(cap) = &line.drawing.caption {
         write_caption(w, cap, ctx)?;
     }
+    // [#1588] 도형 설명 — caption 뒤 (write_rect/container 와 동형). 누락 시 선 도형
+    // shapeComment("선입니다." 등)가 저장 시 드롭됐다.
+    write_shape_comment(w, c)?;
 
     end_tag(w, "hp:line")?;
     Ok(())
@@ -559,7 +562,7 @@ fn write_matrix<W: Write>(
 
 /// `<hp:lineShape>` — `parse_line_shape_attr` 의 역매핑.
 /// headStyle/tailStyle/alpha 는 파서 미적재 → "NORMAL"/"0" 고정 방출.
-fn write_line_shape<W: Write>(
+pub(crate) fn write_line_shape<W: Write>(
     w: &mut Writer<W>,
     bl: &ShapeBorderLine,
 ) -> Result<(), SerializeError> {
@@ -795,7 +798,10 @@ fn hatch_style_str(pattern_type: i32) -> &'static str {
 /// `<hp:shadow>` — `parse_shape_shadow_attr` 의 역매핑.
 /// 전 필드 0 이면 원본에 shadow 부재로 간주하여 미방출.
 /// alpha 는 정수 방출 (파서의 `>1.0` 경로와 정합 — 0/1 경계값만 비가역).
-fn write_shadow<W: Write>(w: &mut Writer<W>, d: &DrawingObjAttr) -> Result<(), SerializeError> {
+pub(crate) fn write_shadow<W: Write>(
+    w: &mut Writer<W>,
+    d: &DrawingObjAttr,
+) -> Result<(), SerializeError> {
     if d.shadow_type == 0
         && d.shadow_color == 0
         && d.shadow_offset_x == 0
@@ -885,6 +891,7 @@ fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Seria
     let treat = bool01(c.treat_as_char);
     let vert_offset = c.vertical_offset.to_string();
     let horz_offset = c.horizontal_offset.to_string();
+    let hold = bool01(c.prevent_page_break != 0); // [#1594] IR 보존
     empty_tag(
         w,
         "hp:pos",
@@ -893,7 +900,7 @@ fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Seria
             ("affectLSpacing", "0"),
             ("flowWithText", bool01(c.flow_with_text)),
             ("allowOverlap", bool01(c.allow_overlap)),
-            ("holdAnchorAndSO", "0"),
+            ("holdAnchorAndSO", hold),
             ("vertRelTo", vert_rel_to_str(c.vert_rel_to)),
             ("horzRelTo", horz_rel_to_str(c.horz_rel_to)),
             ("vertAlign", vert_align_str(c.vert_align)),
@@ -933,7 +940,7 @@ pub(crate) fn color_to_hex(c: ColorRef) -> String {
     }
 }
 
-fn numbering_type_str(n: ObjectNumberingType) -> &'static str {
+pub(crate) fn numbering_type_str(n: ObjectNumberingType) -> &'static str {
     match n {
         ObjectNumberingType::Picture => "PICTURE",
         ObjectNumberingType::Table => "TABLE",
@@ -1055,6 +1062,27 @@ mod tests {
         assert_eq!(line_shape_style(2), "DASH"); // 2 = DASH (회귀 방지)
         let none_with_flat_end_cap = 1 << 6;
         assert_eq!(line_shape_style(none_with_flat_end_cap), "NONE");
+    }
+
+    /// #1588: 선 도형 설명(shapeComment)이 저장 시 방출돼야 한다.
+    /// write_rect/container 는 호출하나 write_line 만 누락 → 드롭(RED).
+    #[test]
+    fn task1588_line_shape_comment_emitted() {
+        let mut line = LineShape::default();
+        line.common.description = "선입니다.".to_string();
+        let xml = serialize_line(&line);
+        assert!(
+            xml.contains("<hp:shapeComment>선입니다.</hp:shapeComment>"),
+            "선 도형 shapeComment 방출돼야 한다 (현재 드롭): {xml}"
+        );
+    }
+
+    /// #1588: 설명 없는 선 도형은 shapeComment 미방출 (빈 태그 금지).
+    #[test]
+    fn task1588_line_shape_no_comment_when_empty() {
+        let line = LineShape::default();
+        let xml = serialize_line(&line);
+        assert!(!xml.contains("<hp:shapeComment"), "빈 설명 미방출: {xml}");
     }
 
     fn cs(start_pos: u32, char_shape_id: u32) -> crate::model::paragraph::CharShapeRef {

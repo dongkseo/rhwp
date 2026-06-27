@@ -3387,6 +3387,17 @@ fn parse_shape_fill_brush(reader: &mut Reader<&[u8]>) -> Result<Fill, HwpxError>
     Ok(fill)
 }
 
+/// [Task #1598] `<hc:center x="" y="">` 류 점 요소의 x/y 속성을 Point 로 읽는다.
+fn parse_xy(e: &quick_xml::events::BytesStart, p: &mut crate::model::Point) {
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"x" => p.x = parse_i32(&attr),
+            b"y" => p.y = parse_i32(&attr),
+            _ => {}
+        }
+    }
+}
+
 fn parse_shape_shadow_attr(e: &quick_xml::events::BytesStart) -> (u32, u32, i32, i32, u8) {
     let mut shadow_type = 0_u32;
     let mut shadow_color = 0_u32;
@@ -3538,6 +3549,15 @@ fn parse_shape_object(
     // [Task #1067] polygon / curve 의 가변 꼭짓점 `<hc:pt x=... y=.../>` 누적.
     // 기존 pt0/pt1/pt2/pt3 (rect 의 4 꼭짓점) 와 별개.
     let mut polygon_points: Vec<crate::model::Point> = Vec::new();
+    // [Task #1598] ellipse / arc 전용 지오메트리 (`<hc:center>`/`<hc:ax1>`/...).
+    // 미적재 시 한글이 타원/호를 다르게 렌더 → 누적 레이아웃 변동 → 페이지 붕괴(#1589 잔여).
+    let mut e_center = crate::model::Point::default();
+    let mut e_axis1 = crate::model::Point::default();
+    let mut e_axis2 = crate::model::Point::default();
+    let mut e_start1 = crate::model::Point::default();
+    let mut e_end1 = crate::model::Point::default();
+    let mut e_start2 = crate::model::Point::default();
+    let mut e_end2 = crate::model::Point::default();
 
     let object_ids = parse_object_element_attrs(e, &mut common, &mut shape_attr);
 
@@ -3667,6 +3687,14 @@ fn parse_shape_object(
                             }
                         }
                     }
+                    // [Task #1598] ellipse / arc 전용 지오메트리. x/y 속성만 읽어 Point 채움.
+                    b"center" => parse_xy(ce, &mut e_center),
+                    b"ax1" => parse_xy(ce, &mut e_axis1),
+                    b"ax2" => parse_xy(ce, &mut e_axis2),
+                    b"start1" => parse_xy(ce, &mut e_start1),
+                    b"end1" => parse_xy(ce, &mut e_end1),
+                    b"start2" => parse_xy(ce, &mut e_start2),
+                    b"end2" => parse_xy(ce, &mut e_end2),
                     b"renderingInfo" => {
                         parse_rendering_info(reader, &mut shape_attr)?;
                     }
@@ -3727,6 +3755,14 @@ fn parse_shape_object(
         b"ellipse" => ShapeObject::Ellipse(EllipseShape {
             common,
             drawing,
+            // [Task #1598] 전용 지오메트리 적재 — 누락 시 한글 페이지 붕괴(#1589 잔여).
+            center: e_center,
+            axis1: e_axis1,
+            axis2: e_axis2,
+            start1: e_start1,
+            end1: e_end1,
+            start2: e_start2,
+            end2: e_end2,
             ..Default::default()
         }),
         b"line" => ShapeObject::Line(LineShape {
@@ -3745,6 +3781,10 @@ fn parse_shape_object(
         b"arc" => ShapeObject::Arc(ArcShape {
             common,
             drawing,
+            // [Task #1598] 호 전용 지오메트리(center/축). arc_type 은 태그속성(추후).
+            center: e_center,
+            axis1: e_axis1,
+            axis2: e_axis2,
             ..Default::default()
         }),
         b"polygon" => ShapeObject::Polygon(PolygonShape {
@@ -4907,28 +4947,37 @@ fn parse_dutmal(
     reader: &mut Reader<&[u8]>,
 ) -> Result<Control, HwpxError> {
     let mut ruby = Ruby::default();
-    // 요소 속성
+    // 요소 속성 (#1587 — posType/align 분리 보존 + szRatio/option/styleIDRef)
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"posType" => {
-                ruby.alignment = match attr_str(&attr).as_str() {
+                ruby.pos_type = match attr_str(&attr).as_str() {
                     "TOP" => 0,
                     "BOTTOM" => 1,
                     _ => 0,
                 };
             }
             b"align" => {
-                ruby.alignment = match attr_str(&attr).as_str() {
+                ruby.align = match attr_str(&attr).as_str() {
                     "LEFT" => 0,
                     "RIGHT" => 1,
                     "CENTER" => 2,
                     _ => 0,
                 };
             }
+            b"szRatio" => {
+                ruby.sz_ratio = attr_str(&attr).parse().unwrap_or(0);
+            }
+            b"option" => {
+                ruby.option = attr_str(&attr).parse().unwrap_or(0);
+            }
+            b"styleIDRef" => {
+                ruby.style_id_ref = attr_str(&attr).parse().unwrap_or(0);
+            }
             _ => {}
         }
     }
-    // 자식 요소 파싱 (subText)
+    // 자식 요소 파싱 (mainText 기준 텍스트 + subText 덧말)
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -4938,8 +4987,9 @@ fn parse_dutmal(
                 if local == b"subText" {
                     ruby.ruby_text = read_dutmal_text(reader, b"subText")?;
                 } else if local == b"mainText" {
-                    // mainText는 이미 문단 텍스트에 포함되므로 스킵
-                    skip_element(reader, b"mainText")?;
+                    // [#1587] mainText(기준 텍스트)는 para.text 에 포함되지 않으므로
+                    // 모델에 보존한다(종전 skip → 손실 → 직렬화 시 복원 불가였음).
+                    ruby.main_text = read_dutmal_text(reader, b"mainText")?;
                 } else {
                     let tag = local.to_vec();
                     skip_element(reader, &tag)?;

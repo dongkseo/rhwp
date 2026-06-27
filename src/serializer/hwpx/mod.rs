@@ -467,6 +467,133 @@ mod tests {
     }
 
     #[test]
+    fn task1587_ruby_control_roundtrips() {
+        // Ruby(덧말) 컨트롤은 is_hwpx_inline_slot 에 등록돼 슬롯으로 인식되나
+        // render_control_slot 에 방출 arm 이 없어 저장 시 드롭된다(controls=[]).
+        // 수정 전: reparse 후 Ruby 소실 → RED. 수정 후: 보존 → GREEN.
+        use crate::model::control::{Control, Ruby};
+
+        let mut doc = Document::default();
+        let mut section = crate::model::document::Section::default();
+        let mut para = crate::model::paragraph::Paragraph::default();
+        para.text = "ab".to_string();
+        para.char_offsets = vec![0, 9];
+        para.char_count = 11; // (11-1-2)/8 = 1 슬롯
+        para.controls.push(Control::Ruby(Ruby {
+            main_text: "기준글".to_string(),
+            ruby_text: "덧말".to_string(),
+            pos_type: 1, // BOTTOM
+            align: 2,    // CENTER
+            sz_ratio: 80,
+            option: 3,
+            style_id_ref: 5,
+        }));
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize ruby");
+        let doc2 = crate::parser::hwpx::parse_hwpx(&bytes).expect("parse");
+        let rubies: Vec<_> = doc2.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .filter_map(|c| match c {
+                Control::Ruby(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rubies.len(),
+            1,
+            "Ruby 컨트롤이 roundtrip 후 보존돼야 한다 (현재 드롭): {:?}",
+            doc2.sections[0].paragraphs[0].controls
+        );
+        let r = rubies[0];
+        // 전 필드 무손실 (#1587 — mainText/posType/align/szRatio/option/styleIDRef)
+        assert_eq!(r.main_text, "기준글", "mainText 보존");
+        assert_eq!(r.ruby_text, "덧말", "subText(덧말) 보존");
+        assert_eq!(r.pos_type, 1, "posType(BOTTOM) 보존");
+        assert_eq!(r.align, 2, "align(CENTER) 보존");
+        assert_eq!(r.sz_ratio, 80, "szRatio 보존");
+        assert_eq!(r.option, 3, "option 보존");
+        assert_eq!(r.style_id_ref, 5, "styleIDRef 보존");
+    }
+
+    #[ignore = "#1591: 북마크 hoist 수정은 롤백됨(순효과 0). Class C1 char_shape +8 의 진짜 \
+근본은 first-para mismatch-path 위치추정(F3급, 별건). 본 RED 는 hoist 버그 repro 로 보존."]
+    #[test]
+    fn task1591_bookmark_not_hoisted_before_slot() {
+        // [#1591] 북마크가 슬롯 컨트롤(표 등) 뒤에 있을 때, 직렬화기(section.rs:416-426)가
+        // 북마크를 문단 시작으로 hoisting 하면 컨트롤 순서가 뒤바뀐다. 다만 char_shape +8
+        // 시프트의 진짜 근본은 mismatch-path 위치추정이라, 이 hoist 수정만으로는 게이트 미해소.
+        use crate::model::control::{Bookmark, Control};
+        use crate::model::style::BorderFill;
+        use crate::model::table::Table;
+
+        let mut doc = Document::default();
+        doc.doc_info.border_fills.push(BorderFill::default());
+        let mut section = crate::model::document::Section::default();
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::default()); // para0 더미
+        let mut p = crate::model::paragraph::Paragraph::default();
+        p.text = "AB".to_string();
+        p.char_offsets = vec![0, 9]; // A@0, [표 슬롯 8], B@9
+        p.char_count = 11;
+        p.controls.push(Control::Table(Box::<Table>::default()));
+        p.controls.push(Control::Bookmark(Bookmark {
+            name: "bm".to_string(),
+        }));
+        section.paragraphs.push(p);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize");
+        let doc2 = crate::parser::hwpx::parse_hwpx(&bytes).expect("parse");
+        let ctrls: Vec<&str> = doc2.sections[0].paragraphs[1]
+            .controls
+            .iter()
+            .map(|c| match c {
+                Control::Table(_) => "tbl",
+                Control::Bookmark(_) => "bm",
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(
+            ctrls,
+            vec!["tbl", "bm"],
+            "북마크가 표 뒤 위치를 보존해야 한다 (hoisting 시 [bm,tbl] 로 뒤바뀜)"
+        );
+    }
+
+    #[test]
+    fn task1592_empty_paragraph_no_spurious_charshape() {
+        // [#1592] run 이 없던 완전 빈 문단(char_shapes=[])에 직렬화기가 빈
+        // <hp:run charPrIDRef="0"> 를 추가하면 재파싱 시 char_shapes 가 [(0,0)] 으로 생긴다.
+        // 비-첫 문단으로 구성(첫 문단 템플릿 회피).
+        let mut doc = Document::default();
+        let mut section = crate::model::document::Section::default();
+        // para0: 텍스트 있는 일반 문단
+        let mut p0 = crate::model::paragraph::Paragraph::default();
+        p0.text = "본문".to_string();
+        section.paragraphs.push(p0);
+        // para1: 완전 빈 문단 (text="", char_shapes=[], controls=[])
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::default());
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize");
+        let doc2 = crate::parser::hwpx::parse_hwpx(&bytes).expect("parse");
+        let cs = &doc2.sections[0].paragraphs[1].char_shapes;
+        assert!(
+            cs.is_empty(),
+            "빈 문단은 char_shapes 가 비어야 한다 (spurious (0,0) 금지): {:?}",
+            cs.iter()
+                .map(|c| (c.start_pos, c.char_shape_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn equation_control_does_not_consume_unmapped_control_gap() {
         use crate::model::control::{Control, Equation};
         use crate::model::shape::CommonObjAttr;

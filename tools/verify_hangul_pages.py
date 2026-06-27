@@ -25,6 +25,7 @@ import csv
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -81,7 +82,7 @@ def collect_pairs_inventory(
     return pairs
 
 
-def run(pairs, out_tsv, visible, use_pdf) -> int:
+def run(pairs, out_tsv, visible, use_pdf, resume=False) -> int:
     try:
         from pyhwpx import Hwp
     except ImportError:
@@ -101,7 +102,57 @@ def run(pairs, out_tsv, visible, use_pdf) -> int:
         return 2
 
     head = git_head()
+
+    # 깨끗한 시작 — 잔존 Hwp.exe(이전 배치 누수)를 정리한 뒤 인스턴스 생성.
+    # 오염된 COM 환경에서 시작하면 첫 인스턴스부터 com_error 다발(관측).
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "Hwp.exe"],
+                       capture_output=True, timeout=30)
+        time.sleep(1)
+    except Exception:
+        pass
+
+    # [resume] 기존 out_tsv 의 처리분을 읽어 건너뛴다(증분 기록과 짝). 전수 배치 중
+    # COM 크래시 시 재실행으로 이어서 진행하기 위함.
+    done_rows = []  # (verdict, o, r, note, rel) — 성공분만(ERR 제외 → 재시도)
+    done_rels = set()
+    if resume and out_tsv is not None and out_tsv.exists():
+        err_retry = 0
+        with open(out_tsv, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#") or line.startswith("verdict\t"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) == 5:
+                    if parts[0] == "ERR":
+                        err_retry += 1  # ERR 은 done 처리 안 함 → 재시도
+                        continue
+                    done_rows.append(tuple(parts))
+                    done_rels.add(parts[4])
+        # ERR 행을 버리고 성공분만 남겨 TSV 재작성(중복 방지) — 이후 증분 append.
+        out_tsv.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_tsv, "w", encoding="utf-8") as fh:
+            fh.write(f"# git_head={head} pdf={use_pdf}\n")
+            fh.write("verdict\torig_pg\trt_pg\tnote\trel\n")
+            for rec in done_rows:
+                fh.write("\t".join(str(x) for x in rec) + "\n")
+        pairs = [p for p in pairs if p[2] not in done_rels]
+        print(f"# [resume] 성공 {len(done_rels)}건 건너뜀, ERR {err_retry}건 재시도 포함 남은 {len(pairs)}건")
+
     print(f"# 한글 페이지 오라클 | git HEAD={head} | 대상 {len(pairs)}건")
+
+    # 증분 기록 핸들 — 각 행 처리 직후 flush 하여 크래시 내성 확보.
+    inc_fh = None
+    if out_tsv is not None:
+        out_tsv.parent.mkdir(parents=True, exist_ok=True)
+        if resume and out_tsv.exists():
+            inc_fh = open(out_tsv, "a", encoding="utf-8")  # 재작성된 파일에 이어쓰기
+        else:
+            inc_fh = open(out_tsv, "w", encoding="utf-8")  # fresh: truncate
+            inc_fh.write(f"# git_head={head} pdf={use_pdf}\n")
+            inc_fh.write("verdict\torig_pg\trt_pg\tnote\trel\n")
+            inc_fh.flush()
 
     hwp = Hwp(new=True, visible=visible)
     tmp_pdf = Path.cwd() / "_hpv_tmp.pdf"
@@ -119,17 +170,49 @@ def run(pairs, out_tsv, visible, use_pdf) -> int:
         hwp.clear(option=1)
         return n
 
-    rows = []
-    collapse = ok = other = 0
+    rows = list(done_rows)
+    # 기존(resume) 분 카운트 반영
+    collapse = sum(1 for x in done_rows if x[0] == "COLLAPSE")
+    ok = sum(1 for x in done_rows if x[0] == "OK")
+    other = sum(1 for x in done_rows if x[0] in ("EXPAND", "ERR"))
+
+    def emit(rec):
+        rows.append(rec)
+        if inc_fh is not None:
+            inc_fh.write("\t".join(str(x) for x in rec) + "\n")
+            inc_fh.flush()
+
+    # COM 인스턴스는 수천 건 누적 시 사망(과거 ~1868건에서 전멸) → 주기적 하드 재시작.
+    # 주의: hwp.quit() 만으로는 Hwp.exe 프로세스가 남아 누적(200+ 누수 관측) → taskkill 병행.
+    restart_every = 600
+
+    def restart_hwp():
+        nonlocal hwp
+        try:
+            hwp.quit()
+        except Exception:
+            pass
+        # 잔존 Hwp.exe 강제 종료(누수 방지) 후 새 인스턴스 생성.
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "Hwp.exe"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+        time.sleep(1)
+        hwp = Hwp(new=True, visible=visible)
+
     try:
         for i, (orig, rt, rel) in enumerate(pairs):
+            if i > 0 and i % restart_every == 0:
+                restart_hwp()  # 주기적 재시작
             try:
                 o = page_count(orig)
                 r = page_count(rt)
             except Exception as exc:  # 파일별 격리
-                rows.append(("ERR", -1, -1, type(exc).__name__, rel))
+                emit(("ERR", -1, -1, type(exc).__name__, rel))
                 other += 1
-                print(f"  [{i+1:>3}/{len(pairs)}] {'ERR':>8}  {rel}", flush=True)
+                print(f"  [{i+1:>4}/{len(pairs)}] {'ERR':>8}  {rel}", flush=True)
+                restart_hwp()  # ERR 후 COM 상태 불량 가능 → 재생성
                 continue
             if o == r:
                 verdict, ok = "OK", ok + 1
@@ -137,8 +220,8 @@ def run(pairs, out_tsv, visible, use_pdf) -> int:
                 verdict, collapse = "COLLAPSE", collapse + 1
             else:
                 verdict, other = "EXPAND", other + 1
-            rows.append((verdict, o, r, "", rel))
-            print(f"  [{i+1:>3}/{len(pairs)}] {verdict:>8}  pg {o}->{r}  {rel}", flush=True)
+            emit((verdict, o, r, "", rel))
+            print(f"  [{i+1:>4}/{len(pairs)}] {verdict:>8}  pg {o}->{r}  {rel}", flush=True)
     finally:
         try:
             hwp.quit()
@@ -149,15 +232,11 @@ def run(pairs, out_tsv, visible, use_pdf) -> int:
                 tmp_pdf.unlink()
             except Exception:
                 pass
+        if inc_fh is not None:
+            inc_fh.close()
 
     if out_tsv is not None:
-        out_tsv.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_tsv, "w", encoding="utf-8") as fh:
-            fh.write(f"# git_head={head} pdf={use_pdf}\n")
-            fh.write("verdict\torig_pg\trt_pg\tnote\trel\n")
-            for v, o, r, note, rel in rows:
-                fh.write(f"{v}\t{o}\t{r}\t{note}\t{rel}\n")
-        print(f"\nTSV 저장: {out_tsv}")
+        print(f"\nTSV 저장(증분): {out_tsv}")
 
     total = len(rows)
     rate = 100.0 * collapse / total if total else 0.0
@@ -183,6 +262,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--pdf", action="store_true", help="PDF 페이지수 교차검증(PyMuPDF)")
     ap.add_argument("-o", "--out", type=Path, default=None, help="결과 TSV 경로")
     ap.add_argument("--visible", action="store_true", help="한글 창 표시(디버깅)")
+    ap.add_argument("--resume", action="store_true",
+                   help="기존 -o TSV 의 처리분을 건너뛰고 이어서 진행(전수 배치 크래시 내성)")
     args = ap.parse_args(argv)
 
     if args.batch:
@@ -203,7 +284,7 @@ def main(argv: list[str]) -> int:
         pairs = rng.sample(pairs, args.sample)
         pairs.sort(key=lambda p: p[2])
 
-    return run(pairs, args.out, args.visible, args.pdf)
+    return run(pairs, args.out, args.visible, args.pdf, resume=args.resume)
 
 
 if __name__ == "__main__":
