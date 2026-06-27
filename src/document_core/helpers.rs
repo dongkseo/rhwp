@@ -1399,6 +1399,9 @@ pub(crate) fn border_fills_equal(
     if a.attr != b.attr {
         return false;
     }
+    if a.center_line != b.center_line {
+        return false;
+    }
     for i in 0..4 {
         if a.borders[i].line_type != b.borders[i].line_type {
             return false;

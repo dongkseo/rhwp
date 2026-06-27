@@ -1,8 +1,8 @@
 use super::*;
 use crate::model::bin_data::{BinDataCompression, BinDataStatus};
 use crate::model::style::{
-    Alignment, BorderLine, DiagonalLine, Fill, ImageFill, ImageFillMode, LineSpacingType,
-    NumberingHead, SolidFill,
+    Alignment, BorderLine, CenterLine, DiagonalLine, Fill, ImageFill, ImageFillMode,
+    LineSpacingType, NumberingHead, SolidFill,
 };
 use crate::parser::doc_info::parse_doc_info;
 use crate::parser::record::Record;
@@ -332,6 +332,7 @@ fn test_serialize_border_fill_solid() {
             },
         ],
         diagonal: DiagonalLine::default(),
+        center_line: CenterLine::None,
         fill: Fill {
             fill_type: FillType::Solid,
             solid: Some(SolidFill {
@@ -387,6 +388,7 @@ fn test_serialize_border_fill_image_fill_mode_uses_hwp5_values() {
             attr: 0,
             borders: [BorderLine::default(); 4],
             diagonal: DiagonalLine::default(),
+            center_line: CenterLine::None,
             fill: Fill {
                 fill_type: FillType::Image,
                 solid: None,

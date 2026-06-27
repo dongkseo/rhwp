@@ -1769,7 +1769,9 @@ impl DocumentCore {
         col_count: u16,
     ) -> Result<String, HwpError> {
         use crate::model::paragraph::{CharShapeRef, LineSeg};
-        use crate::model::style::{BorderFill, BorderLine, BorderLineType, DiagonalLine, Fill};
+        use crate::model::style::{
+            BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
+        };
         use crate::model::table::{Cell, Table, TablePageBreak};
 
         // 유효성 검사
@@ -1841,6 +1843,7 @@ impl DocumentCore {
                         width: 0,
                         color: 0,
                     },
+                    center_line: CenterLine::None,
                     fill: Fill::default(),
                 };
                 self.document.doc_info.border_fills.push(new_bf);
@@ -2152,7 +2155,9 @@ impl DocumentCore {
         row_heights_hu: Option<&[u32]>,
     ) -> Result<String, HwpError> {
         use crate::model::paragraph::{CharShapeRef, LineSeg};
-        use crate::model::style::{BorderFill, BorderLine, BorderLineType, DiagonalLine, Fill};
+        use crate::model::style::{
+            BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
+        };
         use crate::model::table::{Cell, Table, TablePageBreak};
 
         if section_idx >= self.document.sections.len() {
@@ -2249,6 +2254,7 @@ impl DocumentCore {
                         width: 0,
                         color: 0,
                     },
+                    center_line: CenterLine::None,
                     fill: Fill::default(),
                 };
                 self.document.doc_info.border_fills.push(new_bf);

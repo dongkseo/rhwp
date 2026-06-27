@@ -91,6 +91,7 @@ mod tests {
                 image_fill: None,
                 diagonal_attr: 0,
                 diagonal: Default::default(),
+                center_line: Default::default(),
             }],
             numberings: Vec::new(),
             bullets: Vec::new(),

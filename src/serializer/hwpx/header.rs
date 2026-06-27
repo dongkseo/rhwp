@@ -17,7 +17,7 @@ use quick_xml::Writer;
 
 use crate::model::document::{DocInfo, DocProperties, Document};
 use crate::model::style::{
-    border_width_mm_str, Alignment, BorderFill, BorderLine, BorderLineType, CharShape,
+    border_width_mm_str, Alignment, BorderFill, BorderLine, BorderLineType, CenterLine, CharShape,
     DiagonalLine, FillType, Font, HeadType, LineSpacingType, Numbering, ParaShape, Style,
     SubstFont, TabDef,
 };
@@ -296,6 +296,8 @@ fn write_border_fill<W: Write>(
     bf: &BorderFill,
     ctx: &SerializeContext,
 ) -> Result<(), SerializeError> {
+    let attr = effective_border_fill_attr(bf);
+
     // 속성 순서 (BorderFillType.cpp:64-68): id, threeD, shadow, centerLine, breakCellSeparateLine
     start_tag_attrs(
         w,
@@ -304,7 +306,7 @@ fn write_border_fill<W: Write>(
             ("id", &(id + 1).to_string()), // HWPX 관찰: id는 1-based
             ("threeD", "0"),
             ("shadow", "0"),
-            ("centerLine", "NONE"),
+            ("centerLine", center_line_type(bf)),
             ("breakCellSeparateLine", "0"),
         ],
     )?;
@@ -314,12 +316,16 @@ fn write_border_fill<W: Write>(
     write_diag_line(
         w,
         "hh:slash",
-        diagonal_shape_type(((bf.attr >> 2) & 0x07) as u8),
+        diagonal_shape_type(((attr >> 2) & 0x07) as u8),
+        attr & (1 << 8) != 0,
+        attr & (1 << 11) != 0,
     )?;
     write_diag_line(
         w,
         "hh:backSlash",
-        diagonal_shape_type(((bf.attr >> 5) & 0x07) as u8),
+        diagonal_shape_type(((attr >> 5) & 0x07) as u8),
+        attr & (1 << 10) != 0,
+        attr & (1 << 12) != 0,
     )?;
     write_border_line(w, "hh:leftBorder", &bf.borders[0])?;
     write_border_line(w, "hh:rightBorder", &bf.borders[1])?;
@@ -340,11 +346,19 @@ fn write_diag_line<W: Write>(
     w: &mut Writer<W>,
     name: &str,
     type_str: &str,
+    crooked: bool,
+    is_counter: bool,
 ) -> Result<(), SerializeError> {
+    let crooked = if crooked { "1" } else { "0" };
+    let is_counter = if is_counter { "1" } else { "0" };
     empty_tag(
         w,
         name,
-        &[("type", type_str), ("Crooked", "0"), ("isCounter", "0")],
+        &[
+            ("type", type_str),
+            ("Crooked", crooked),
+            ("isCounter", is_counter),
+        ],
     )
 }
 
@@ -356,6 +370,22 @@ fn diagonal_shape_type(code: u8) -> &'static str {
         0b110 => "CENTER_ABOVE",
         _ => "ALL",
     }
+}
+
+fn center_line_type(bf: &BorderFill) -> &'static str {
+    effective_center_line(bf).as_hwpx()
+}
+
+fn effective_center_line(bf: &BorderFill) -> CenterLine {
+    if bf.center_line != CenterLine::None {
+        bf.center_line
+    } else {
+        CenterLine::from_hwp_attr(bf.attr)
+    }
+}
+
+fn effective_border_fill_attr(bf: &BorderFill) -> u16 {
+    bf.attr | bf.center_line.hwp_attr_bits()
 }
 
 fn write_border_line<W: Write>(
@@ -1500,6 +1530,31 @@ mod tests {
         assert!(
             xml.contains(r#"<hh:backSlash type="CENTER_BELOW" Crooked="0" isCounter="0"/>"#),
             "backSlash 방향 비트가 CENTER_BELOW로 보존되어야 함: {xml}"
+        );
+    }
+
+    #[test]
+    fn write_border_fill_preserves_center_line_type() {
+        let mut bf = BorderFill::default();
+        bf.center_line = CenterLine::Vertical;
+
+        let mut writer = Writer::new(Vec::new());
+        write_border_fill(
+            &mut writer,
+            0,
+            &bf,
+            &SerializeContext::collect_from_document(&Default::default()),
+        )
+        .expect("write borderFill");
+        let xml = String::from_utf8(writer.into_inner()).unwrap();
+
+        assert!(
+            xml.contains(r#"centerLine="VERTICAL""#),
+            "centerLine 방향이 보존되어야 함: {xml}"
+        );
+        assert!(
+            xml.contains(r#"<hh:slash type="NONE" Crooked="1" isCounter="0"/>"#),
+            "VERTICAL 중심선의 HWP attr 보조 비트가 Crooked=1 로 보존되어야 함: {xml}"
         );
     }
 

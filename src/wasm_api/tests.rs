@@ -14108,7 +14108,9 @@ fn test_save_table_1x1() {
     };
 
     // DocInfo에 실선 테두리 BorderFill 추가 (참조: bf[0])
-    use crate::model::style::{BorderFill, BorderLine, BorderLineType, DiagonalLine, Fill};
+    use crate::model::style::{
+        BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
+    };
     let solid_border = BorderLine {
         line_type: BorderLineType::Solid,
         width: 1,
@@ -14123,6 +14125,7 @@ fn test_save_table_1x1() {
             width: 0,
             color: 0,
         },
+        center_line: CenterLine::None,
         fill: Fill::default(),
     };
     doc.document.doc_info.border_fills.push(new_bf);
@@ -16048,7 +16051,9 @@ fn test_save_pic_in_table() {
     });
 
     // 4. DocInfo에 BorderFill 추가 (표 테두리용)
-    use crate::model::style::{BorderFill, BorderLine, BorderLineType, DiagonalLine, Fill};
+    use crate::model::style::{
+        BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
+    };
     let solid_border = BorderLine {
         line_type: BorderLineType::Solid,
         width: 1,
@@ -16063,6 +16068,7 @@ fn test_save_pic_in_table() {
             width: 0,
             color: 0,
         },
+        center_line: CenterLine::None,
         fill: Fill::default(),
     };
     doc.document.doc_info.border_fills.push(new_bf);

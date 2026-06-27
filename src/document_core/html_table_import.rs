@@ -703,7 +703,8 @@ impl DocumentCore {
         background_color: Option<u32>,
     ) -> u16 {
         use crate::model::style::{
-            BorderFill, BorderLine, BorderLineType, DiagonalLine, Fill, FillType, SolidFill,
+            BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill, FillType,
+            SolidFill,
         };
 
         let mut borders = [BorderLine::default(); 4];
@@ -753,6 +754,7 @@ impl DocumentCore {
             attr: 0,
             borders,
             diagonal: DiagonalLine::default(),
+            center_line: CenterLine::None,
             fill,
         };
 
@@ -774,7 +776,7 @@ impl DocumentCore {
     /// 프론트엔드 글자 테두리/배경 대화상자에서 호출된다.
     pub(crate) fn create_border_fill_from_json(&mut self, json: &str) -> u16 {
         use crate::model::style::{
-            BorderFill, BorderLine, DiagonalLine, Fill, FillType, SolidFill,
+            BorderFill, BorderLine, CenterLine, DiagonalLine, Fill, FillType, SolidFill,
         };
 
         // 4방향 테두리 파싱
@@ -813,6 +815,7 @@ impl DocumentCore {
             attr: 0,
             borders,
             diagonal: DiagonalLine::default(),
+            center_line: CenterLine::None,
             fill,
         };
 

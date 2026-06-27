@@ -438,8 +438,66 @@ pub struct BorderFill {
     pub borders: [BorderLine; 4],
     /// 대각선
     pub diagonal: DiagonalLine,
+    /// 중심선 방향
+    pub center_line: CenterLine,
     /// 채우기 정보
     pub fill: Fill,
+}
+
+/// 중심선 방향 (HWPX borderFill@centerLine)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CenterLine {
+    /// 없음
+    #[default]
+    None,
+    /// 세로 중심선
+    Vertical,
+    /// 가로 중심선
+    Horizontal,
+    /// 가로+세로 중심선
+    Cross,
+}
+
+impl CenterLine {
+    pub fn from_hwp_attr(attr: u16) -> Self {
+        if attr & (1 << 13) == 0 {
+            return Self::None;
+        }
+        let slash_crooked = attr & (1 << 8) != 0;
+        let backslash_crooked = attr & (1 << 10) != 0;
+        match (slash_crooked, backslash_crooked) {
+            (true, false) => Self::Vertical,
+            (false, true) => Self::Horizontal,
+            _ => Self::Cross,
+        }
+    }
+
+    pub fn from_hwpx(value: &str) -> Self {
+        match value {
+            "VERTICAL" => Self::Vertical,
+            "HORIZONTAL" => Self::Horizontal,
+            "CROSS" => Self::Cross,
+            _ => Self::None,
+        }
+    }
+
+    pub fn hwp_attr_bits(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Vertical => (1 << 13) | (1 << 8),
+            Self::Horizontal => (1 << 13) | (1 << 10),
+            Self::Cross => 1 << 13,
+        }
+    }
+
+    pub fn as_hwpx(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Vertical => "VERTICAL",
+            Self::Horizontal => "HORIZONTAL",
+            Self::Cross => "CROSS",
+        }
+    }
 }
 
 /// 테두리선 정보

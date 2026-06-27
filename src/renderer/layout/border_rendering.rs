@@ -3,7 +3,7 @@
 use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedBorderStyle;
 use super::super::{LineStyle, StrokeDash};
-use crate::model::style::{BorderLine, BorderLineType};
+use crate::model::style::{BorderLine, BorderLineType, CenterLine};
 use crate::model::table::Table;
 
 fn merge_border(a: &BorderLine, b: &BorderLine) -> BorderLine {
@@ -754,8 +754,9 @@ pub(crate) fn render_cell_diagonal(
     let attr = border_style.diagonal_attr;
     let slash_bits = (attr >> 2) & 0x07;
     let backslash_bits = (attr >> 5) & 0x07;
+    let center_line = border_style.center_line;
 
-    if slash_bits == 0 && backslash_bits == 0 {
+    if slash_bits == 0 && backslash_bits == 0 && center_line == CenterLine::None {
         return vec![];
     }
 
@@ -776,6 +777,20 @@ pub(crate) fn render_cell_diagonal(
     let y2 = cell_y + cell_h;
     let cx = cell_x + cell_w / 2.0;
     let cy = cell_y + cell_h / 2.0;
+
+    match center_line {
+        CenterLine::Vertical => {
+            nodes.extend(create_single_line(tree, color, width, dash, cx, y1, cx, y2));
+        }
+        CenterLine::Horizontal => {
+            nodes.extend(create_single_line(tree, color, width, dash, x1, cy, x2, cy));
+        }
+        CenterLine::Cross => {
+            nodes.extend(create_single_line(tree, color, width, dash, cx, y1, cx, y2));
+            nodes.extend(create_single_line(tree, color, width, dash, x1, cy, x2, cy));
+        }
+        CenterLine::None => {}
+    }
 
     // Slash (`/`) 대각선
     if slash_bits != 0 {
@@ -838,4 +853,80 @@ pub(crate) fn render_cell_diagonal(
     }
 
     nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::style::DiagonalLine;
+
+    fn center_line_style(center_line: CenterLine) -> ResolvedBorderStyle {
+        ResolvedBorderStyle {
+            diagonal_attr: if center_line == CenterLine::None {
+                0
+            } else {
+                1 << 13
+            },
+            diagonal: DiagonalLine {
+                diagonal_type: 1,
+                width: 0,
+                color: 0x00F4_C741,
+            },
+            center_line,
+            ..Default::default()
+        }
+    }
+
+    fn line_node(node: &RenderNode) -> &LineNode {
+        match &node.node_type {
+            RenderNodeType::Line(line) => line,
+            other => panic!("Line 노드가 아님: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_vertical_center_line_without_diagonal_bits() {
+        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
+        let nodes = render_cell_diagonal(
+            &mut tree,
+            &center_line_style(CenterLine::Vertical),
+            10.0,
+            20.0,
+            100.0,
+            40.0,
+        );
+
+        assert_eq!(nodes.len(), 1);
+        let line = line_node(&nodes[0]);
+        assert_eq!(
+            (line.x1, line.y1, line.x2, line.y2),
+            (60.0, 20.0, 60.0, 60.0)
+        );
+        assert_eq!(line.style.color, 0x00F4_C741);
+    }
+
+    #[test]
+    fn render_cross_center_line_creates_vertical_and_horizontal_lines() {
+        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
+        let nodes = render_cell_diagonal(
+            &mut tree,
+            &center_line_style(CenterLine::Cross),
+            10.0,
+            20.0,
+            100.0,
+            40.0,
+        );
+
+        assert_eq!(nodes.len(), 2);
+        let vertical = line_node(&nodes[0]);
+        let horizontal = line_node(&nodes[1]);
+        assert_eq!(
+            (vertical.x1, vertical.y1, vertical.x2, vertical.y2),
+            (60.0, 20.0, 60.0, 60.0)
+        );
+        assert_eq!(
+            (horizontal.x1, horizontal.y1, horizontal.x2, horizontal.y2),
+            (10.0, 40.0, 110.0, 40.0)
+        );
+    }
 }
