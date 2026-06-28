@@ -49,13 +49,13 @@
 
 ## Stage 4. PR 준비
 
-통합 PR 제목 후보:
+통합 PR:
 
 ```text
-planet6897 PR #1619/#1621/#1625/#1628 통합 반영
+#1631 planet6897 PR #1619/#1621/#1625/#1628 통합 반영
 ```
 
-PR 본문 필수 항목:
+PR 본문 포함 항목:
 
 - 원 PR: #1619, #1621, #1625, #1628
 - 변경 요약: #1618 vpos 분석, #1620 field removal panic 방지, #1624 footer over-push 정밀화, #1627 bookmark in-order serializer 보존
@@ -66,15 +66,25 @@ PR 본문 필수 항목:
 - `Closes #1624`
 - `Closes #1627`
 
+원격 CI 확인:
+
+- `Build & Test`: 통과, 18m17s
+- `CodeQL`: 통과
+- `Render Diff`: 통과
+- `Canvas visual diff`: 통과
+- merge state: `MERGEABLE` / `CLEAN`
+- merge commit: `c0c12d5020c9ead8f1cc7309f58522cd82e8d5a7`
+
 ## Stage 5. merge 후 후속 처리
 
-- 통합 PR merge 후 #1618/#1620/#1624/#1627 자동 close 여부를 확인한다.
-- 자동 close 실패 시 수동 close/comment 처리한다.
-- 원 PR #1619/#1621/#1625/#1628에는 통합 PR로 반영했다는 코멘트를 남기고 close 한다.
-- `devel` 동기화 후 필요하면 오늘할일과 처리 보고서를 추가 정리한다.
+- 통합 PR #1631 merge 후 #1618/#1620/#1624/#1627 자동 close 여부를 확인했다.
+- 자동 close 가 걸리지 않아 네 이슈 모두 수동 close/comment 처리했다.
+- 원 PR #1619/#1621/#1625/#1628에는 통합 PR로 반영했다는 코멘트를 남기고 close 했다.
+- `devel` 동기화 후 로컬 통합 브랜치 `integrate/planet6897-1619-1628` 를 제거했다.
+- 오늘할일과 처리 보고서를 문서 전용 후속 PR 로 정리한다.
 
 ## 보류/주의
 
-- 원 PR 4개는 현재 각각 `BEHIND` 상태였으므로 개별 PR 자체를 merge 하지 않는다.
+- 원 PR 4개는 각각 `BEHIND` 상태였으므로 개별 PR 자체를 merge 하지 않고 #1631로 통합 반영했다.
 - #1628 본문에 언급된 char_shape 오프셋 +8 문제는 본 통합 범위 밖이다.
 - #1619는 `-1쪽` 시리즈 분석 종결 성격이고, #1625는 같은 페이지네이션 계열 보정이다. #1621/#1628은 독립 결함 수정이다.

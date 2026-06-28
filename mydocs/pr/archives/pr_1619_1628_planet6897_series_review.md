@@ -9,10 +9,13 @@
 | 통합 브랜치 | `integrate/planet6897-1619-1628` |
 | base | `devel` |
 | 관련 이슈 | #1618, #1620, #1624, #1627 |
-| 원 PR 상태 | 문서 작성 시점 참고값: 모두 `OPEN`, `MERGEABLE` / `BEHIND` |
+| 원 PR 상태 | merge 후 superseded close 완료 |
+| 통합 PR | #1631 |
 | 통합 방식 | 최신 `upstream/devel` 위에 원 PR head 커밋 4개를 cherry-pick |
-| 통합 규모 | 문서 작성 시점 참고값: 19 files, +876 / -42 |
+| 통합 규모 | #1631 merge 기준 22 files, +1028 / -42 |
+| merge commit | `c0c12d5020c9ead8f1cc7309f58522cd82e8d5a7` |
 | 작성 시각 | 2026-06-28 17:35 KST |
+| 최종 갱신 | 2026-06-28 18:10 KST |
 
 ## 시리즈 판단
 
@@ -23,6 +26,7 @@
 - #1628은 HWPX serializer bookmark 순서 보존 수정으로 본문에서 독립 PR이라고 명시했다.
 
 이번 처리는 GitHub PR 4개를 개별 merge 하지 않고, 원 작성자 commit 4개를 보존 cherry-pick 한 통합 PR 로 준비한다.
+통합 PR #1631은 원격 CI green 확인 후 `devel`에 merge 됐고, 원 PR 4개는 superseded 처리했다.
 
 ## 변경 범위
 
@@ -59,13 +63,25 @@
 - `cd rhwp-studio && npm test`: 통과, 147 passed
 - `cargo test --test svg_snapshot`: 통과, 8 passed
 
+## 원격 검증
+
+- PR: #1631
+- head: `b33dea916cc2e2d1d10779e8d2002e0490fa04c6`
+- merge state: `MERGEABLE` / `CLEAN`
+- `Build & Test`: 통과, 18m17s
+- `CodeQL`: 통과
+- `Render Diff`: 통과
+- `Canvas visual diff`: 통과
+- `WASM Build`: skipped. 별도 check run 은 skip 됐지만, `Build & Test` 내부 `Check WASM target` 과 로컬 `wasm-pack build --target web --out-dir pkg` 검증은 통과했다.
+- cache reservation read-only 경고가 있었으나 job conclusion 은 success 였다.
+
 ## 리스크
 
 - #1619는 결론형 분석 PR 이며 런타임 파이프라인 변경은 없다. 다만 새 진단 example 이 추가되므로 `clippy --all-targets` 검증이 필요했다.
-- #1625는 pagination 동작 변경이다. 통합 테스트와 `svg_snapshot`은 통과했지만, merge 전 원격 `Build & Test` / Render Diff 결과를 최신 head 기준으로 확인해야 한다.
+- #1625는 pagination 동작 변경이다. 통합 테스트, `svg_snapshot`, 원격 `Build & Test` / Render Diff 모두 통과했다.
 - #1628은 serializer 순서 변경이다. 기존에 보류된 char_shape 오프셋 문제는 본 PR 범위 밖이며 문서에 별도 보류로 남아 있다.
-- 원 PR 4개는 통합 PR merge 후 superseded 처리 코멘트와 close 가 필요하다. 관련 이슈 #1618/#1620/#1624/#1627 도 자동 close 실패 가능성이 있으므로 merge 후 상태를 확인한다.
+- 원 PR 4개는 통합 PR merge 후 superseded 처리 코멘트를 남기고 close 했다. 관련 이슈 #1618/#1620/#1624/#1627 은 자동 close 되지 않아 수동 close/comment 처리했다.
 
 ## 최종 권고
 
-통합 PR 을 원본 저장소 `edwardkim/rhwp` 의 `devel` 대상으로 생성한다. PR 본문에는 `Closes #1618`, `Closes #1620`, `Closes #1624`, `Closes #1627` 을 포함한다. merge 전 조건은 통합 PR head 최신 커밋 기준 GitHub Actions 통과와 작업지시자 승인이다.
+통합 PR #1631은 원본 저장소 `edwardkim/rhwp` 의 `devel` 대상으로 생성했고, 원격 CI green 과 작업지시자 승인 확인 후 merge 완료했다. 후속 이슈 close 와 원 PR close 도 완료됐다.
