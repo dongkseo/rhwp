@@ -157,3 +157,64 @@ fn issue_1633_get_cell_properties_reflects_cellzone_diagonal() {
         );
     }
 }
+
+#[test]
+fn issue_1633_as_one_cell_diagonal_uses_cellzone_range() {
+    let mut doc = HwpDocument::create_empty();
+    let created = doc
+        .create_table_ex_native(
+            0,
+            0,
+            0,
+            3,
+            3,
+            true,
+            Some(&[10000, 10000, 10000]),
+            Some(&[7200, 7200, 7200]),
+        )
+        .expect("표 생성");
+    let created: Value = serde_json::from_str(&created).expect("createTable JSON");
+    let ppi = created["paraIdx"].as_u64().expect("paraIdx") as u32;
+    let ci = created["controlIdx"].as_u64().expect("controlIdx") as u32;
+    let props = r##"{
+        "borderFillId":1,
+        "borderLeft":{"type":1,"width":0,"color":"#000000"},
+        "borderRight":{"type":1,"width":0,"color":"#000000"},
+        "borderTop":{"type":1,"width":0,"color":"#000000"},
+        "borderBottom":{"type":1,"width":0,"color":"#000000"},
+        "fillType":"none",
+        "diagonalLine":1,
+        "diagonalSlash":2,
+        "diagonalBackSlash":2,
+        "diagonalWidth":0,
+        "diagonalColor":"#000000",
+        "centerLine":"NONE"
+    }"##;
+
+    doc.set_cell_zone_properties(0, ppi, ci, 0, 0, 1, 1, props)
+        .expect("cellzone 적용");
+
+    let table = first_table(doc.document());
+    let zone = table.zones.last().expect("asOne cellzone");
+    assert_eq!(
+        (zone.start_row, zone.start_col, zone.end_row, zone.end_col),
+        (0, 0, 1, 1)
+    );
+
+    let cell_props = doc
+        .get_cell_properties(0, ppi, ci, 4)
+        .expect("zone 내부 셀 속성 조회");
+    let cell_props: Value = serde_json::from_str(&cell_props).expect("cell props JSON");
+    assert_eq!(cell_props["diagonalLine"].as_u64(), Some(1));
+    assert_eq!(cell_props["diagonalSlash"].as_u64(), Some(2));
+    assert_eq!(cell_props["diagonalBackSlash"].as_u64(), Some(2));
+
+    let svg = doc.render_page_svg_native(0).expect("SVG 렌더");
+    let lines = rendered_lines(&svg);
+    assert!(
+        lines
+            .iter()
+            .any(|(x1, y1, x2, y2)| (x1 - x2).abs() > 200.0 && (y1 - y2).abs() > 150.0),
+        "asOne 대각선은 첫 셀이 아니라 선택 영역 전체 cellzone bbox를 가로질러야 함"
+    );
+}

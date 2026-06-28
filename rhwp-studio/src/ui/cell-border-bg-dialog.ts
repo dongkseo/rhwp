@@ -68,6 +68,8 @@ interface TabDef {
   builder: () => HTMLElement;
 }
 
+type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
+
 /**
  * 셀 테두리/배경 대화상자 (3탭: 테두리/배경/대각선)
  *
@@ -80,6 +82,7 @@ export class CellBorderBgDialog extends ModalDialog {
   private tableCtx: { sec: number; ppi: number; ci: number };
   private cellIdx: number;
   private applyMode: 'each' | 'asOne';
+  private selectionRange: CellRange | null;
 
   // 탭 UI
   private tabs: HTMLButtonElement[] = [];
@@ -130,6 +133,7 @@ export class CellBorderBgDialog extends ModalDialog {
     tableCtx: { sec: number; ppi: number; ci: number },
     cellIdx: number,
     applyMode: 'each' | 'asOne' = 'each',
+    selectionRange: CellRange | null = null,
   ) {
     super('셀 테두리/배경', 460);
     this.wasm = wasm;
@@ -137,6 +141,7 @@ export class CellBorderBgDialog extends ModalDialog {
     this.tableCtx = tableCtx;
     this.cellIdx = cellIdx;
     this.applyMode = applyMode;
+    this.selectionRange = selectionRange;
   }
 
   show(): void {
@@ -909,7 +914,24 @@ export class CellBorderBgDialog extends ModalDialog {
         ? this.diagScopeRadios
         : this.borderScopeRadios;
     const scope = scopeRadios?.find(r => r.checked)?.value ?? 'selected';
-    if (scope === 'all') {
+    if (this.applyMode === 'asOne') {
+      const range = scope === 'all'
+        ? (() => {
+          const dims = this.wasm.getTableDimensions(sec, ppi, ci);
+          return {
+            startRow: 0,
+            startCol: 0,
+            endRow: Math.max(0, dims.rowCount - 1),
+            endCol: Math.max(0, dims.colCount - 1),
+          };
+        })()
+        : this.selectionRange;
+      if (range) {
+        this.wasm.setCellZoneProperties(sec, ppi, ci, range, newProps as Partial<CellProperties>);
+      } else {
+        this.wasm.setCellProperties(sec, ppi, ci, this.cellIdx, newProps as Partial<CellProperties>);
+      }
+    } else if (scope === 'all') {
       const dims = this.wasm.getTableDimensions(sec, ppi, ci);
       for (let i = 0; i < dims.cellCount; i++) {
         this.wasm.setCellProperties(sec, ppi, ci, i, newProps as Partial<CellProperties>);

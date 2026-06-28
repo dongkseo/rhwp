@@ -694,6 +694,58 @@ impl DocumentCore {
         Ok("{\"ok\":true}".to_string())
     }
 
+    /// 선택 영역을 하나의 셀처럼 취급하는 cellzone 테두리/배경 속성을 적용한다.
+    pub(crate) fn set_cell_zone_properties_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        start_row: u16,
+        start_col: u16,
+        end_row: u16,
+        end_col: u16,
+        json: &str,
+    ) -> Result<String, HwpError> {
+        let new_bf_id = self.create_border_fill_from_json(json);
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        if table.row_count == 0 || table.col_count == 0 {
+            return Err(HwpError::RenderError(
+                "빈 표에는 cellzone을 적용할 수 없습니다".to_string(),
+            ));
+        }
+
+        let max_row = table.row_count.saturating_sub(1);
+        let max_col = table.col_count.saturating_sub(1);
+        let sr = start_row.min(end_row).min(max_row);
+        let er = start_row.max(end_row).min(max_row);
+        let sc = start_col.min(end_col).min(max_col);
+        let ec = start_col.max(end_col).min(max_col);
+
+        if let Some(zone) = table.zones.iter_mut().find(|zone| {
+            zone.start_row == sr && zone.end_row == er && zone.start_col == sc && zone.end_col == ec
+        }) {
+            zone.border_fill_id = new_bf_id;
+        } else {
+            table.zones.push(crate::model::table::TableZone {
+                start_col: sc,
+                start_row: sr,
+                end_col: ec,
+                end_row: er,
+                border_fill_id: new_bf_id,
+            });
+        }
+        table.dirty = true;
+
+        self.document.sections[section_idx].raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+
+        Ok(format!(
+            "{{\"ok\":true,\"startRow\":{},\"startCol\":{},\"endRow\":{},\"endCol\":{},\"borderFillId\":{}}}",
+            sr, sc, er, ec, new_bf_id
+        ))
+    }
+
     /// 셀 테두리 변경 시 이웃 셀의 공유 엣지 테두리를 동기화한다.
     ///
     /// HWP 표에서 인접한 두 셀은 같은 엣지를 공유한다.
