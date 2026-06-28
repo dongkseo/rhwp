@@ -92,6 +92,7 @@ function getContext(): EditorContext {
     hasCopiedFormat: inputHandler?.hasCopiedFormat() ?? false,
     inTable: inputHandler?.isInTable() ?? false,
     inCellSelectionMode: inputHandler?.isInCellSelectionMode() ?? false,
+    hasMultiCellSelection: inputHandler?.hasMultiCellSelection() ?? false,
     inTableObjectSelection: inputHandler?.isInTableObjectSelection() ?? false,
     inPictureObjectSelection: inputHandler?.isInPictureObjectSelection() ?? false,
     inField: inputHandler?.isInField() ?? false,
