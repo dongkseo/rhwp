@@ -1863,12 +1863,11 @@ mod tests {
     #[test]
     fn task1627_empty_para_bookmark_serialized_after_preceding_table() {
         use crate::model::control::{Bookmark, Control};
-        use crate::model::table::Table;
 
         let mut para = Paragraph::default();
         // empty text, controls 순서 = [Table, Bookmark]
         para.controls = vec![
-            Control::Table(Box::new(Table::default())),
+            Control::Table(Box::default()),
             Control::Bookmark(Bookmark {
                 name: "BM_AFTER_TBL".to_string(),
             }),
