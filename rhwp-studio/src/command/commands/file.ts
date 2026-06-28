@@ -77,6 +77,7 @@ async function saveAsFormat(services: CommandServices, isHwpx: boolean): Promise
         currentHandle: null,
         windowLike: window as FileSystemWindowLike,
         forceSaveAs: true,
+        saveAsHwpx: isHwpx,
       });
       if (saveResult.method !== 'fallback') {
         services.wasm.currentFileHandle = saveResult.handle;
@@ -134,6 +135,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
         suggestedName: saveName,
         currentHandle: services.wasm.currentFileHandle,
         windowLike: window as FileSystemWindowLike,
+        saveAsHwpx: isHwpx,
       });
 
       if (saveResult.method !== 'fallback') {
