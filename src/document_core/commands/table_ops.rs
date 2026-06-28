@@ -450,6 +450,30 @@ impl DocumentCore {
         }
     }
 
+    /// UI 조회에서는 셀 고유 값보다 cellzone overlay가 실제 표시 상태에 가깝다.
+    fn cell_effective_border_fill_id(
+        table: &crate::model::table::Table,
+        cell_idx: usize,
+    ) -> Option<u16> {
+        let cell = table.cells.get(cell_idx)?;
+        let row = cell.row;
+        let col = cell.col;
+        let zone_border_fill_id = table
+            .zones
+            .iter()
+            .rev()
+            .find(|zone| {
+                zone.border_fill_id > 0
+                    && zone.start_row <= row
+                    && row <= zone.end_row
+                    && zone.start_col <= col
+                    && col <= zone.end_col
+            })
+            .map(|zone| zone.border_fill_id);
+
+        Some(zone_border_fill_id.unwrap_or(cell.border_fill_id))
+    }
+
     pub(crate) fn get_cell_properties_native(
         &self,
         section_idx: usize,
@@ -488,7 +512,9 @@ impl DocumentCore {
             crate::model::table::VerticalAlign::Bottom => 2,
         };
 
-        let bf_json = self.build_border_fill_json_by_id(cell.border_fill_id);
+        let effective_border_fill_id =
+            Self::cell_effective_border_fill_id(table, cell_idx).unwrap_or(cell.border_fill_id);
+        let bf_json = self.build_border_fill_json_by_id(effective_border_fill_id);
 
         Ok(format!(
             "{{\"width\":{},\"height\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"applyInnerMargin\":{},\"verticalAlign\":{},\"textDirection\":{},\"isHeader\":{},\"cellProtect\":{},\"fieldName\":{},\"editableInForm\":{},{}}}",

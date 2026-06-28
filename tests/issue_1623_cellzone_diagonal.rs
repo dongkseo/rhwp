@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use rhwp::model::control::Control;
 use rhwp::model::style::CenterLine;
-use rhwp::{parse_document, DocumentCore};
+use rhwp::{parse_document, wasm_api::HwpDocument, DocumentCore};
+use serde_json::Value;
 
 fn sample_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
@@ -63,6 +64,9 @@ fn issue_1623_sample_preserves_centerline_and_cellzones() {
     let bf9 = &doc.doc_info.border_fills[8];
     let bf10 = &doc.doc_info.border_fills[9];
     let bf11 = &doc.doc_info.border_fills[10];
+    let bf5 = &doc.doc_info.border_fills[4];
+    assert_eq!((bf5.attr >> 8) & 0x03, 2, "bf5 slash Crooked=2 보존");
+    assert_eq!((bf5.attr >> 5) & 0x07, 0b010, "bf5 backSlash CENTER");
     assert_eq!((bf9.attr >> 2) & 0x07, 0b010, "zone #9 slash");
     assert_eq!((bf9.attr >> 5) & 0x07, 0b010, "zone #9 backSlash");
     assert_eq!(bf10.center_line, CenterLine::Vertical);
@@ -85,6 +89,71 @@ fn issue_1623_cellzone_diagonal_renders_across_zone_bbox() {
                 .iter()
                 .any(|(x1, y1, x2, y2)| { (x1 - x2).abs() > 250.0 && (y1 - y2).abs() > 250.0 }),
             "{sample}: cellzone 전체 bbox를 가로지르는 대각선이 없음"
+        );
+    }
+}
+
+#[test]
+fn issue_1633_crooked_diagonal_renders_middle_segment() {
+    for sample in ["samples/대각선샘플.hwpx", "samples/대각선샘플.hwp"] {
+        let core = DocumentCore::from_bytes(&read_sample(sample))
+            .unwrap_or_else(|err| panic!("{sample}: {err}"));
+        let svg = core
+            .render_page_svg_native(0)
+            .unwrap_or_else(|err| panic!("{sample} SVG 렌더 실패: {err}"));
+        let lines = rendered_lines(&svg);
+
+        assert!(
+            lines.iter().any(|(x1, y1, x2, y2)| {
+                let len = (x2 - x1).abs();
+                (y1 - y2).abs() < 0.01 && (20.0..=35.0).contains(&len) && *y1 < 350.0
+            }),
+            "{sample}: 첫 줄 두 번째 칸의 꺾은 대각선 가운데 수평 선분이 없음"
+        );
+    }
+}
+
+#[test]
+fn issue_1633_get_cell_properties_reflects_cellzone_diagonal() {
+    for sample in ["samples/대각선샘플.hwpx", "samples/대각선샘플.hwp"] {
+        let bytes = read_sample(sample);
+        let parsed = parse_document(&bytes).unwrap_or_else(|err| panic!("{sample}: {err}"));
+        let table = first_table(&parsed);
+        let cell_idx = table
+            .cells
+            .iter()
+            .position(|cell| cell.row == 2 && cell.col == 2)
+            .unwrap_or_else(|| panic!("{sample}: row=2 col=2 셀을 찾지 못함"));
+        assert_ne!(
+            table.cells[cell_idx].border_fill_id, 11,
+            "{sample}: 회귀 가드는 cellzone overlay 조회를 검증해야 함"
+        );
+
+        let doc = HwpDocument::from_bytes(&bytes).unwrap_or_else(|err| panic!("{sample}: {err}"));
+        let json = doc
+            .get_cell_properties(0, 0, 2, cell_idx as u32)
+            .unwrap_or_else(|err| panic!("{sample}: getCellProperties 실패: {err:?}"));
+        let props: Value = serde_json::from_str(&json).unwrap_or_else(|err| {
+            panic!("{sample}: getCellProperties JSON 파싱 실패: {err}: {json}")
+        });
+
+        assert_eq!(props["borderFillId"].as_u64(), Some(11), "{sample}: {json}");
+        assert_eq!(props["diagonalLine"].as_u64(), Some(10), "{sample}: {json}");
+        assert_eq!(props["diagonalSlash"].as_u64(), Some(2), "{sample}: {json}");
+        assert_eq!(
+            props["diagonalBackSlash"].as_u64(),
+            Some(2),
+            "{sample}: {json}"
+        );
+        assert_eq!(
+            props["diagonalWidth"].as_u64(),
+            Some(13),
+            "{sample}: {json}"
+        );
+        assert_eq!(
+            props["diagonalColor"].as_str(),
+            Some("#000000"),
+            "{sample}: {json}"
         );
     }
 }

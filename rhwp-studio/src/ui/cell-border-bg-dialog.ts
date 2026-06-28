@@ -16,6 +16,50 @@ function mmToHwp16(mm: number): number {
 const DOC_PAPER_COLOR = 'var(--doc-paper)';
 const PREVIEW_GUIDE_STROKE = 'var(--ui-border-light)';
 const LINE_SAMPLE_STROKE = 'currentColor';
+const DIAGONAL_LINE_TYPE_OPTIONS: string[][] = [
+  ['0', '없음'],
+  ['1', '실선'],
+  ['2', '파선'],
+  ['3', '점선'],
+  ['4', '일점쇄선'],
+  ['5', '이점쇄선'],
+  ['6', '긴 파선'],
+  ['7', '원형 파선'],
+  ['8', '이중 실선'],
+  ['9', '가는-굵은 이중선'],
+  ['10', '굵은-가는 이중선'],
+  ['11', '가는-굵은-가는 삼중선'],
+  ['12', '물결선'],
+  ['13', '이중 물결선'],
+  ['14', '3D 굵은선'],
+  ['15', '3D 굵은선 반전'],
+  ['16', '3D 가는선'],
+  ['17', '3D 가는선 반전'],
+];
+const DIAGONAL_WIDTH_OPTIONS: string[][] = [
+  ['0', '0.1mm'],
+  ['1', '0.12mm'],
+  ['2', '0.15mm'],
+  ['3', '0.2mm'],
+  ['4', '0.25mm'],
+  ['5', '0.3mm'],
+  ['6', '0.4mm'],
+  ['7', '0.5mm'],
+  ['8', '0.6mm'],
+  ['9', '0.7mm'],
+  ['10', '1.0mm'],
+  ['11', '1.5mm'],
+  ['12', '2.0mm'],
+  ['13', '3.0mm'],
+  ['14', '4.0mm'],
+  ['15', '5.0mm'],
+];
+const DIAGONAL_WIDTH_MM = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0];
+
+function diagonalPreviewWidthPx(widthIndex: number): number {
+  const mm = DIAGONAL_WIDTH_MM[widthIndex] ?? DIAGONAL_WIDTH_MM[0];
+  return Math.min(8, Math.max(0.8, mm * 2.6));
+}
 
 /** 탭 정의 */
 interface TabDef {
@@ -495,20 +539,14 @@ export class CellBorderBgDialog extends ModalDialog {
     const lineSection = this.createSection('선 속성');
     const typeRow = this.row();
     typeRow.appendChild(this.label('종류'));
-    this.diagLineTypeSelect = this.selectOptions([
-      ['0', '없음'], ['1', '실선'], ['2', '파선'], ['3', '점선'],
-      ['4', '일점쇄선'], ['5', '이점쇄선'], ['6', '긴 파선'], ['7', '이중 실선'],
-    ]);
+    this.diagLineTypeSelect = this.selectOptions(DIAGONAL_LINE_TYPE_OPTIONS);
     this.diagLineTypeSelect.addEventListener('change', () => this.updateDiagonalPreview());
     typeRow.appendChild(this.diagLineTypeSelect);
     lineSection.appendChild(typeRow);
 
     const widthRow = this.row();
     widthRow.appendChild(this.label('굵기'));
-    this.diagWidthSelect = this.selectOptions([
-      ['0', '0.1mm'], ['1', '0.12mm'], ['2', '0.15mm'], ['3', '0.2mm'],
-      ['4', '0.25mm'], ['5', '0.3mm'], ['6', '0.4mm'],
-    ]);
+    this.diagWidthSelect = this.selectOptions(DIAGONAL_WIDTH_OPTIONS);
     this.diagWidthSelect.addEventListener('change', () => this.updateDiagonalPreview());
     widthRow.appendChild(this.diagWidthSelect);
     lineSection.appendChild(widthRow);
@@ -722,22 +760,51 @@ export class CellBorderBgDialog extends ModalDialog {
     const lineType = parseInt(this.diagLineTypeSelect?.value ?? '0', 10);
     if (lineType === 0) return;
     const color = this.diagColorInput?.value ?? '#000000';
-    const width = Math.max(0.8, (parseInt(this.diagWidthSelect?.value ?? '0', 10) + 1) * 0.8);
+    const widthIndex = parseInt(this.diagWidthSelect?.value ?? '0', 10);
+    const width = diagonalPreviewWidthPx(widthIndex);
     const dashMap: Record<number, string> = {
       2: '7,4', 3: '2,3', 4: '8,3,2,3', 5: '8,3,2,3,2,3', 6: '12,4',
     };
-    const draw = (x1: number, y1: number, x2: number, y2: number) => {
+    const draw = (x1: number, y1: number, x2: number, y2: number, strokeWidth = width, offset = 0) => {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const ox = (-dy / len) * offset;
+      const oy = (dx / len) * offset;
       const line = document.createElementNS(ns, 'line');
-      line.setAttribute('x1', String(x1)); line.setAttribute('y1', String(y1));
-      line.setAttribute('x2', String(x2)); line.setAttribute('y2', String(y2));
-      line.setAttribute('stroke', color); line.setAttribute('stroke-width', String(width));
+      line.setAttribute('x1', String(x1 + ox)); line.setAttribute('y1', String(y1 + oy));
+      line.setAttribute('x2', String(x2 + ox)); line.setAttribute('y2', String(y2 + oy));
+      line.setAttribute('stroke', color); line.setAttribute('stroke-width', String(strokeWidth));
       if (dashMap[lineType]) line.setAttribute('stroke-dasharray', dashMap[lineType]);
       svg.appendChild(line);
     };
-    if (this.diagSlashBits !== 0) draw(20, 104, 140, 16);
-    if (this.diagBackSlashBits !== 0) draw(20, 16, 140, 104);
-    if (this.diagCenterLine === 'VERTICAL' || this.diagCenterLine === 'CROSS') draw(20, 60, 140, 60);
-    if (this.diagCenterLine === 'HORIZONTAL' || this.diagCenterLine === 'CROSS') draw(80, 16, 80, 104);
+
+    const drawStyled = (x1: number, y1: number, x2: number, y2: number) => {
+      const thin = Math.max(0.8, width * 0.28);
+      const thick = Math.max(1.4, width * 0.72);
+      const gap = Math.max(2.2, width * 0.5);
+      if (lineType === 8) {
+        draw(x1, y1, x2, y2, thin, -gap / 2);
+        draw(x1, y1, x2, y2, thin, gap / 2);
+      } else if (lineType === 9) {
+        draw(x1, y1, x2, y2, thin, -gap / 2);
+        draw(x1, y1, x2, y2, thick, gap / 2);
+      } else if (lineType === 10) {
+        draw(x1, y1, x2, y2, thick, -gap / 2);
+        draw(x1, y1, x2, y2, thin, gap / 2);
+      } else if (lineType === 11) {
+        draw(x1, y1, x2, y2, thin, -gap);
+        draw(x1, y1, x2, y2, thick, 0);
+        draw(x1, y1, x2, y2, thin, gap);
+      } else {
+        draw(x1, y1, x2, y2);
+      }
+    };
+
+    if (this.diagSlashBits !== 0) drawStyled(20, 104, 140, 16);
+    if (this.diagBackSlashBits !== 0) drawStyled(20, 16, 140, 104);
+    if (this.diagCenterLine === 'VERTICAL' || this.diagCenterLine === 'CROSS') drawStyled(20, 60, 140, 60);
+    if (this.diagCenterLine === 'HORIZONTAL' || this.diagCenterLine === 'CROSS') drawStyled(80, 16, 80, 104);
   }
 
   // ─── 공통: 적용 범위 섹션 ────────────────────
