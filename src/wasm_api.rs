@@ -1420,6 +1420,60 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 선택된 표 셀 범위를 전치 복사용 내부 버퍼에 저장한다.
+    ///
+    /// 반환값: JSON `{"ok":true,"sourceRows":N,"sourceCols":N,"targetRows":N,"targetCols":N}`
+    #[wasm_bindgen(js_name = copyTableCellsTransposed)]
+    pub fn copy_table_cells_transposed(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        start_row: u32,
+        start_col: u32,
+        end_row: u32,
+        end_col: u32,
+    ) -> Result<String, JsValue> {
+        self.copy_table_cells_transposed_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            start_row as u16,
+            start_col as u16,
+            end_row as u16,
+            end_col as u16,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 전치 복사 버퍼를 대상 시작 셀부터 붙여넣는다.
+    ///
+    /// 반환값: JSON `{"ok":true,"sourceRows":N,"sourceCols":N,"targetRows":N,"targetCols":N}`
+    #[wasm_bindgen(js_name = pasteTableCellsTransposed)]
+    pub fn paste_table_cells_transposed(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        start_row: u32,
+        start_col: u32,
+    ) -> Result<String, JsValue> {
+        self.paste_table_cells_transposed_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            start_row as u16,
+            start_col as u16,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 표 전치 복사 버퍼 보유 여부를 반환한다.
+    #[wasm_bindgen(js_name = hasTableTransposeClipboard)]
+    pub fn has_table_transpose_clipboard(&self) -> bool {
+        self.has_table_transpose_clipboard_native()
+    }
+
     /// 캐럿 위치에서 문단을 분할한다 (Enter 키).
     ///
     /// char_offset 이후의 텍스트가 새 문단으로 이동한다.

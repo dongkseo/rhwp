@@ -136,6 +136,16 @@ pub struct Cell {
     pub field_name: Option<String>,
 }
 
+/// 표 셀 전치 복사 데이터.
+///
+/// `cells[row][col]` 은 원본 범위의 셀 문단 목록이다.
+#[derive(Debug, Clone, Default)]
+pub struct TableTransposeData {
+    pub source_rows: u16,
+    pub source_cols: u16,
+    pub cells: Vec<Vec<Vec<Paragraph>>>,
+}
+
 /// 세로 정렬
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum VerticalAlign {
@@ -391,6 +401,126 @@ impl Table {
         let idx = (row as usize) * (self.col_count as usize) + (col as usize);
         let &cell_idx = self.cell_grid.get(idx)?.as_ref()?;
         self.cells.get_mut(cell_idx)
+    }
+
+    fn validate_unmerged_rect(
+        &self,
+        start_row: u16,
+        start_col: u16,
+        end_row: u16,
+        end_col: u16,
+    ) -> Result<(), String> {
+        if start_row > end_row || start_col > end_col {
+            return Err("셀 범위가 유효하지 않습니다".to_string());
+        }
+        if end_row >= self.row_count || end_col >= self.col_count {
+            return Err(format!(
+                "셀 범위 ({},{})~({},{})가 표 크기 {}×{}를 초과합니다",
+                start_row, start_col, end_row, end_col, self.row_count, self.col_count
+            ));
+        }
+
+        for row in start_row..=end_row {
+            for col in start_col..=end_col {
+                let cell_idx = self
+                    .cell_index_at(row, col)
+                    .ok_or_else(|| format!("셀 ({},{})을 찾을 수 없습니다", row, col))?;
+                let cell = &self.cells[cell_idx];
+                if cell.row != row || cell.col != col || cell.row_span != 1 || cell.col_span != 1 {
+                    return Err(format!(
+                        "병합 셀 ({},{})은 전치 범위에 포함할 수 없습니다",
+                        cell.row, cell.col
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 직사각형 범위의 셀 문단을 전치 복사용 데이터로 복사한다.
+    pub fn copy_transpose_range(
+        &self,
+        start_row: u16,
+        start_col: u16,
+        end_row: u16,
+        end_col: u16,
+    ) -> Result<TableTransposeData, String> {
+        self.validate_unmerged_rect(start_row, start_col, end_row, end_col)?;
+
+        let source_rows = end_row - start_row + 1;
+        let source_cols = end_col - start_col + 1;
+        let mut cells = Vec::with_capacity(source_rows as usize);
+
+        for row in start_row..=end_row {
+            let mut row_cells = Vec::with_capacity(source_cols as usize);
+            for col in start_col..=end_col {
+                let cell_idx = self
+                    .cell_index_at(row, col)
+                    .ok_or_else(|| format!("셀 ({},{})을 찾을 수 없습니다", row, col))?;
+                row_cells.push(self.cells[cell_idx].paragraphs.clone());
+            }
+            cells.push(row_cells);
+        }
+
+        Ok(TableTransposeData {
+            source_rows,
+            source_cols,
+            cells,
+        })
+    }
+
+    /// 전치 복사 데이터를 대상 시작 셀부터 붙여넣는다.
+    ///
+    /// 반환값은 내용이 교체된 `(cell_idx, paragraph_count)` 목록이다.
+    pub fn paste_transposed_cells(
+        &mut self,
+        start_row: u16,
+        start_col: u16,
+        data: &TableTransposeData,
+    ) -> Result<Vec<(usize, usize)>, String> {
+        if data.source_rows == 0 || data.source_cols == 0 || data.cells.is_empty() {
+            return Err("전치 복사 데이터가 비어 있습니다".to_string());
+        }
+        if data.cells.len() != data.source_rows as usize
+            || data
+                .cells
+                .iter()
+                .any(|row| row.len() != data.source_cols as usize)
+        {
+            return Err("전치 복사 데이터의 행/열 크기가 일치하지 않습니다".to_string());
+        }
+
+        let target_rows = data.source_cols;
+        let target_cols = data.source_rows;
+        let end_row = start_row
+            .checked_add(target_rows - 1)
+            .ok_or_else(|| "대상 행 범위가 너무 큽니다".to_string())?;
+        let end_col = start_col
+            .checked_add(target_cols - 1)
+            .ok_or_else(|| "대상 열 범위가 너무 큽니다".to_string())?;
+        self.validate_unmerged_rect(start_row, start_col, end_row, end_col)?;
+
+        let mut changed = Vec::with_capacity((target_rows as usize) * (target_cols as usize));
+        for source_row in 0..data.source_rows {
+            for source_col in 0..data.source_cols {
+                let target_row = start_row + source_col;
+                let target_col = start_col + source_row;
+                let cell_idx = self.cell_index_at(target_row, target_col).ok_or_else(|| {
+                    format!("셀 ({},{})을 찾을 수 없습니다", target_row, target_col)
+                })?;
+                let mut paragraphs = data.cells[source_row as usize][source_col as usize].clone();
+                if paragraphs.is_empty() {
+                    paragraphs.push(Paragraph::new_empty());
+                }
+                let para_count = paragraphs.len();
+                self.cells[cell_idx].paragraphs = paragraphs;
+                changed.push((cell_idx, para_count));
+            }
+        }
+
+        self.dirty = true;
+        Ok(changed)
     }
 
     /// raw_ctrl_data 내 CommonObjAttr의 width/height를 재계산하여 갱신한다 (의도된 dual).

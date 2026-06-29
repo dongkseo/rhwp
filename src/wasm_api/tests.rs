@@ -1545,7 +1545,7 @@ fn create_doc_with_table() -> HwpDocument {
         ..Default::default()
     };
 
-    let table = Table {
+    let mut table = Table {
         row_count: 2,
         col_count: 2,
         padding: Padding {
@@ -1638,6 +1638,7 @@ fn create_doc_with_table() -> HwpDocument {
         ],
         ..Default::default()
     };
+    table.rebuild_grid();
 
     let parent_para = Paragraph {
         text: String::new(),
@@ -1691,6 +1692,46 @@ fn test_delete_text_in_cell() {
     } else {
         panic!("표 컨트롤을 찾을 수 없음");
     }
+}
+
+#[test]
+fn test_table_transpose_clipboard_native_api() {
+    let mut doc = create_doc_with_table();
+    assert!(!doc.has_table_transpose_clipboard_native());
+
+    let copy = doc
+        .copy_table_cells_transposed_native(0, 0, 0, 0, 0, 1, 1)
+        .unwrap();
+    let copy_json: Value = serde_json::from_str(&copy).unwrap();
+    assert_eq!(copy_json["ok"], true);
+    assert_eq!(copy_json["sourceRows"], 2);
+    assert_eq!(copy_json["sourceCols"], 2);
+    assert!(doc.has_table_transpose_clipboard_native());
+
+    let paste = doc
+        .paste_table_cells_transposed_native(0, 0, 0, 0, 0)
+        .unwrap();
+    let paste_json: Value = serde_json::from_str(&paste).unwrap();
+    assert_eq!(paste_json["ok"], true);
+    assert_eq!(paste_json["targetRows"], 2);
+    assert_eq!(paste_json["targetCols"], 2);
+
+    if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
+        assert_eq!(table.cells[0].paragraphs[0].text, "셀A");
+        assert_eq!(table.cells[1].paragraphs[0].text, "셀C");
+        assert_eq!(table.cells[2].paragraphs[0].text, "셀B");
+        assert_eq!(table.cells[3].paragraphs[0].text, "셀D");
+    } else {
+        panic!("표 컨트롤을 찾을 수 없음");
+    }
+    assert!(matches!(
+        doc.event_log.last(),
+        Some(crate::model::event::DocumentEvent::TableCellsTransposed {
+            section: 0,
+            para: 0,
+            ctrl: 0,
+        })
+    ));
 }
 
 #[test]

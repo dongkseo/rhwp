@@ -553,6 +553,68 @@ export const tableCommands: CommandDef[] = [
     },
   },
   {
+    id: 'table:transpose-copy',
+    label: '셀 전치 복사',
+    canExecute: (ctx) => ctx.inCellSelectionMode,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const range = ih.getSelectedCellRange?.();
+      const tableCtx = ih.getCellTableContext?.();
+      if (!range || !tableCtx) return;
+      if (hasNonRectangularCellSelection(ih)) return;
+      if (tableCtx.cellPath && tableCtx.cellPath.length > 1) return;
+
+      safeTableOp(() => {
+        services.wasm.copyTableCellsTransposed(
+          tableCtx.sec,
+          tableCtx.ppi,
+          tableCtx.ci,
+          range.startRow,
+          range.startCol,
+          range.endRow,
+          range.endCol,
+        );
+      }, '셀 전치 복사');
+      ih.exitCellSelectionMode();
+      restoreEditorFocus(ih);
+    },
+  },
+  {
+    id: 'table:transpose-paste',
+    label: '셀 전치 붙여넣기',
+    canExecute: (ctx) => ctx.inTable && ctx.hasTableTransposeClipboard,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const pos = ih.getCursorPosition();
+      if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
+      if ((pos.cellPath?.length ?? 0) > 1) return;
+
+      const cellInfo = services.wasm.getCellInfo(
+        pos.sectionIndex,
+        pos.parentParaIndex,
+        pos.controlIndex,
+        pos.cellIndex,
+      );
+      safeTableOp(() => ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'pasteTableCellsTransposed',
+        operation: (wasm) => {
+          wasm.pasteTableCellsTransposed(
+            pos.sectionIndex,
+            pos.parentParaIndex!,
+            pos.controlIndex!,
+            cellInfo.row,
+            cellInfo.col,
+          );
+          return pos;
+        },
+      }), '셀 전치 붙여넣기');
+      restoreEditorFocus(ih);
+    },
+  },
+  {
     id: 'table:delete',
     label: '표 지우기',
     canExecute: (ctx) => ctx.inTable || ctx.inTableObjectSelection,

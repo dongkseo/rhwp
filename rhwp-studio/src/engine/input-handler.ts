@@ -1713,6 +1713,8 @@ export class InputHandler {
       { type: 'separator' },
       { type: 'command', commandId: 'table:cell-merge' },
       { type: 'command', commandId: 'table:cell-split' },
+      { type: 'command', commandId: 'table:transpose-copy' },
+      { type: 'command', commandId: 'table:transpose-paste' },
       { type: 'separator' },
       { type: 'command', commandId: 'table:border-each', label: '셀 테두리/배경 - 각 셀마다 적용(E)...' },
       { type: 'command', commandId: 'table:border-one', label: '셀 테두리/배경 - 하나의 셀처럼 적용(Z)...' },
