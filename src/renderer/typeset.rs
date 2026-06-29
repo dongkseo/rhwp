@@ -2034,8 +2034,76 @@ impl TypesetEngine {
                 //  잘못 skip 되어 표 누락).
                 let is_empty_no_ctrl = para.text.is_empty() && para.controls.is_empty();
                 if is_empty_no_ctrl {
-                    // 빈 문단 skip (단독 빈페이지 차단)
-                    continue;
+                    // [#1648] 빈 문단이 현재 페이지에 들어가면 정상 배치한다(한글 동작 —
+                    //   페이지 하단에 빈 줄 1개). 들어가지 않을 때만 skip 하여 단독 빈 페이지를
+                    //   차단한다. 종전엔 fit 무검사로 fit 하는 빈 문단까지 드롭하여, 페이지를
+                    //   채운 TAC 표 직후의 빈 문단이 누락되고 페이지↔PI 가 한글과 어긋났다
+                    //   (#1643 rhwp_pNone).
+                    //
+                    // 1) height fit: 합산 current_height 기준 (종전 #1648 판정).
+                    let empty_h_px = para
+                        .line_segs
+                        .first()
+                        .map(|s| hwpunit_to_px((s.line_height + s.line_spacing) as i32, self.dpi))
+                        .unwrap_or(0.0);
+                    let height_fits = empty_h_px <= st.available_height() - st.current_height;
+
+                    // 2) [#1659] vpos fit: 합산 height 는 음수 줄간격 문단에서 실제 vpos 진행을
+                    //   과소평가 → 페이지 하단 빈 문단을 height fit 으로 오판 emit 하지만 placement
+                    //   (아래 vpos overflow 가드, ~L2300)는 vpos overflow 로 새 페이지에 단독 배치
+                    //   → 단독 빈 페이지 +1 회귀(synam-001 35→36). placement(L2333/L2339)와 동일한
+                    //   page_top_vpos 기준 vpos 판정을 AND 로 더해, height·vpos 둘 다 fit 일 때만
+                    //   emit. placement 가 height 기반인 다단/wrap 에선 vpos 판정을 생략(true).
+                    let vpos_fits = if st.col_count == 1 && st.wrap_around_cs < 0 {
+                        // 페이지 첫 실 item 의 top vpos. PartialParagraph continuation 은 원
+                        //   문단의 첫 줄이 아니라 fragment 시작 줄(start_line)의 vpos 가 페이지
+                        //   상단이다 → line_segs[start_line] 사용. 줄 기준 vpos 가 없는 항목
+                        //   (PartialTable continuation)은 None 으로 두어 vpos 판정을 보류(height
+                        //   fit 에 위임) — 잘못된 baseline 으로 skip/emit 오판 방지(#1659 리뷰).
+                        let page_top_vpos = st
+                            .current_items
+                            .iter()
+                            .find(|item| !matches!(item, PageItem::EndnoteSeparator { .. }))
+                            .and_then(|item| match item {
+                                PageItem::FullParagraph { para_index }
+                                | PageItem::Table { para_index, .. }
+                                | PageItem::Shape { para_index, .. } => paragraphs
+                                    .get(*para_index)
+                                    .and_then(|p| p.line_segs.first())
+                                    .map(|s| s.vertical_pos),
+                                PageItem::PartialParagraph {
+                                    para_index,
+                                    start_line,
+                                    ..
+                                } => paragraphs
+                                    .get(*para_index)
+                                    .and_then(|p| p.line_segs.get(*start_line))
+                                    .map(|s| s.vertical_pos),
+                                // 줄 기준 vpos 없음 → 판정 보류.
+                                PageItem::PartialTable { .. }
+                                | PageItem::EndnoteSeparator { .. } => None,
+                            });
+                        match (para.line_segs.last(), page_top_vpos) {
+                            (Some(last_seg), Some(top)) => {
+                                let body_h_hu = crate::renderer::px_to_hwpunit(
+                                    st.layout.body_area.height,
+                                    self.dpi,
+                                );
+                                let vpos_end = last_seg.vertical_pos + last_seg.line_height;
+                                vpos_end <= top + body_h_hu + 283
+                            }
+                            // vpos 판정 불가 → 제약 없음(height fit 에 위임).
+                            _ => true,
+                        }
+                    } else {
+                        true
+                    };
+
+                    if !(height_fits && vpos_fits) {
+                        // 빈 문단이 현재 페이지에 안 들어감 → skip (단독 빈 페이지 차단)
+                        continue;
+                    }
+                    // height·vpos 둘 다 fit → 정상 emit (아래로 진행)
                 } else {
                     // 일반 텍스트 또는 컨트롤 보유: 안전마진 1회 비활성화 (단독 텍스트 페이지 차단)
                     st.skip_safety_margin_once = true;
