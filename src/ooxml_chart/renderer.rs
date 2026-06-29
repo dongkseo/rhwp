@@ -4,7 +4,7 @@
 //! - 세로/가로 막대, 꺾은선, 원형
 //! - **콤보 차트** (bar + line) 및 **이중 Y축** 지원
 
-use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries};
+use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
 
 /// 기본 시리즈 색상 팔레트 (시리즈 색상 미지정 시 순환 사용)
 const DEFAULT_PALETTE: &[u32] = &[
@@ -57,6 +57,22 @@ fn format_num(v: f64, format_code: Option<&str>) -> String {
         out.push(*b as char);
     }
     format!("{}{}", sign, out)
+}
+
+/// 분산형 수치축 눈금용 소수 포맷. 정수면 소수점 없이, 아니면 소수 2자리 후 trailing 0 제거.
+/// (`format_num`은 정수 반올림이라 0.5/2.6 등 소수 눈금을 손상시키므로 별도 헬퍼) — C1b #1660.
+fn format_axis_num(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        return format!("{}", v.round() as i64);
+    }
+    let mut s = format!("{:.2}", v);
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
 }
 
 /// 차트 전체를 SVG 조각으로 렌더
@@ -127,6 +143,9 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
                 render_bars(&mut svg, chart, plot_x, plot_y, plot_w, plot_h, true)
             }
             OoxmlChartType::Line => render_line(&mut svg, chart, plot_x, plot_y, plot_w, plot_h),
+            OoxmlChartType::Scatter => {
+                render_scatter(&mut svg, chart, plot_x, plot_y, plot_w, plot_h)
+            }
             _ => {}
         }
     }
@@ -234,6 +253,36 @@ fn nice_range(min: f64, max: f64, target_ticks: usize) -> (f64, f64) {
     (new_min, new_max)
 }
 
+/// 분산형 수치축 범위. 양수 데이터는 **0 기준선으로 clamp**한다 — 한컴 분산형 PDF 정합
+/// (정답지 X·Y 모두 0부터: 표식만있는분산형 X 0~3·Y 0~5). 막대/선 축(`value_range_for`)과
+/// 동일한 0-baseline 동작이라 차트 종류 간 일관성도 확보. nice_range로 눈금 정리.
+/// (상한 nice-scale 헤드룸 = 스타일 4갭 ④로 C1c 후속.) — C1b #1660.
+fn scatter_range(vals: impl Iterator<Item = f64>) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for v in vals {
+        if v < min {
+            min = v;
+        }
+        if v > max {
+            max = v;
+        }
+    }
+    if !min.is_finite() {
+        min = 0.0;
+    }
+    if !max.is_finite() {
+        max = 1.0;
+    }
+    if min > 0.0 {
+        min = 0.0; // 양수 데이터는 0 기준선 (한컴 분산형 정합)
+    }
+    if (max - min).abs() < 1e-9 {
+        max = min + 1.0;
+    }
+    nice_range(min, max, 5)
+}
+
 // ---------------- Bar / Column (단일 축) ----------------
 
 fn render_bars(
@@ -293,6 +342,7 @@ fn render_bars(
         horizontal,
         false,
         percent,
+        false,
     );
 
     let (cat_span, bar_span_total) = if horizontal {
@@ -420,6 +470,7 @@ fn render_line(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64, 
         false,
         false,
         false,
+        false,
     );
 
     let step = pw / (max_len - 1).max(1) as f64;
@@ -449,6 +500,119 @@ fn render_line(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64, 
     }
 
     render_category_labels(svg, chart, px, py, pw, ph, max_len, false);
+}
+
+// ---------------- Scatter (분산형, 2 수치축) ----------------
+
+fn render_scatter(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64, ph: f64) {
+    // 전 시리즈가 (x,y) 쌍을 못 만들면 격자도 의미 없음 → 조기 종료.
+    // (상위 <g class="hwp-ooxml-chart">는 이미 출력되어 placeholder는 안 뜸)
+    if chart
+        .series
+        .iter()
+        .all(|s| s.x_values.is_empty() || s.values.is_empty())
+    {
+        return;
+    }
+
+    let (xmin, xmax) = scatter_range(chart.series.iter().flat_map(|s| s.x_values.iter().copied()));
+    let (ymin, ymax) = scatter_range(chart.series.iter().flat_map(|s| s.values.iter().copied()));
+    let xspan = (xmax - xmin).max(1e-9);
+    let yspan = (ymax - ymin).max(1e-9);
+
+    // 플롯 배경
+    svg.push_str(&format!(
+        "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"#ffffff\" stroke=\"#cccccc\" stroke-width=\"0.5\"/>\n",
+        px, py, pw, ph
+    ));
+    // X축(하단, 수직 격자선) + Y축(좌측, 수평 격자선) — 둘 다 수치축, 소수 라벨
+    render_value_grid(
+        svg, px, py, pw, ph, xmin, xmax, None, true, false, false, true,
+    );
+    render_value_grid(
+        svg, px, py, pw, ph, ymin, ymax, None, false, false, false, true,
+    );
+
+    let (show_line, smooth, show_markers) = chart.scatter_style.flags();
+
+    for (si, ser) in chart.series.iter().enumerate() {
+        let color = series_color(ser, si);
+        // (x,y) 픽셀 좌표. 데이터 순서 유지(x 정렬 안 함), 길이 불일치 시 짧은 쪽으로 절단.
+        let points: Vec<(f64, f64)> = ser
+            .x_values
+            .iter()
+            .zip(ser.values.iter())
+            .map(|(&x, &y)| {
+                (
+                    px + pw * (x - xmin) / xspan,
+                    py + ph - ph * (y - ymin) / yspan,
+                )
+            })
+            .collect();
+        if points.is_empty() {
+            continue;
+        }
+
+        if show_line && points.len() >= 2 {
+            let d = if smooth {
+                smooth_path(&points)
+            } else {
+                polyline_path(&points)
+            };
+            svg.push_str(&format!(
+                "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"2\"/>\n",
+                d, color
+            ));
+        }
+        if show_markers {
+            for (xp, yp) in &points {
+                svg.push_str(&format!(
+                    "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"3\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\"/>\n",
+                    xp, yp, color
+                ));
+            }
+        }
+    }
+}
+
+/// 직선 폴리라인 path (`M…L…`).
+fn polyline_path(points: &[(f64, f64)]) -> String {
+    let mut d = String::new();
+    for (i, (x, y)) in points.iter().enumerate() {
+        d.push_str(&format!(
+            "{}{:.2},{:.2} ",
+            if i == 0 { "M" } else { "L" },
+            x,
+            y
+        ));
+    }
+    d.trim().to_string()
+}
+
+/// Catmull-Rom → cubic Bézier 곡선 path. 데이터 순서, 끝점 clamp(P₋₁=P₀, Pₙ=Pₙ₋₁). — C1b #1660.
+fn smooth_path(points: &[(f64, f64)]) -> String {
+    let n = points.len();
+    if n < 2 {
+        return polyline_path(points);
+    }
+    let mut d = format!("M{:.2},{:.2}", points[0].0, points[0].1);
+    for i in 0..n - 1 {
+        let p0 = if i == 0 { points[0] } else { points[i - 1] };
+        let p1 = points[i];
+        let p2 = points[i + 1];
+        let p3 = if i + 2 >= n {
+            points[n - 1]
+        } else {
+            points[i + 2]
+        };
+        let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
+        let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
+        d.push_str(&format!(
+            " C{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}",
+            c1.0, c1.1, c2.0, c2.1, p2.0, p2.1
+        ));
+    }
+    d
 }
 
 // ---------------- Pie ----------------
@@ -520,14 +684,14 @@ fn render_combo(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64,
     // 기본축 격자 (좌측)
     let pri_fmt = pri.first().and_then(|s| s.format_code.as_deref());
     render_value_grid(
-        svg, px, py, pw, ph, pri_min, pri_max, pri_fmt, false, false, false,
+        svg, px, py, pw, ph, pri_min, pri_max, pri_fmt, false, false, false, false,
     );
 
     // 보조축 격자 (우측, 눈금만)
     if !sec.is_empty() {
         let sec_fmt = sec.first().and_then(|s| s.format_code.as_deref());
         render_value_grid(
-            svg, px, py, pw, ph, sec_min, sec_max, sec_fmt, false, true, false,
+            svg, px, py, pw, ph, sec_min, sec_max, sec_fmt, false, true, false, false,
         );
     }
 
@@ -655,10 +819,13 @@ fn render_value_grid(
     horizontal: bool,
     secondary: bool,
     percent: bool,
+    decimal: bool,
 ) {
     let label = |v: f64| -> String {
         if percent {
             format!("{}%", v.round() as i64)
+        } else if decimal {
+            format_axis_num(v)
         } else {
             format_num(v, format_code)
         }
@@ -982,5 +1149,90 @@ mod tests {
             2,
             "percent도 카테고리당 단일 x"
         );
+    }
+
+    // --- C1b (#1660): 분산형(scatter) 렌더 ---
+
+    fn scatter_chart(style: ScatterStyle) -> OoxmlChart {
+        OoxmlChart {
+            chart_type: OoxmlChartType::Scatter,
+            scatter_style: style,
+            series: vec![OoxmlSeries {
+                name: "Y1".into(),
+                x_values: vec![0.7, 1.8, 2.6],
+                values: vec![2.7, 3.2, 0.8],
+                series_type: OoxmlChartType::Scatter,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_render_scatter_marker_only() {
+        // marker: 점만, 연결선 없음.
+        let svg = render_chart_svg(&scatter_chart(ScatterStyle::Marker), 0.0, 0.0, 400.0, 300.0);
+        assert!(svg.contains("<circle"), "marker는 표식(circle) 있어야");
+        assert!(!svg.contains("<path"), "marker는 연결선(path) 없어야");
+        assert!(!svg.contains("차트 (미지원)"));
+        assert!(svg.contains("hwp-ooxml-chart\""));
+    }
+
+    #[test]
+    fn test_render_scatter_line_only() {
+        // line: 직선만, 표식 없음.
+        let svg = render_chart_svg(&scatter_chart(ScatterStyle::Line), 0.0, 0.0, 400.0, 300.0);
+        assert!(svg.contains("<path"), "line은 연결선(path) 있어야");
+        assert!(!svg.contains("<circle"), "line은 표식(circle) 없어야");
+        assert!(!svg.contains(" C"), "line은 직선(C 베지어 없음)");
+    }
+
+    #[test]
+    fn test_render_scatter_line_marker() {
+        // lineMarker: 직선 + 표식.
+        let svg = render_chart_svg(
+            &scatter_chart(ScatterStyle::LineMarker),
+            0.0,
+            0.0,
+            400.0,
+            300.0,
+        );
+        assert!(svg.contains("<path"));
+        assert!(svg.contains("<circle"));
+        assert!(!svg.contains(" C"), "lineMarker는 직선");
+    }
+
+    #[test]
+    fn test_render_scatter_smooth() {
+        // smoothMarker: 곡선(cubic Bézier C) + 표식.
+        let svg = render_chart_svg(
+            &scatter_chart(ScatterStyle::SmoothMarker),
+            0.0,
+            0.0,
+            400.0,
+            300.0,
+        );
+        assert!(svg.contains("<path"));
+        assert!(svg.contains("<circle"));
+        assert!(svg.contains(" C"), "smooth는 cubic Bézier(C) 곡선");
+    }
+
+    #[test]
+    fn test_render_scatter_decimal_axis_labels() {
+        // 소수 데이터 → 소수 축 라벨 (format_num 정수 반올림이 아니라 format_axis_num).
+        // 0-baseline clamp 후 X 0~3 / Y 0~4 → 눈금 0.6/1.2/2.4/3.2 등 (소수 라벨).
+        let svg = render_chart_svg(&scatter_chart(ScatterStyle::Marker), 0.0, 0.0, 400.0, 300.0);
+        assert!(
+            svg.contains(">2.4<"),
+            "분산형 축은 소수 라벨이어야 (정수 반올림 시 '2'로 손상)",
+        );
+        assert!(!svg.contains("차트 (미지원)"));
+    }
+
+    #[test]
+    fn test_render_scatter_zero_baseline() {
+        // 양수 데이터 → 축이 0부터 (한컴 분산형 PDF 정합). 0 라벨이 X·Y에 존재.
+        let svg = render_chart_svg(&scatter_chart(ScatterStyle::Marker), 0.0, 0.0, 400.0, 300.0);
+        assert!(svg.contains(">0<"), "분산형 축은 0 기준선이어야");
     }
 }
