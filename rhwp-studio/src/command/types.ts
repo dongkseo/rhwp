@@ -20,6 +20,8 @@ export interface EditorContext {
   inCellSelectionMode: boolean;
   /** 여러 셀이 선택된 상태인가? */
   hasMultiCellSelection: boolean;
+  /** 표 셀 전치 복사 버퍼가 있는가? */
+  hasTableTransposeClipboard: boolean;
   /** 표 객체 선택 모드인가? */
   inTableObjectSelection: boolean;
   /** 그림 객체 선택 모드인가? */

@@ -1,7 +1,9 @@
 //! 표/셀 CRUD + 속성 조회·수정 관련 native 메서드
 
-use super::super::helpers::{border_line_type_to_u8_val, color_ref_to_css, navigate_path_to_table};
-use crate::document_core::DocumentCore;
+use super::super::helpers::{
+    border_line_type_to_u8_val, color_ref_to_css, json_u32, navigate_path_to_table,
+};
+use crate::document_core::{DocumentCore, TableTransposeClipboard};
 use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::event::DocumentEvent;
@@ -301,6 +303,181 @@ impl DocumentCore {
             "\"cellCount\":{}",
             cell_count
         )))
+    }
+
+    /// 선택된 셀 범위를 전치 복사용 내부 버퍼에 저장한다.
+    pub fn copy_table_cells_transposed_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        start_row: u16,
+        start_col: u16,
+        end_row: u16,
+        end_col: u16,
+    ) -> Result<String, HwpError> {
+        let data = {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            table
+                .copy_transpose_range(start_row, start_col, end_row, end_col)
+                .map_err(HwpError::RenderError)?
+        };
+        let source_rows = data.source_rows;
+        let source_cols = data.source_cols;
+        self.table_transpose_clipboard = Some(TableTransposeClipboard { data });
+
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sourceRows\":{},\"sourceCols\":{},\"targetRows\":{},\"targetCols\":{}",
+            source_rows, source_cols, source_cols, source_rows
+        )))
+    }
+
+    /// 전치 복사 버퍼를 대상 시작 셀부터 정적 붙여넣기한다.
+    pub fn paste_table_cells_transposed_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        start_row: u16,
+        start_col: u16,
+    ) -> Result<String, HwpError> {
+        let data = self
+            .table_transpose_clipboard
+            .as_ref()
+            .ok_or_else(|| HwpError::RenderError("전치 복사 데이터가 없습니다".to_string()))?
+            .data
+            .clone();
+
+        let source_rows = data.source_rows;
+        let source_cols = data.source_cols;
+        let changed_cells = {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            table
+                .paste_transposed_cells(start_row, start_col, &data)
+                .map_err(HwpError::RenderError)?
+        };
+
+        self.document.sections[section_idx].raw_stream = None;
+        for (cell_idx, para_count) in changed_cells {
+            for cell_para_idx in 0..para_count {
+                self.reflow_cell_paragraph(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    cell_idx,
+                    cell_para_idx,
+                );
+            }
+        }
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::TableCellsTransposed {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sourceRows\":{},\"sourceCols\":{},\"targetRows\":{},\"targetCols\":{}",
+            source_rows, source_cols, source_cols, source_rows
+        )))
+    }
+
+    /// 선택된 전체 표를 제자리에서 전치한다.
+    pub fn transpose_table_cells_in_place_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let (source_rows, source_cols, changed_cells) = {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let source_rows = table.row_count;
+            let source_cols = table.col_count;
+            let changed_cells = table
+                .transpose_unmerged_table_in_place()
+                .map_err(HwpError::RenderError)?;
+            (source_rows, source_cols, changed_cells)
+        };
+
+        self.document.sections[section_idx].raw_stream = None;
+        for (cell_idx, para_count) in changed_cells {
+            for cell_para_idx in 0..para_count {
+                self.reflow_cell_paragraph(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    cell_idx,
+                    cell_para_idx,
+                );
+            }
+        }
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::TableCellsTransposed {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sourceRows\":{},\"sourceCols\":{},\"targetRows\":{},\"targetCols\":{}",
+            source_rows, source_cols, source_cols, source_rows
+        )))
+    }
+
+    /// 전치 복사 버퍼를 커서 위치에 새 표로 생성해 붙여넣는다.
+    pub fn paste_table_cells_transposed_as_new_table_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        let data = self
+            .table_transpose_clipboard
+            .as_ref()
+            .ok_or_else(|| HwpError::RenderError("전치 복사 데이터가 없습니다".to_string()))?
+            .data
+            .clone();
+
+        let source_rows = data.source_rows;
+        let source_cols = data.source_cols;
+        let target_rows = source_cols;
+        let target_cols = source_rows;
+        if target_rows == 0 || target_cols == 0 {
+            return Err(HwpError::RenderError(
+                "전치 복사 데이터가 비어 있습니다".to_string(),
+            ));
+        }
+
+        let create_json =
+            self.create_table_native(section_idx, para_idx, char_offset, target_rows, target_cols)?;
+        let table_para_idx = json_u32(&create_json, "paraIdx")
+            .ok_or_else(|| HwpError::RenderError("표 생성 결과 paraIdx 누락".to_string()))?
+            as usize;
+        let table_control_idx = json_u32(&create_json, "controlIdx")
+            .ok_or_else(|| HwpError::RenderError("표 생성 결과 controlIdx 누락".to_string()))?
+            as usize;
+
+        self.paste_table_cells_transposed_native(
+            section_idx,
+            table_para_idx,
+            table_control_idx,
+            0,
+            0,
+        )?;
+
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"paraIdx\":{},\"controlIdx\":{},\"sourceRows\":{},\"sourceCols\":{},\"targetRows\":{},\"targetCols\":{}",
+            table_para_idx, table_control_idx, source_rows, source_cols, target_rows, target_cols
+        )))
+    }
+
+    /// 표 전치 복사 버퍼 보유 여부.
+    pub fn has_table_transpose_clipboard_native(&self) -> bool {
+        self.table_transpose_clipboard.is_some()
     }
 
     pub(crate) fn get_table_dimensions_native(

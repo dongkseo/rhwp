@@ -22,6 +22,21 @@ fn make_table(rows: u16, cols: u16) -> Table {
     table
 }
 
+fn set_cell_text(table: &mut Table, row: u16, col: u16, text: &str) {
+    let idx = table.cell_index_at(row, col).expect("cell index");
+    let mut para = Paragraph::new_empty();
+    para.insert_text_at(0, text);
+    table.cells[idx].paragraphs = vec![para];
+}
+
+fn cell_text(table: &Table, row: u16, col: u16) -> String {
+    table
+        .cell_at(row, col)
+        .and_then(|cell| cell.paragraphs.first())
+        .map(|para| para.text.clone())
+        .unwrap_or_default()
+}
+
 #[test]
 fn test_table_default() {
     let table = Table::default();
@@ -908,4 +923,87 @@ fn test_split_cells_in_range_single_cell() {
     let mut table = make_table(2, 2);
     table.split_cells_in_range(0, 0, 0, 0, 1, 3, true).unwrap();
     assert_eq!(table.col_count, 4); // 2 + 2
+}
+
+// === transpose copy/paste 테스트 ===
+
+#[test]
+fn test_transpose_copy_paste_4x2_to_2x4() {
+    let mut table = make_table(4, 6);
+    for r in 0..4u16 {
+        for c in 0..2u16 {
+            set_cell_text(&mut table, r, c, &format!("s{r}{c}"));
+        }
+    }
+    set_cell_text(&mut table, 0, 2, "target");
+
+    let data = table.copy_transpose_range(0, 0, 3, 1).unwrap();
+    let changed = table.paste_transposed_cells(0, 2, &data).unwrap();
+
+    assert_eq!(data.source_rows, 4);
+    assert_eq!(data.source_cols, 2);
+    assert_eq!(changed.len(), 8);
+    assert_eq!(cell_text(&table, 0, 2), "s00");
+    assert_eq!(cell_text(&table, 0, 3), "s10");
+    assert_eq!(cell_text(&table, 0, 4), "s20");
+    assert_eq!(cell_text(&table, 0, 5), "s30");
+    assert_eq!(cell_text(&table, 1, 2), "s01");
+    assert_eq!(cell_text(&table, 1, 3), "s11");
+    assert_eq!(cell_text(&table, 1, 4), "s21");
+    assert_eq!(cell_text(&table, 1, 5), "s31");
+
+    // 원본 범위는 정적 복사이므로 유지된다.
+    assert_eq!(cell_text(&table, 3, 1), "s31");
+}
+
+#[test]
+fn test_transpose_full_table_in_place_4x2_to_2x4() {
+    let mut table = make_table(4, 2);
+    for r in 0..4u16 {
+        for c in 0..2u16 {
+            set_cell_text(&mut table, r, c, &format!("s{r}{c}"));
+        }
+    }
+
+    let changed = table.transpose_unmerged_table_in_place().unwrap();
+
+    assert_eq!(table.row_count, 2);
+    assert_eq!(table.col_count, 4);
+    assert_eq!(changed.len(), 8);
+    assert_eq!(cell_text(&table, 0, 0), "s00");
+    assert_eq!(cell_text(&table, 0, 1), "s10");
+    assert_eq!(cell_text(&table, 0, 2), "s20");
+    assert_eq!(cell_text(&table, 0, 3), "s30");
+    assert_eq!(cell_text(&table, 1, 0), "s01");
+    assert_eq!(cell_text(&table, 1, 1), "s11");
+    assert_eq!(cell_text(&table, 1, 2), "s21");
+    assert_eq!(cell_text(&table, 1, 3), "s31");
+}
+
+#[test]
+fn test_transpose_paste_out_of_bounds_fails() {
+    let mut table = make_table(2, 2);
+    set_cell_text(&mut table, 0, 0, "a");
+    set_cell_text(&mut table, 0, 1, "b");
+    set_cell_text(&mut table, 1, 0, "c");
+    set_cell_text(&mut table, 1, 1, "d");
+
+    let data = table.copy_transpose_range(0, 0, 1, 1).unwrap();
+
+    assert!(table.paste_transposed_cells(1, 1, &data).is_err());
+    assert_eq!(cell_text(&table, 1, 1), "d");
+}
+
+#[test]
+fn test_transpose_rejects_merged_cells() {
+    let mut table = make_table(3, 3);
+    table.merge_cells(0, 0, 0, 1).unwrap();
+    assert!(table.copy_transpose_range(0, 0, 1, 1).is_err());
+
+    let mut target_table = make_table(3, 3);
+    set_cell_text(&mut target_table, 0, 0, "a");
+    set_cell_text(&mut target_table, 1, 0, "b");
+    let data = target_table.copy_transpose_range(0, 0, 1, 0).unwrap();
+    target_table.merge_cells(0, 1, 0, 2).unwrap();
+    assert!(target_table.paste_transposed_cells(0, 1, &data).is_err());
 }

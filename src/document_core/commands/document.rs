@@ -106,6 +106,7 @@ impl DocumentCore {
             fallback_font: DEFAULT_FALLBACK_FONT.to_string(),
             layout_engine: LayoutEngine::new(DEFAULT_DPI),
             clipboard: None,
+            table_transpose_clipboard: None,
             paste_cascade_count: 0,
             show_paragraph_marks: false,
             show_control_codes: false,
@@ -561,6 +562,7 @@ impl DocumentCore {
         self.styles = styles;
         self.composed = composed;
         self.clipboard = None;
+        self.table_transpose_clipboard = None;
         self.dirty_sections = vec![true; sec_count];
         self.measured_tables = Vec::new();
         self.measured_sections = Vec::new();

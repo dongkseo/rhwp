@@ -25,6 +25,16 @@ export interface TableCellResizeUpdate {
   renderHeight?: number;
 }
 
+export interface TableTransposeResult {
+  ok: boolean;
+  paraIdx?: number;
+  controlIdx?: number;
+  sourceRows: number;
+  sourceCols: number;
+  targetRows: number;
+  targetCols: number;
+}
+
 import { fontFamilyChainForDisplay } from './font-substitution';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 
@@ -914,6 +924,67 @@ export class WasmBridge {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return JSON.parse((this.doc as any).splitTableCellsInRange(sec, parentPara, controlIdx, startRow, startCol, endRow, endCol, nRows, mCols, equalRowHeight));
+  }
+
+  copyTableCellsTransposed(
+    sec: number,
+    parentPara: number,
+    controlIdx: number,
+    startRow: number,
+    startCol: number,
+    endRow: number,
+    endCol: number,
+  ): TableTransposeResult {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).copyTableCellsTransposed(
+      sec,
+      parentPara,
+      controlIdx,
+      startRow,
+      startCol,
+      endRow,
+      endCol,
+    ));
+  }
+
+  pasteTableCellsTransposed(
+    sec: number,
+    parentPara: number,
+    controlIdx: number,
+    startRow: number,
+    startCol: number,
+  ): TableTransposeResult {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).pasteTableCellsTransposed(
+      sec,
+      parentPara,
+      controlIdx,
+      startRow,
+      startCol,
+    ));
+  }
+
+  transposeTableCellsInPlace(
+    sec: number,
+    parentPara: number,
+    controlIdx: number,
+  ): TableTransposeResult {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).transposeTableCellsInPlace(sec, parentPara, controlIdx));
+  }
+
+  pasteTableCellsTransposedAsTable(
+    sec: number,
+    para: number,
+    charOffset: number,
+  ): TableTransposeResult {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).pasteTableCellsTransposedAsTable(sec, para, charOffset));
+  }
+
+  hasTableTransposeClipboard(): boolean {
+    if (!this.doc) return false;
+    return Boolean((this.doc as any).hasTableTransposeClipboard?.());
   }
 
   insertTableRow(sec: number, parentPara: number, controlIdx: number, rowIdx: number, below: boolean): { ok: boolean; rowCount: number; colCount: number } {
