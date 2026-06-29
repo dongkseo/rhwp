@@ -25,7 +25,7 @@ use crate::model::control::{
     AutoNumber, AutoNumberType, CharOverlap, Control, Equation, Field, NewNumber, PageHide,
     PageNumberPos, Ruby,
 };
-use crate::model::document::{Document, Section};
+use crate::model::document::{Document, Section, SectionDef};
 use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::page::{ColumnDef, ColumnDirection, ColumnType};
@@ -59,6 +59,35 @@ const TEMPLATE_SECPR_RUN_OPEN: &str = r#"<hp:run charPrIDRef="0"><hp:secPr "#;
 // [#1407] 템플릿의 하드코딩 본문 colPr(단 정의) — 단일 단 기본값. 첫 문단 IR 에
 // ColumnDef 가 있으면 이 anchor 를 IR 값으로 치환한다 (#1388 secPr 동형).
 const TEMPLATE_BODY_COL_PR: &str = r#"<hp:ctrl><hp:colPr id="" type="NEWSPAPER" layout="LEFT" colCount="1" sameSz="1" sameGap="0"/></hp:ctrl>"#;
+
+// [#1637] 템플릿의 하드코딩 secPr visibility — 전부 기본값(미숨김/SHOW_ALL). 원본의
+// visibility 를 IR(SectionDef) 값으로 치환하지 않으면 hideFirstEmptyLine 등이 드롭되어
+// (특히 ="1" → "0") 선두 빈줄이 가시화되며 본문이 밀려 페이지네이션이 달라진다 (#1388 동형).
+const TEMPLATE_VISIBILITY: &str = r#"<hp:visibility hideFirstHeader="0" hideFirstFooter="0" hideFirstMasterPage="0" border="SHOW_ALL" fill="SHOW_ALL" hideFirstPageNum="0" hideFirstEmptyLine="0" showLineNumber="0"/>"#;
+
+/// SectionDef 의 visibility 플래그를 `<hp:visibility>` 요소로 직렬화.
+///
+/// 파서가 IR 에 보존하는 6필드(hideFirstHeader/Footer/MasterPage·border·fill·
+/// hideFirstEmptyLine)만 치환하고, IR 미보존 필드(hideFirstPageNum·showLineNumber)는
+/// 템플릿 기본값("0")을 유지한다.
+fn render_visibility(sd: &SectionDef) -> String {
+    let b = |v: bool| if v { "1" } else { "0" };
+    let bf = |v: bool| if v { "HIDE_ALL" } else { "SHOW_ALL" };
+    format!(
+        r#"<hp:visibility hideFirstHeader="{}" hideFirstFooter="{}" hideFirstMasterPage="{}" border="{}" fill="{}" hideFirstPageNum="0" hideFirstEmptyLine="{}" showLineNumber="0"/>"#,
+        b(sd.hide_header),
+        b(sd.hide_footer),
+        b(sd.hide_master_page),
+        bf(sd.hide_border),
+        bf(sd.hide_fill),
+        b(sd.hide_empty_line),
+    )
+}
+
+/// 템플릿의 visibility 고정 문자열을 IR 기반 값으로 1회 치환.
+fn replace_visibility(xml: &str, sd: &SectionDef) -> String {
+    xml.replacen(TEMPLATE_VISIBILITY, &render_visibility(sd), 1)
+}
 
 /// 레퍼런스 기준 줄 레이아웃 파라미터.
 const VERT_STEP: u32 = 1600; // vertsize(1000) + spacing(600)
@@ -94,6 +123,8 @@ pub fn write_section(
     // 쪽 테두리/배경 — 템플릿의 하드코딩 borderFillIDRef="1"(테두리 없음)을 IR 값으로
     // 치환한다. 누락 시 문서의 쪽 테두리가 소실되어 외곽 4선 노드가 사라진다(#1388 동형).
     out = replace_page_border_fill(&out, &section.section_def);
+    // [#1637] secPr visibility — 템플릿 고정값을 IR 값으로 치환(hideFirstEmptyLine 등 보존).
+    out = replace_visibility(&out, &section.section_def);
 
     // 바탕쪽(masterPage) — secPr 의 masterPageCnt 치환 + secPr 내부 끝에 idRef 참조 삽입.
     // 누락 시 라운드트립에서 바탕쪽 전체(그 안의 그림/표/문단 노드 포함)가 소실된다.

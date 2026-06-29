@@ -33,8 +33,7 @@ const VISUAL_XFAIL: &[(&str, &str)] = &[
     // 승격 이력: 그룹 자식/도형 회전(shape_attr) · 쪽 테두리(pageBorderFill) · 바탕쪽
     // (masterPage) · 글머리표(bullet) · borderFill 이미지 채움(imgBrush) · 차트=OLE
     // (<hp:ole binaryItemIDRef>) 직렬화 정정으로 다수 PASS 승격됨.
-    // 잔여: k-water-rfp(대형 복합).
-    ("k-water-rfp.hwpx", "구조 불일치 2페이지(대형, 복합)"),
+    // k-water-rfp(대형 복합)도 #1637 페이지네이션 IR-invisible 변동 수정으로 PASS 승격(제거).
     // opengov 실문서 말뭉치(Task #1564) 신규 편입분은 #1567 직렬화 정정으로 구조 불일치 3건
     // 모두 PASS 승격됨. 잔여: 36392900(라운드트립 변위 드리프트 — base serializer 와 동일,
     // PR #1586 무관 / 본질 정정은 별도 이슈).

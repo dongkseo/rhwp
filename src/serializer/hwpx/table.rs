@@ -144,7 +144,10 @@ fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Seria
         &[
             ("treatAsChar", treat),
             ("affectLSpacing", "0"),
-            ("flowWithText", "1"),
+            // [#1637] flowWithText 는 IR(flow_with_text)을 보존한다. 종전 "1" 하드코딩은
+            // treatAsChar 표의 1→0 케이스에서 0→1 드롭으로 표 partial-split 임계를 흔들어
+            // 페이지네이션이 달라졌다(IR-invisible). #1594 holdAnchorAndSO 와 동형.
+            ("flowWithText", bool01(c.flow_with_text)),
             ("allowOverlap", "0"),
             ("holdAnchorAndSO", hold),
             ("vertRelTo", vert_rel_to_str(c.vert_rel_to)),
