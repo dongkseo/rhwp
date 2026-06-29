@@ -9,7 +9,7 @@
 //! - `<c:valAx>`에서 `<c:axId>`와 `<c:axPos>` 수집 → axId→primary/secondary 매핑 생성
 //! - 파싱 완료 시 시리즈의 axis_ids를 primary/secondary 집합과 비교해 axis_group 지정
 
-use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries};
+use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -22,6 +22,8 @@ struct ParseState {
     in_tx: bool,
     in_cat: bool,
     in_val: bool,
+    in_x_val: bool, // c:xVal (분산형 X 값)
+    in_y_val: bool, // c:yVal (분산형 Y 값)
     in_chart_title: bool,
     in_v: bool,
     in_a_t: bool,
@@ -144,16 +146,21 @@ pub fn parse_chart_xml(xml: &[u8]) -> Option<OoxmlChart> {
         }
     }
 
-    // 시리즈 axis_group 지정
-    for s in chart.series.iter_mut() {
-        let is_secondary = match (&secondary_axid, &primary_axid) {
-            (Some(sec), _) if s.axis_ids.iter().any(|a| a == sec) => true,
-            (_, Some(pri)) if s.axis_ids.iter().any(|a| a == pri) => false,
-            _ => false,
-        };
-        s.axis_group = if is_secondary { 1 } else { 0 };
-        if is_secondary {
-            chart.has_secondary_axis = true;
+    // 시리즈 axis_group 지정.
+    // 분산형(scatter)은 X·Y 모두 valAx(axPos b/l)라 위 primary/secondary 매핑이 두 축을
+    // 오분류해 has_secondary_axis=true → 콤보 라우팅으로 새는 것을 차단한다. scatter는
+    // axis_group=0, has_secondary_axis=false 기본값을 유지한다. (C1b #1660)
+    if chart.chart_type != OoxmlChartType::Scatter {
+        for s in chart.series.iter_mut() {
+            let is_secondary = match (&secondary_axid, &primary_axid) {
+                (Some(sec), _) if s.axis_ids.iter().any(|a| a == sec) => true,
+                (_, Some(pri)) if s.axis_ids.iter().any(|a| a == pri) => false,
+                _ => false,
+            };
+            s.axis_group = if is_secondary { 1 } else { 0 };
+            if is_secondary {
+                chart.has_secondary_axis = true;
+            }
         }
     }
 
@@ -200,6 +207,23 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
             st.cur_plot_ax_ids.clear();
             st.cur_plot_series_start = chart.series.len();
         }
+        b"scatterChart" => {
+            // 분산형 — (x,y) 쌍, 2개 수치축(C1b #1660).
+            chart.chart_type = OoxmlChartType::Scatter;
+            st.cur_plot_type = Some(OoxmlChartType::Scatter);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
+        b"scatterStyle" => {
+            if let Some(val) = attr_val(e, "val") {
+                chart.scatter_style = match val.as_str() {
+                    "line" => ScatterStyle::Line,
+                    "lineMarker" => ScatterStyle::LineMarker,
+                    "smooth" | "smoothMarker" => ScatterStyle::SmoothMarker,
+                    _ => ScatterStyle::Marker, // "marker"/"none"/미상
+                };
+            }
+        }
         b"barDir" => {
             if let Some(val) = attr_val(e, "val") {
                 st.bar_dir = match val.as_str() {
@@ -234,6 +258,8 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
         b"tx" => st.in_tx = true,
         b"cat" => st.in_cat = true,
         b"val" => st.in_val = true,
+        b"xVal" => st.in_x_val = true,
+        b"yVal" => st.in_y_val = true,
         b"title" => st.in_chart_title = true,
         b"v" => {
             st.in_v = true;
@@ -317,12 +343,14 @@ fn handle_end(name: &[u8], chart: &mut OoxmlChart, st: &mut ParseState) {
                     if chart.series.is_empty() {
                         chart.categories.push(text);
                     }
-                } else if st.in_val {
+                } else if st.in_val || st.in_y_val {
                     if let Ok(v) = text.parse::<f64>() {
                         ser.values.push(v);
                     } else {
                         ser.values.push(0.0);
                     }
+                } else if st.in_x_val {
+                    ser.x_values.push(text.parse::<f64>().unwrap_or(0.0));
                 }
             }
         }
@@ -350,6 +378,8 @@ fn handle_end(name: &[u8], chart: &mut OoxmlChart, st: &mut ParseState) {
         b"tx" => st.in_tx = false,
         b"cat" => st.in_cat = false,
         b"val" => st.in_val = false,
+        b"xVal" => st.in_x_val = false,
+        b"yVal" => st.in_y_val = false,
         b"title" => st.in_chart_title = false,
         b"ser" => {
             if let Some(ser) = st.cur_series.take() {
@@ -373,7 +403,7 @@ fn handle_end(name: &[u8], chart: &mut OoxmlChart, st: &mut ParseState) {
             }
         }
         b"barChart" | b"lineChart" | b"pieChart" | b"bar3DChart" | b"pie3DChart"
-        | b"ofPieChart" => {
+        | b"ofPieChart" | b"scatterChart" => {
             // plot 종료 — 이 plot에 속한 시리즈에 axIds 복사
             let start = st.cur_plot_series_start;
             for ser in chart.series.iter_mut().skip(start) {
@@ -590,5 +620,87 @@ mod tests {
         let xml = r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:lineChart><c:grouping val="stacked"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>"#;
         let c = parse_chart_xml(xml.as_bytes()).expect("parse OK");
         assert_eq!(c.grouping, BarGrouping::Clustered);
+    }
+
+    // --- C1b (#1660): 분산형(scatter) xVal/yVal 파싱 ---
+
+    /// 실제 샘플 구조를 본뜬 분산형 XML (2 시리즈, X·Y 수치축 2개).
+    /// 시리즈명은 `c:tx`, 값은 `c:xVal`/`c:yVal`의 numCache `c:v`.
+    fn scatter_xml(style: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea>
+<c:scatterChart>
+  <c:scatterStyle val="{style}"/>
+  <c:ser>
+    <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Y1 값</c:v></c:pt></c:strCache></c:strRef></c:tx>
+    <c:xVal><c:numRef><c:numCache><c:formatCode>General</c:formatCode>
+      <c:pt idx="0"><c:v>0.7</c:v></c:pt><c:pt idx="1"><c:v>1.8</c:v></c:pt><c:pt idx="2"><c:v>2.6</c:v></c:pt>
+    </c:numCache></c:numRef></c:xVal>
+    <c:yVal><c:numRef><c:numCache>
+      <c:pt idx="0"><c:v>2.7</c:v></c:pt><c:pt idx="1"><c:v>3.2</c:v></c:pt><c:pt idx="2"><c:v>0.8</c:v></c:pt>
+    </c:numCache></c:numRef></c:yVal>
+  </c:ser>
+  <c:ser>
+    <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>Y2 값</c:v></c:pt></c:strCache></c:strRef></c:tx>
+    <c:xVal><c:numRef><c:numCache>
+      <c:pt idx="0"><c:v>0.7</c:v></c:pt><c:pt idx="1"><c:v>1.8</c:v></c:pt><c:pt idx="2"><c:v>2.6</c:v></c:pt>
+    </c:numCache></c:numRef></c:xVal>
+    <c:yVal><c:numRef><c:numCache>
+      <c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>4</c:v></c:pt>
+    </c:numCache></c:numRef></c:yVal>
+  </c:ser>
+  <c:axId val="111"/><c:axId val="222"/>
+</c:scatterChart>
+<c:valAx><c:axId val="111"/><c:axPos val="b"/></c:valAx>
+<c:valAx><c:axId val="222"/><c:axPos val="l"/></c:valAx>
+</c:plotArea></c:chart></c:chartSpace>"#
+        )
+    }
+
+    #[test]
+    fn test_parse_scatter_marker() {
+        let c = parse_chart_xml(scatter_xml("marker").as_bytes()).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Scatter);
+        assert_eq!(c.scatter_style, ScatterStyle::Marker);
+        assert_eq!(c.series.len(), 2);
+        // 시리즈명은 x_values로 새지 않는다 (in_tx 우선)
+        assert_eq!(c.series[0].name, "Y1 값");
+        assert_eq!(c.series[0].x_values, vec![0.7, 1.8, 2.6]);
+        assert_eq!(c.series[0].values, vec![2.7, 3.2, 0.8]);
+        assert_eq!(c.series[1].x_values, vec![0.7, 1.8, 2.6]);
+        assert_eq!(c.series[1].values, vec![1.0, 2.0, 4.0]);
+        // 분산형은 카테고리를 쓰지 않는다
+        assert!(c.categories.is_empty());
+    }
+
+    #[test]
+    fn test_parse_scatter_style_line() {
+        let c = parse_chart_xml(scatter_xml("line").as_bytes()).expect("parse OK");
+        assert_eq!(c.scatter_style, ScatterStyle::Line);
+    }
+
+    #[test]
+    fn test_parse_scatter_style_line_marker() {
+        let c = parse_chart_xml(scatter_xml("lineMarker").as_bytes()).expect("parse OK");
+        assert_eq!(c.scatter_style, ScatterStyle::LineMarker);
+    }
+
+    #[test]
+    fn test_parse_scatter_style_smooth_marker() {
+        let c = parse_chart_xml(scatter_xml("smoothMarker").as_bytes()).expect("parse OK");
+        assert_eq!(c.scatter_style, ScatterStyle::SmoothMarker);
+    }
+
+    #[test]
+    fn test_scatter_no_secondary_axis() {
+        // 회귀 가드: scatter의 2개 valAx(b/l)가 primary/secondary로 오분류되어
+        // 콤보 라우팅으로 새면 안 된다. (parser.rs 축 분류 가드)
+        let c = parse_chart_xml(scatter_xml("marker").as_bytes()).expect("parse OK");
+        assert!(!c.has_secondary_axis, "scatter는 보조축이 없어야 함");
+        assert!(!c.is_combo(), "scatter는 콤보가 아니어야 함");
+        assert!(
+            c.series.iter().all(|s| s.axis_group == 0),
+            "scatter 시리즈는 모두 기본축(axis_group=0)",
+        );
     }
 }

@@ -10,11 +10,13 @@
 //! - `c:pieChart` (원형)
 //! - `c:bar3DChart`·`c:pie3DChart`·`c:ofPieChart` — **2D 근사 라우팅** (C1a #1453):
 //!   3D막대→평면 막대, 3D원형/ofPie→단일 원형. 입체감·보조플롯은 미표현(후속 C2).
+//! - `c:scatterChart` (분산형) — `c:xVal`/`c:yVal` (x,y) 쌍, 2개 수치축,
+//!   `c:scatterStyle`로 표식/직선/곡선 구분 (C1b #1660).
 //! - **콤보 차트** (barChart + lineChart 혼합) — 시리즈별 타입 보존
 //! - **이중 Y축** (primary + secondary) — 시리즈별 축 그룹 매핑
 //!
 //! ## 범위 외
-//! - 3D 입체감·ofPie 보조플롯, 영역/산점도, stock(HLC), 추세선, 애니메이션, 세밀 스타일
+//! - 3D 입체감·ofPie 보조플롯, 영역형, stock(HLC), 추세선, 애니메이션, 세밀 스타일
 
 pub mod parser;
 pub mod renderer;
@@ -32,6 +34,8 @@ pub struct OoxmlChart {
     /// 막대(bar/bar3D) plot의 `c:grouping` (clustered/stacked/percentStacked).
     /// 막대 렌더러만 사용. line/pie 무관. (C1a #1453 막대 누적 보정)
     pub grouping: BarGrouping,
+    /// 분산형 `c:scatterStyle` (표식/직선/곡선). scatter 렌더러만 사용. (C1b #1660)
+    pub scatter_style: ScatterStyle,
 }
 
 /// 막대 차트 그룹화 방식 (`c:grouping`). line 누적은 미지원(C1d).
@@ -46,6 +50,34 @@ pub enum BarGrouping {
     PercentStacked,
 }
 
+/// 분산형 표현 방식 (`c:scatterStyle`). C1b #1660.
+///
+/// 한컴 분산형 5종은 이 값만으로 렌더가 결정된다(곡선 2종은 동일 `smoothMarker`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScatterStyle {
+    /// 표식만 (점만, 선 없음).
+    #[default]
+    Marker,
+    /// 직선 (선만, 표식 없음).
+    Line,
+    /// 직선 + 표식.
+    LineMarker,
+    /// 부드러운 곡선 + 표식.
+    SmoothMarker,
+}
+
+impl ScatterStyle {
+    /// `(선 표시, 곡선 여부, 표식 표시)`.
+    pub fn flags(&self) -> (bool, bool, bool) {
+        match self {
+            Self::Marker => (false, false, true),
+            Self::Line => (true, false, false),
+            Self::LineMarker => (true, false, true),
+            Self::SmoothMarker => (true, true, true),
+        }
+    }
+}
+
 /// 차트 종류
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum OoxmlChartType {
@@ -57,6 +89,8 @@ pub enum OoxmlChartType {
     Line,
     /// 원형
     Pie,
+    /// 분산형 (x,y 산점도) (C1b #1660)
+    Scatter,
     #[default]
     Unknown,
 }
@@ -68,6 +102,7 @@ impl OoxmlChartType {
             Self::Bar => "가로 막대",
             Self::Line => "꺾은선",
             Self::Pie => "원형",
+            Self::Scatter => "분산형",
             Self::Unknown => "미지원",
         }
     }
@@ -77,7 +112,10 @@ impl OoxmlChartType {
 #[derive(Debug, Clone, Default)]
 pub struct OoxmlSeries {
     pub name: String,
+    /// Y 값 (막대/선/원형). 분산형에서는 `c:yVal`.
     pub values: Vec<f64>,
+    /// 분산형 X 값 (`c:xVal`). 분산형 전용이며 그 외 차트에서는 빈 Vec. (C1b #1660)
+    pub x_values: Vec<f64>,
     /// RGB 색상 (`0xRRGGBB`), 파서가 확정 못하면 None (렌더러가 기본 팔레트 적용)
     pub color: Option<u32>,
     /// 시리즈 본인의 차트 타입 (콤보 차트에서 바/라인 구분용)
