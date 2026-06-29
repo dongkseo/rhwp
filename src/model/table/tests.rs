@@ -957,6 +957,30 @@ fn test_transpose_copy_paste_4x2_to_2x4() {
 }
 
 #[test]
+fn test_transpose_full_table_in_place_4x2_to_2x4() {
+    let mut table = make_table(4, 2);
+    for r in 0..4u16 {
+        for c in 0..2u16 {
+            set_cell_text(&mut table, r, c, &format!("s{r}{c}"));
+        }
+    }
+
+    let changed = table.transpose_unmerged_table_in_place().unwrap();
+
+    assert_eq!(table.row_count, 2);
+    assert_eq!(table.col_count, 4);
+    assert_eq!(changed.len(), 8);
+    assert_eq!(cell_text(&table, 0, 0), "s00");
+    assert_eq!(cell_text(&table, 0, 1), "s10");
+    assert_eq!(cell_text(&table, 0, 2), "s20");
+    assert_eq!(cell_text(&table, 0, 3), "s30");
+    assert_eq!(cell_text(&table, 1, 0), "s01");
+    assert_eq!(cell_text(&table, 1, 1), "s11");
+    assert_eq!(cell_text(&table, 1, 2), "s21");
+    assert_eq!(cell_text(&table, 1, 3), "s31");
+}
+
+#[test]
 fn test_transpose_paste_out_of_bounds_fails() {
     let mut table = make_table(2, 2);
     set_cell_text(&mut table, 0, 0, "a");

@@ -1468,6 +1468,24 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 선택된 전체 표를 제자리에서 전치한다.
+    ///
+    /// 반환값: JSON `{"ok":true,"sourceRows":N,"sourceCols":N,"targetRows":N,"targetCols":N}`
+    #[wasm_bindgen(js_name = transposeTableCellsInPlace)]
+    pub fn transpose_table_cells_in_place(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.transpose_table_cells_in_place_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 전치 복사 버퍼를 커서 위치에 새 표로 생성해 붙여넣는다.
     ///
     /// 반환값: JSON `{"ok":true,"paraIdx":N,"controlIdx":N,"sourceRows":N,"sourceCols":N,"targetRows":N,"targetCols":N}`

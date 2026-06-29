@@ -964,6 +964,15 @@ export class WasmBridge {
     ));
   }
 
+  transposeTableCellsInPlace(
+    sec: number,
+    parentPara: number,
+    controlIdx: number,
+  ): TableTransposeResult {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse((this.doc as any).transposeTableCellsInPlace(sec, parentPara, controlIdx));
+  }
+
   pasteTableCellsTransposedAsTable(
     sec: number,
     para: number,

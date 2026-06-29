@@ -1735,6 +1735,31 @@ fn test_table_transpose_clipboard_native_api() {
 }
 
 #[test]
+fn test_table_transpose_in_place_native_api() {
+    let mut doc = create_doc_with_table();
+
+    let result = doc.transpose_table_cells_in_place_native(0, 0, 0).unwrap();
+    let json: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["sourceRows"], 2);
+    assert_eq!(json["sourceCols"], 2);
+    assert_eq!(json["targetRows"], 2);
+    assert_eq!(json["targetCols"], 2);
+
+    assert_eq!(doc.document.sections[0].paragraphs.len(), 1);
+    if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
+        assert_eq!(table.row_count, 2);
+        assert_eq!(table.col_count, 2);
+        assert_eq!(table.cells[0].paragraphs[0].text, "셀A");
+        assert_eq!(table.cells[1].paragraphs[0].text, "셀C");
+        assert_eq!(table.cells[2].paragraphs[0].text, "셀B");
+        assert_eq!(table.cells[3].paragraphs[0].text, "셀D");
+    } else {
+        panic!("전치된 기존 표 컨트롤을 찾을 수 없음");
+    }
+}
+
+#[test]
 fn test_table_transpose_paste_as_new_table_native_api() {
     let mut doc = create_doc_with_table();
     doc.copy_table_cells_transposed_native(0, 0, 0, 0, 0, 1, 1)

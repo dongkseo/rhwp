@@ -146,6 +146,17 @@ pub struct TableTransposeData {
     pub cells: Vec<Vec<Vec<Paragraph>>>,
 }
 
+fn distribute_hwp_units(total: HwpUnit, count: u16) -> Vec<HwpUnit> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let base = total / count as u32;
+    let remainder = total % count as u32;
+    (0..count)
+        .map(|idx| base + u32::from(idx < remainder as u16))
+        .collect()
+}
+
 /// 세로 정렬
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum VerticalAlign {
@@ -521,6 +532,77 @@ impl Table {
 
         self.dirty = true;
         Ok(changed)
+    }
+
+    /// 병합 없는 전체 표를 제자리에서 전치한다.
+    pub fn transpose_unmerged_table_in_place(&mut self) -> Result<Vec<(usize, usize)>, String> {
+        if self.row_count == 0 || self.col_count == 0 {
+            return Err("전치할 표가 비어 있습니다".to_string());
+        }
+        self.validate_unmerged_rect(0, 0, self.row_count - 1, self.col_count - 1)?;
+
+        let source_rows = self.row_count;
+        let source_cols = self.col_count;
+        let source_cells = (0..source_rows)
+            .map(|row| {
+                (0..source_cols)
+                    .map(|col| {
+                        let cell_idx = self
+                            .cell_index_at(row, col)
+                            .ok_or_else(|| format!("셀 ({},{})을 찾을 수 없습니다", row, col))?;
+                        Ok(self.cells[cell_idx].clone())
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        let target_rows = source_cols;
+        let target_cols = source_rows;
+        let total_width: HwpUnit = self.get_column_widths().iter().sum();
+        let target_widths = distribute_hwp_units(total_width.max(1800), target_cols);
+        let row_height = self
+            .get_row_heights()
+            .into_iter()
+            .max()
+            .unwrap_or(400)
+            .max(400);
+
+        let mut cells = Vec::with_capacity((target_rows as usize) * (target_cols as usize));
+        for target_row in 0..target_rows {
+            for target_col in 0..target_cols {
+                let mut cell = source_cells[target_col as usize][target_row as usize].clone();
+                cell.row = target_row;
+                cell.col = target_col;
+                cell.row_span = 1;
+                cell.col_span = 1;
+                cell.width = target_widths[target_col as usize];
+                cell.height = row_height;
+                if cell.paragraphs.is_empty() {
+                    cell.paragraphs.push(Paragraph::new_empty());
+                }
+                cells.push(cell);
+            }
+        }
+
+        self.row_count = target_rows;
+        self.col_count = target_cols;
+        self.row_sizes = vec![target_cols as i16; target_rows as usize];
+        self.cells = cells;
+        self.zones.clear();
+        self.local_resize_rows.clear();
+        self.local_resize_cols.clear();
+        self.local_resize_cell_widths.clear();
+        self.local_resize_cell_heights.clear();
+        self.update_ctrl_dimensions();
+        self.rebuild_grid();
+        self.dirty = true;
+
+        Ok(self
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| (idx, cell.paragraphs.len()))
+            .collect())
     }
 
     /// raw_ctrl_data 내 CommonObjAttr의 width/height를 재계산하여 갱신한다 (의도된 dual).

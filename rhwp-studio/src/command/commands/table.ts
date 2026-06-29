@@ -581,7 +581,6 @@ export const tableCommands: CommandDef[] = [
           range.endCol,
         );
       }, '셀 전치 복사');
-      ih.exitCellSelectionMode();
       restoreEditorFocus(ih);
     },
   },
@@ -622,6 +621,33 @@ export const tableCommands: CommandDef[] = [
           const selectionTableCtx = ih.isInCellSelectionMode?.() ? ih.getCellTableContext?.() : null;
           if (selectionTableCtx) {
             if ((selectionTableCtx.cellPath?.length ?? 0) > 1) return pos;
+            const range = ih.getSelectedCellRange?.();
+            const dims = wasm.getTableDimensions(
+              selectionTableCtx.sec,
+              selectionTableCtx.ppi,
+              selectionTableCtx.ci,
+            );
+            const isWholeTable = range
+              && range.startRow === 0
+              && range.startCol === 0
+              && range.endRow === dims.rowCount - 1
+              && range.endCol === dims.colCount - 1;
+            if (isWholeTable) {
+              wasm.transposeTableCellsInPlace(
+                selectionTableCtx.sec,
+                selectionTableCtx.ppi,
+                selectionTableCtx.ci,
+              );
+              return {
+                sectionIndex: selectionTableCtx.sec,
+                paragraphIndex: 0,
+                charOffset: 0,
+                parentParaIndex: selectionTableCtx.ppi,
+                controlIndex: selectionTableCtx.ci,
+                cellIndex: 0,
+                cellParaIndex: 0,
+              };
+            }
             return pasteAsNewTable(selectionTableCtx.sec, selectionTableCtx.ppi, 0);
           }
 

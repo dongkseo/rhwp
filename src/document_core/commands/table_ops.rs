@@ -384,6 +384,50 @@ impl DocumentCore {
         )))
     }
 
+    /// 선택된 전체 표를 제자리에서 전치한다.
+    pub fn transpose_table_cells_in_place_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let (source_rows, source_cols, changed_cells) = {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let source_rows = table.row_count;
+            let source_cols = table.col_count;
+            let changed_cells = table
+                .transpose_unmerged_table_in_place()
+                .map_err(HwpError::RenderError)?;
+            (source_rows, source_cols, changed_cells)
+        };
+
+        self.document.sections[section_idx].raw_stream = None;
+        for (cell_idx, para_count) in changed_cells {
+            for cell_para_idx in 0..para_count {
+                self.reflow_cell_paragraph(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    cell_idx,
+                    cell_para_idx,
+                );
+            }
+        }
+        self.mark_section_dirty(section_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::TableCellsTransposed {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sourceRows\":{},\"sourceCols\":{},\"targetRows\":{},\"targetCols\":{}",
+            source_rows, source_cols, source_cols, source_rows
+        )))
+    }
+
     /// 전치 복사 버퍼를 커서 위치에 새 표로 생성해 붙여넣는다.
     pub fn paste_table_cells_transposed_as_new_table_native(
         &mut self,
