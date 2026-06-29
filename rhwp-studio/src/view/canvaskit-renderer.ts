@@ -72,9 +72,33 @@ export interface CanvasKitRenderDiagnostics {
   surfacePreference: CanvasKitSurfacePreference;
   surfaceFallbackReason: string | null;
   lastUnsupportedOps: string[];
+  lastExpectedUnsupportedOps: string[];
+  lastUnexpectedUnsupportedOps: string[];
   lastRenderError: string | null;
   hiddenCanvas2dOverlayUsed: false;
 }
+
+const EXPECTED_CANVASKIT_UNSUPPORTED_OPS = new Set([
+  'charOverlap',
+  'equation:unsupportedDirectReplay',
+  'glyphOutline',
+  'glyphRun',
+  'image:dataMissing',
+  'image:dimensionUnavailable',
+  'image:invalidBounds',
+  'image:tileLimit',
+  'rawSvg:unsupportedDirectReplay',
+  'tabLeader',
+  'textControlMark',
+  'textDecoration',
+  'textRunFont',
+]);
+
+const EXPECTED_CANVASKIT_UNSUPPORTED_OP_PREFIXES = [
+  'glyphOutline:',
+  'imageEffect:',
+  'textRun:',
+];
 
 export class CanvasKitLayerRenderer {
   // Prevent pathological tiled fills from monopolizing the render loop.
@@ -203,11 +227,14 @@ export class CanvasKitLayerRenderer {
   }
 
   diagnostics(): CanvasKitRenderDiagnostics {
+    const lastUnsupportedOps = [...this.unsupportedOps].sort();
     return {
       mode: this.renderMode,
       surfacePreference: this.surfaceRequest.preference,
       surfaceFallbackReason: this.surfaceFallbackReason ?? this.surfaceRequest.unsupportedReason ?? null,
-      lastUnsupportedOps: [...this.unsupportedOps].sort(),
+      lastUnsupportedOps,
+      lastExpectedUnsupportedOps: lastUnsupportedOps.filter(isExpectedCanvasKitUnsupportedOp),
+      lastUnexpectedUnsupportedOps: lastUnsupportedOps.filter((op) => !isExpectedCanvasKitUnsupportedOp(op)),
       lastRenderError: this.lastRenderError,
       hiddenCanvas2dOverlayUsed: false,
     };
@@ -1121,6 +1148,11 @@ export class CanvasKitLayerRenderer {
     const alpha = Math.max(0, Math.min(1, a * opacity));
     return this.canvasKit.Color(r, g, b, alpha);
   }
+}
+
+function isExpectedCanvasKitUnsupportedOp(op: string): boolean {
+  return EXPECTED_CANVASKIT_UNSUPPORTED_OPS.has(op)
+    || EXPECTED_CANVASKIT_UNSUPPORTED_OP_PREFIXES.some((prefix) => op.startsWith(prefix));
 }
 
 function parseCssColor(value: string): { r: number; g: number; b: number; a: number } {

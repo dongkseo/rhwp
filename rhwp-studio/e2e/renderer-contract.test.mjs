@@ -131,6 +131,7 @@ function requireSnippet(source, pattern, message) {
 
 const renderOpBody = extractMethodBody(canvaskitSource, 'renderOp');
 const renderNodeBody = extractMethodBody(canvaskitSource, 'renderNode');
+const diagnosticsBody = extractMethodBody(canvaskitSource, 'diagnostics');
 const renderOpCases = caseLabels(renderOpBody).sort();
 const layerOpTypes = layerPaintOpTypes();
 const layerNodeKindSet = layerNodeKinds();
@@ -210,6 +211,21 @@ const canvaskitParityPlanRequiredTokens = [
   'ResourceArena',
   'render-diff CI',
 ];
+const expectedUnsupportedSetMatch = canvaskitSource.match(
+  /const EXPECTED_CANVASKIT_UNSUPPORTED_OPS = new Set\(\[([\s\S]*?)\]\);/,
+);
+assert.notEqual(expectedUnsupportedSetMatch, null, 'missing CanvasKit expected unsupported op set');
+const expectedUnsupportedSetBody = expectedUnsupportedSetMatch[1];
+const expectedUnsupportedPrefixMatch = canvaskitSource.match(
+  /const EXPECTED_CANVASKIT_UNSUPPORTED_OP_PREFIXES = \[([\s\S]*?)\];/,
+);
+assert.notEqual(expectedUnsupportedPrefixMatch, null, 'missing CanvasKit expected unsupported op prefix list');
+const expectedUnsupportedPrefixBody = expectedUnsupportedPrefixMatch[1];
+const expectedUnsupportedFunctionMatch = canvaskitSource.match(
+  /function isExpectedCanvasKitUnsupportedOp\(op: string\): boolean \{([\s\S]*?)\n\}/,
+);
+assert.notEqual(expectedUnsupportedFunctionMatch, null, 'missing CanvasKit expected unsupported helper');
+const expectedUnsupportedBody = expectedUnsupportedFunctionMatch[1];
 
 assert.deepEqual(
   renderOpCases,
@@ -236,6 +252,16 @@ requireSnippet(
   renderNodeBody,
   /this\.renderLeaf\(canvas, node, replayPlane, activeLayer\);/,
   'leaf nodes should go through renderLeaf',
+);
+requireSnippet(
+  diagnosticsBody,
+  /const lastUnsupportedOps = \[\.\.\.this\.unsupportedOps\]\.sort\(\);[\s\S]*?lastExpectedUnsupportedOps: lastUnsupportedOps\.filter\(isExpectedCanvasKitUnsupportedOp\),[\s\S]*?lastUnexpectedUnsupportedOps: lastUnsupportedOps\.filter\(\(op\) => !isExpectedCanvasKitUnsupportedOp\(op\)\)/,
+  'CanvasKit diagnostics should split expected and unexpected unsupported operations',
+);
+requireSnippet(
+  expectedUnsupportedBody,
+  /EXPECTED_CANVASKIT_UNSUPPORTED_OPS\.has\(op\)[\s\S]*EXPECTED_CANVASKIT_UNSUPPORTED_OP_PREFIXES\.some\(\(prefix\) => op\.startsWith\(prefix\)\)/,
+  'CanvasKit expected unsupported helper should use exact and prefixed diagnostics',
 );
 
 const directReplayOps = [
@@ -304,6 +330,43 @@ for (const [op, unsupportedReason] of objectFragmentFallbackOps) {
     caseBody,
     /this\.render[A-Za-z0-9]+\(/,
     `${op} fallback case should not direct-render before the fallback policy changes`,
+  );
+}
+for (const expectedUnsupportedToken of [
+  'charOverlap',
+  'equation:unsupportedDirectReplay',
+  'rawSvg:unsupportedDirectReplay',
+  'glyphRun',
+  'tabLeader',
+  'textControlMark',
+  'textDecoration',
+  'textRunFont',
+  'image:dataMissing',
+  'image:invalidBounds',
+  'image:dimensionUnavailable',
+  'image:tileLimit',
+]) {
+  assert.ok(
+    expectedUnsupportedSetBody.includes(`'${expectedUnsupportedToken}'`),
+    `CanvasKit expected unsupported set should include ${expectedUnsupportedToken}`,
+  );
+}
+assert.ok(
+  !expectedUnsupportedSetBody.includes("'renderPage'"),
+  'CanvasKit render failures should stay unexpected readiness diagnostics',
+);
+assert.ok(
+  !expectedUnsupportedSetBody.includes("'unknown'"),
+  'CanvasKit unknown op diagnostics should stay unexpected readiness diagnostics',
+);
+for (const expectedUnsupportedPrefix of [
+  'glyphOutline:',
+  'imageEffect:',
+  'textRun:',
+]) {
+  assert.ok(
+    expectedUnsupportedPrefixBody.includes(`'${expectedUnsupportedPrefix}'`),
+    `CanvasKit expected unsupported prefixes should include ${expectedUnsupportedPrefix}`,
   );
 }
 
