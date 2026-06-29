@@ -1874,6 +1874,16 @@ impl TypesetEngine {
         let (hf_entries, page_number_pos, new_page_numbers, page_hides) =
             Self::collect_header_footer_controls(paragraphs, section_index);
 
+        // 가시 콘텐츠(텍스트 또는 컨트롤 보유)를 가진 마지막 문단 인덱스. 이 뒤의 빈 문단들은
+        // 문서 말미의 trailing 빈 문단이라, co-anchored 자리차지 표가 페이지를 채운 경우에 한해
+        // 현재 page 잔여를 초과하면 새 page 를 만들지 않고 흡수한다(아래 trailing-empty 가드).
+        let last_content_para_idx: Option<usize> = paragraphs
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, p)| !(p.text.is_empty() && p.controls.is_empty()))
+            .map(|(i, _)| i);
+
         for (para_idx, para) in paragraphs.iter().enumerate() {
             // 표 컨트롤 감지
             let has_table = self.paragraph_has_table(para);
@@ -2457,6 +2467,53 @@ impl TypesetEngine {
                     // fit 가능 — 정상 emit (기존 동작)
                 }
             }
+
+            // co-anchored 자리차지 표가 페이지를 가득 채운 뒤(위 orphan 가드로 통째 이월된
+            // 표 등) 오는, 문서 말미의 trailing 빈 문단(텍스트·컨트롤 없음, 뒤에 가시 콘텐츠
+            // 없음)이 현재 page 잔여 공간을 초과하면 새 page 를 만들지 않고 skip 한다. 한컴은
+            // page 를 채운 자리차지 표 뒤의 빈 문단을 trailing overflow 로 흡수하고 빈 page 를
+            // 추가하지 않는다(검증점검표: 결재+점검표 표 뒤 빈 문단 2개로 빈 3쪽이 생기던 회귀).
+            // 단독 anchored 표·일반 문단 흐름의 trailing 빈 줄은 정상 페이지네이션을 유지해야
+            // 하므로, page 마지막 항목이 co-anchored 자리차지 표일 때로 한정한다(orphan 가드와
+            // 동일 신호). 명시적 쪽나누기가 걸린 빈 문단은 사용자 의도이므로 제외한다.
+            let last_item_is_coanchored_float_table = match st.current_items.last() {
+                Some(PageItem::Table {
+                    para_index: tpi,
+                    control_index: tci,
+                })
+                | Some(PageItem::PartialTable {
+                    para_index: tpi,
+                    control_index: tci,
+                    ..
+                }) => paragraphs.get(*tpi).is_some_and(|hp| {
+                    let this_is_float = hp.controls.get(*tci).is_some_and(
+                        |c| matches!(c, Control::Table(t) if is_para_topbottom_float(&t.common)),
+                    );
+                    let has_preceding_float = hp.controls.iter().take(*tci).any(
+                        |c| matches!(c, Control::Table(t) if is_para_topbottom_float(&t.common)),
+                    );
+                    this_is_float && has_preceding_float
+                }),
+                _ => false,
+            };
+            let is_trailing_empty = para.text.is_empty()
+                && para.controls.is_empty()
+                && last_content_para_idx.is_some_and(|lc| para_idx > lc)
+                && last_item_is_coanchored_float_table
+                && !force_page_break
+                && !para_style_break;
+            if is_trailing_empty {
+                let empty_h_px = para
+                    .line_segs
+                    .first()
+                    .map(|s| hwpunit_to_px((s.line_height + s.line_spacing) as i32, self.dpi))
+                    .unwrap_or(0.0);
+                let avail = st.available_height() - st.current_height;
+                if empty_h_px > avail {
+                    continue;
+                }
+            }
+
             // [Task #362] 어울림(Square wrap) 표 옆 paragraph 흡수.
             // Paginator engine.rs:288-320 동일 시멘틱.
             // 직전에 처리한 Square wrap 표의 (cs, sw) 와 동일한 LINE_SEG 를 가진
@@ -11334,6 +11391,37 @@ impl TypesetEngine {
                 );
                 return;
             }
+        }
+
+        // 같은 host 문단에 co-anchored 된 *후속* 자리차지(TopAndBottom, vert=문단) RowBreak
+        // 표의 orphan 제어: 현재 페이지 잔여 공간엔 표 전체가 안 들어가지만 새(fresh) 페이지엔
+        // 통째로 들어가면, 행 단위로 쪼개 머리 일부(예: 결재 헤더 행)만 현재 페이지에 남기지
+        // 않고 표 전체를 다음 페이지로 이월한다. 한컴은 선행 자리차지 표가 페이지를 채운 뒤의
+        // 후속 co-anchored 자리차지 표를 분할하지 않고 통째로 다음 페이지에 둔다(검증점검표에서
+        // 결재 헤더가 본문과 다른 페이지로 분리되던 회귀).
+        //
+        // 단독 anchored 자리차지 표(host 의 첫/유일 float)는 본문 흐름에 따라 행 단위로 정상
+        // 분할되어야 하므로(한컴 기준) 제외한다 — has_preceding_coanchored_float 로, 같은 host
+        // 의 *앞선* 컨트롤에 다른 자리차지 표가 있을 때(= co-anchored 그룹의 2번째 이후)로
+        // 한정한다. table_total <= available(= 한 페이지에 통째로 들어감)일 때만 이월하므로,
+        // 한 페이지보다 큰 표는 이 가드를 통과하지 못하고 아래 행 분할 경로로 빠져 무한 push 가
+        // 발생하지 않는다.
+        let has_preceding_coanchored_float = para
+            .controls
+            .iter()
+            .take(ctrl_idx)
+            .any(|c| matches!(c, Control::Table(t) if is_para_topbottom_float(&t.common)));
+        if is_para_topbottom_float(&table.common)
+            && matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+            && has_preceding_coanchored_float
+            && !st.current_items.is_empty()
+            && st.current_height + table_total > available
+            && table_total <= available
+        {
+            st.advance_column_or_new_page();
         }
 
         let current_column_has_only_overlay_shapes = st.current_height <= 0.5
