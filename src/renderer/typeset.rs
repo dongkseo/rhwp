@@ -344,6 +344,22 @@ fn has_following_non_positive_visible_float(para: &Paragraph, control_index: usi
         })
 }
 
+fn para_is_non_tac_overlay_table_anchor(para: &Paragraph) -> bool {
+    !para_has_non_whitespace_text(para)
+        && para.controls.iter().any(|ctrl| {
+            matches!(
+                ctrl,
+                Control::Table(table)
+                    if !table.common.treat_as_char
+                        && matches!(
+                            table.common.text_wrap,
+                            crate::model::shape::TextWrap::InFrontOfText
+                                | crate::model::shape::TextWrap::BehindText
+                        )
+            )
+        })
+}
+
 fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
     !para_has_visible_text(para)
         && para
@@ -977,6 +993,23 @@ fn positive_vpos_end_before_negative_wrap(para: &Paragraph) -> Option<i32> {
         .max()
 }
 
+fn para_near_rowbreak_table(paragraphs: &[Paragraph], para_idx: usize) -> bool {
+    let start = para_idx.saturating_sub(1);
+    let end = (para_idx + 3).min(paragraphs.len());
+    paragraphs[start..end].iter().any(|para| {
+        para.controls.iter().any(|control| {
+            matches!(
+                control,
+                Control::Table(table)
+                    if matches!(
+                        table.page_break,
+                        crate::model::table::TablePageBreak::RowBreak
+                    )
+            )
+        })
+    })
+}
+
 impl TypesetState {
     fn new(
         layout: PageLayoutInfo,
@@ -1243,6 +1276,27 @@ impl FormattedParagraph {
             .into_iter()
             .map(|i| self.line_heights[i] + self.line_spacings[i])
             .sum()
+    }
+
+    fn flow_advance_height(
+        &self,
+        para: &Paragraph,
+        col_count: u16,
+        allow_spacing_before_only: bool,
+    ) -> f64 {
+        if col_count > 1 {
+            return self.height_for_fit;
+        }
+        if para.controls.is_empty()
+            && !para.line_segs.is_empty()
+            && (self.spacing_after > 0.5
+                || (allow_spacing_before_only && self.spacing_before > 0.5))
+            && self.height_for_fit > 0.0
+            && self.height_for_fit + 0.5 < self.total_height
+        {
+            return self.height_for_fit.min(self.total_height);
+        }
+        self.total_height
     }
 }
 
@@ -1666,6 +1720,45 @@ impl TypesetEngine {
                         || cd.column_type != st.current_zone_column_type
                 })
                 .unwrap_or(false);
+
+            let is_terminal_empty_column_break = para_idx + 1 == paragraphs.len()
+                && st.col_count == 1
+                && para.column_type == ColumnBreakType::Column
+                && !has_diff_col_def
+                && para.controls.is_empty()
+                && para
+                    .text
+                    .replace(|c: char| c.is_control(), "")
+                    .trim()
+                    .is_empty();
+            if is_terminal_empty_column_break {
+                // 1단 구역 끝의 빈 단나누기 문단은 다음 단/밴드가 없으므로
+                // 별도 빈 페이지를 만들지 않는다.
+                continue;
+            }
+
+            let is_overlay_guide_empty_para = st.col_count > 1
+                && para.column_type == ColumnBreakType::None
+                && para.controls.is_empty()
+                && !para_has_visible_text(para)
+                && para
+                    .line_segs
+                    .first()
+                    .is_some_and(|seg| seg.vertical_pos > 0)
+                && (0..para_idx)
+                    .rev()
+                    .find(|&idx| {
+                        paragraphs
+                            .get(idx)
+                            .is_some_and(|p| !p.controls.is_empty() || para_has_visible_text(p))
+                    })
+                    .and_then(|idx| paragraphs.get(idx))
+                    .is_some_and(para_is_non_tac_overlay_table_anchor);
+            if is_overlay_guide_empty_para {
+                // 글앞/글뒤 표 뒤의 빈 guide 줄은 떠 있는 개체의 위치 보조값이며,
+                // 다단 flow 높이를 소비하지 않는다.
+                continue;
+            }
 
             // 다단 나누기
             if para.column_type == ColumnBreakType::MultiColumn {
@@ -8845,7 +8938,24 @@ impl TypesetEngine {
 
         // 적합성 판단용: trailing line_spacing 제외
         let trailing_ls = line_spacings.last().copied().unwrap_or(0.0);
-        let height_for_fit = (total_height - trailing_ls).max(0.0);
+        let height_for_fit = {
+            let metric = (total_height - trailing_ls).max(0.0);
+            let vpos_metric = if para.controls.is_empty() {
+                para.line_segs
+                    .first()
+                    .zip(para.line_segs.last())
+                    .and_then(|(first, last)| {
+                        let span = last
+                            .vertical_pos
+                            .saturating_add(last.line_height)
+                            .saturating_sub(first.vertical_pos);
+                        (span > 0).then_some(hwpunit_to_px(span, self.dpi))
+                    })
+            } else {
+                None
+            };
+            vpos_metric.map(|v| metric.min(v)).unwrap_or(metric)
+        };
 
         FormattedParagraph {
             total_height,
@@ -8883,8 +8993,9 @@ impl TypesetEngine {
         // (k-water-rfp p15 case: PartialTable 직후 작은 텍스트 (16px) 가 잔여 5.3px 부족으로
         // fit 실패하여 다음 페이지로 밀리는 회귀.)
         // [Task #643] VPOS_CORR 백워드 허용 (8px) 으로 layout drift 누적이 해소됨.
-        // 트레일링 ls 누적 fit 산식 정정과 함께 안전마진 10 → 4 축소.
-        const LAYOUT_DRIFT_SAFETY_PX: f64 = 4.0;
+        // [Task #1672] 저장 LINE_SEG vpos 상한과 RowBreak 꼬리 보정으로 누적 over-pagination
+        // 을 줄여 현재는 추가 보수 마진을 두지 않는다.
+        const LAYOUT_DRIFT_SAFETY_PX: f64 = 0.0;
         let prev_is_partial_table =
             matches!(st.current_items.last(), Some(PageItem::PartialTable { .. }));
         let safety = if st.skip_safety_margin_once {
@@ -9011,10 +9122,10 @@ impl TypesetEngine {
         }
 
         // [Task #676] trailing empty paragraph 가드 (단단 전용):
-        // 섹션 마지막 빈 paragraph 가 LAYOUT_DRIFT_SAFETY_PX(10px) 영역 내 미세 overflow 로
-        // fit 실패 시 height=0 흡수 — 단독 빈 페이지 차단. 한컴2022 정합 시멘틱.
-        // (통합재정통계 2010.11/2011.10: pi=14 cur_h=751.0 + 16.0 = 767.0 > avail 766.2,
-        //  overflow=0.8px ≤ safety_margin 10px → 흡수.)
+        // 섹션 마지막 빈 paragraph 가 현재 safety 영역 내 미세 overflow 로 fit 실패 시
+        // height=0 흡수 — 단독 빈 페이지 차단. 한컴2022 정합 시멘틱.
+        // (통합재정통계 2010.11/2011.10: 과거 safety_margin 운용 시
+        //  pi=14 의 0.8px overflow 를 흡수한 사례.)
         // hide_empty_line (Task #362) 분기와 달리 SectionDef bit 무관, 섹션 마지막 1개만 흡수.
         if is_last_in_section && st.col_count == 1 && !st.current_items.is_empty() {
             let trimmed = para.text.replace(|c: char| c.is_control(), "");
@@ -9089,11 +9200,11 @@ impl TypesetEngine {
             //   - 다단 (col_count > 1): height_for_fit (exam_eng 8p 정상 단 채움 복원)
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
-            st.current_height += if st.col_count > 1 {
-                fmt.height_for_fit
-            } else {
-                fmt.total_height
-            };
+            st.current_height += fmt.flow_advance_height(
+                para,
+                st.col_count,
+                !para_near_rowbreak_table(paragraphs, para_idx),
+            );
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
             }
@@ -9140,11 +9251,11 @@ impl TypesetEngine {
                 st.current_items.push(PageItem::FullParagraph {
                     para_index: para_idx,
                 });
-                st.current_height += if st.col_count > 1 {
-                    fmt.height_for_fit
-                } else {
-                    fmt.total_height
-                };
+                st.current_height += fmt.flow_advance_height(
+                    para,
+                    st.col_count,
+                    !para_near_rowbreak_table(paragraphs, para_idx),
+                );
                 if let Some(v) = body_bottom_vpos {
                     st.prev_body_bottom_vpos = Some(v);
                 }
@@ -9163,11 +9274,11 @@ impl TypesetEngine {
             //   - 다단 (col_count > 1): height_for_fit (exam_eng 8p 정상 단 채움 복원)
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
-            st.current_height += if st.col_count > 1 {
-                fmt.height_for_fit
-            } else {
-                fmt.total_height
-            };
+            st.current_height += fmt.flow_advance_height(
+                para,
+                st.col_count,
+                !para_near_rowbreak_table(paragraphs, para_idx),
+            );
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
             }
@@ -9775,12 +9886,26 @@ impl TypesetEngine {
                     let oversized_multirow = table.row_count > 1
                         && table_measured_h > st.base_available_height()
                         && !paper_anchored_overlay_table;
+                    let followed_by_empty_overlay_guide = next_para.is_some_and(|p| {
+                        p.controls.is_empty()
+                            && !para_has_visible_text(p)
+                            && p.line_segs.first().is_some_and(|seg| seg.vertical_pos > 0)
+                    });
+                    let multicol_empty_overlay_anchor = st.col_count > 1
+                        && !oversized_multirow
+                        && followed_by_empty_overlay_guide
+                        && para_is_non_tac_overlay_table_anchor(para);
+                    let multicol_tac_host_overlay_anchor = st.col_count > 1
+                        && !oversized_multirow
+                        && has_tac
+                        && para_is_non_tac_overlay_table_anchor(para);
                     if matches!(
                         table.common.text_wrap,
                         crate::model::shape::TextWrap::InFrontOfText
                             | crate::model::shape::TextWrap::BehindText
-                    ) && st.col_count == 1
-                        && !oversized_multirow
+                    ) && ((st.col_count == 1 && !oversized_multirow)
+                        || multicol_empty_overlay_anchor
+                        || multicol_tac_host_overlay_anchor)
                     {
                         st.current_items.push(PageItem::Shape {
                             para_index: para_idx,
@@ -10189,7 +10314,17 @@ impl TypesetEngine {
 
         // TAC 표는 분할하지 않고 통째로 배치
         let available = st.available_height();
-        if st.current_height + table_height > available && !st.current_items.is_empty() {
+        let current_column_has_only_overlay_shapes = st.current_height <= 0.5
+            && st
+                .current_items
+                .iter()
+                .all(|item| matches!(item, PageItem::Shape { .. }));
+        let fits_after_overlay_shapes =
+            current_column_has_only_overlay_shapes && table_height <= available + 12.0;
+        if st.current_height + table_height > available
+            && !fits_after_overlay_shapes
+            && !st.current_items.is_empty()
+        {
             st.advance_column_or_new_page();
         }
 
@@ -10640,7 +10775,14 @@ impl TypesetEngine {
             }
         }
 
-        if st.current_height + table_total <= available {
+        let current_column_has_only_overlay_shapes = st.current_height <= 0.5
+            && st
+                .current_items
+                .iter()
+                .all(|item| matches!(item, PageItem::Shape { .. }));
+        let fits_after_overlay_shapes =
+            current_column_has_only_overlay_shapes && table_total <= available + 12.0;
+        if st.current_height + table_total <= available || fits_after_overlay_shapes {
             self.place_table_with_text(
                 st,
                 para_idx,
@@ -11021,6 +11163,11 @@ impl TypesetEngine {
             // 측정 공간이 advance_row_cut/cell_units 로 단일화되어 렌더러와
             // 정의상 일치한다(px content_offset·MeasuredTable 누적 제거).
             const MIN_TOP_KEEP_PX: f64 = 25.0;
+            const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
+            const LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX: f64 = 16.0;
+            const LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 96.0;
+            const LANDSCAPE_ROWBREAK_SHORT_ROW_MAX_HEIGHT_PX: f64 = 120.0;
+            let landscape_rowbreak_bleed = st.layout.body_area.height < 700.0;
 
             let mut end_row = cursor_row;
             let mut split_end_cut: Vec<usize> = Vec::new();
@@ -11245,6 +11392,50 @@ impl TypesetEngine {
                     };
                     if consumed + cs_before + row_total <= avail_for_rows {
                         // 행 전체가 예산 안에 들어감.
+                        consumed += cs_before + row_total;
+                        r += 1;
+                        end_row = r;
+                        continue;
+                    }
+                    // RowBreak 표의 마지막 빈 spacer 행은 한컴이 직전 조각 하단에 붙여
+                    // 그리는 경우가 많다. 이 행 하나만 몇 px 넘친다고 별도 빈 꼬리
+                    // 페이지를 만들면 Q&A 표처럼 작은 잔여 조각 페이지가 반복된다.
+                    if mt.allows_row_break_split()
+                        && r + 1 == row_count
+                        && Self::row_is_empty_trailing_spacer(table, r)
+                        && consumed > 0.0
+                        && consumed + cs_before + row_total
+                            <= avail_for_rows + ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX
+                    {
+                        consumed += cs_before + row_total;
+                        r += 1;
+                        end_row = r;
+                        continue;
+                    }
+                    if landscape_rowbreak_bleed
+                        && mt.allows_row_break_split()
+                        && is_continuation
+                        && header_overhead > 0.5
+                        && row_start_cut.is_empty()
+                        && r > cursor_row
+                        && consumed + cs_before + row_total
+                            <= avail_for_rows + LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX
+                    {
+                        consumed += cs_before + row_total;
+                        r += 1;
+                        end_row = r;
+                        continue;
+                    }
+                    if landscape_rowbreak_bleed
+                        && mt.allows_row_break_split()
+                        && is_continuation
+                        && header_overhead > 0.5
+                        && row_start_cut.is_empty()
+                        && r > cursor_row
+                        && row_total <= LANDSCAPE_ROWBREAK_SHORT_ROW_MAX_HEIGHT_PX
+                        && consumed + cs_before + row_total
+                            <= avail_for_rows + LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX
+                    {
                         consumed += cs_before + row_total;
                         r += 1;
                         end_row = r;
@@ -11913,6 +12104,23 @@ impl TypesetEngine {
         para.controls.iter().any(|c| {
             matches!(c, Control::Table(t) if t.attr & 0x01 == 0
                 || (t.attr & 0x01 != 0 && !is_tac_table_inline(t, seg_width, &para.text, &para.controls)))
+        })
+    }
+
+    fn row_is_empty_trailing_spacer(table: &crate::model::table::Table, row: usize) -> bool {
+        let mut row_cells = table
+            .cells
+            .iter()
+            .filter(|cell| cell.row as usize == row && cell.row_span == 1)
+            .peekable();
+        if row_cells.peek().is_none() {
+            return false;
+        }
+        row_cells.all(|cell| {
+            cell.paragraphs.iter().all(|para| {
+                let trimmed = para.text.replace(|c: char| c.is_control(), "");
+                trimmed.trim().is_empty() && para.controls.is_empty()
+            })
         })
     }
 

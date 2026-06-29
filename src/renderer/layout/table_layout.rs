@@ -5155,8 +5155,7 @@ impl LayoutEngine {
         let relaxed_hard_break = matches!(
             table.page_break,
             crate::model::table::TablePageBreak::RowBreak
-        ) && table.row_count <= 5
-            && table.col_count <= 2;
+        );
         let rewind_internal_hard_break_orphan = Self::row_has_prior_rowspan_cover(table, row);
         for (i, cell) in row_cells.iter().enumerate() {
             let units = self.cell_units(cell, table, styles);
@@ -5296,8 +5295,7 @@ impl LayoutEngine {
         let relaxed_hard_break = matches!(
             table.page_break,
             crate::model::table::TablePageBreak::RowBreak
-        ) && table.row_count <= 5
-            && table.col_count <= 2;
+        );
         for (i, cell) in cells.iter().enumerate() {
             let units = self.cell_units(cell, table, styles);
             let start = start_cut.get(i).copied().unwrap_or(0).min(units.len());
