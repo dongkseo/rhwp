@@ -123,6 +123,8 @@ fn assign_master_pages_for_section(
     result: &mut PaginationResult,
     section_index: usize,
     section: &Section,
+    carry_master_odd: &Option<MasterPageRef>,
+    carry_master_even: &Option<MasterPageRef>,
 ) {
     use crate::model::header_footer::HeaderFooterApply;
 
@@ -136,15 +138,29 @@ fn assign_master_pages_for_section(
         return;
     }
 
-    let mp_both = mps
+    let base_mp_indices: Vec<usize> = mps
         .iter()
-        .position(|m| m.apply_to == HeaderFooterApply::Both && !m.is_extension);
-    let mp_odd = mps
+        .enumerate()
+        .filter(|(_, m)| !m.is_extension)
+        .map(|(i, _)| i)
+        .collect();
+    let single_base_mp = if base_mp_indices.len() == 1 {
+        base_mp_indices.first().copied()
+    } else {
+        None
+    };
+    let mp_both = base_mp_indices
         .iter()
-        .position(|m| m.apply_to == HeaderFooterApply::Odd && !m.is_extension);
-    let mp_even = mps
+        .copied()
+        .find(|&i| mps[i].apply_to == HeaderFooterApply::Both);
+    let mp_odd = base_mp_indices
         .iter()
-        .position(|m| m.apply_to == HeaderFooterApply::Even && !m.is_extension);
+        .copied()
+        .find(|&i| mps[i].apply_to == HeaderFooterApply::Odd);
+    let mp_even = base_mp_indices
+        .iter()
+        .copied()
+        .find(|&i| mps[i].apply_to == HeaderFooterApply::Even);
     let ext_mp_indices: Vec<usize> = mps
         .iter()
         .enumerate()
@@ -162,14 +178,35 @@ fn assign_master_pages_for_section(
         }
 
         let selected = if page.page_number % 2 == 1 {
-            mp_odd.or(mp_both)
+            mp_odd
+                .or(mp_both)
+                .map(|mi| MasterPageRef {
+                    section_index,
+                    master_page_index: mi,
+                })
+                .or_else(|| carry_master_odd.clone())
+                .or_else(|| {
+                    single_base_mp.map(|mi| MasterPageRef {
+                        section_index,
+                        master_page_index: mi,
+                    })
+                })
         } else {
-            mp_even.or(mp_both)
+            mp_even
+                .or(mp_both)
+                .map(|mi| MasterPageRef {
+                    section_index,
+                    master_page_index: mi,
+                })
+                .or_else(|| carry_master_even.clone())
+                .or_else(|| {
+                    single_base_mp.map(|mi| MasterPageRef {
+                        section_index,
+                        master_page_index: mi,
+                    })
+                })
         };
-        page.active_master_page = selected.map(|mi| MasterPageRef {
-            section_index,
-            master_page_index: mi,
-        });
+        page.active_master_page = selected;
 
         if is_last && !ext_mp_indices.is_empty() {
             let replace_exts: Vec<usize> = ext_mp_indices
@@ -193,7 +230,13 @@ fn assign_master_pages_for_section(
             let active_apply = page
                 .active_master_page
                 .as_ref()
-                .and_then(|mp_ref| mps.get(mp_ref.master_page_index))
+                .and_then(|mp_ref| {
+                    if mp_ref.section_index == section_index {
+                        mps.get(mp_ref.master_page_index)
+                    } else {
+                        None
+                    }
+                })
                 .map(|m| m.apply_to);
             let mut remaining_overlap_exts: Vec<usize> = Vec::new();
             for &i in &overlap_exts {
@@ -215,6 +258,33 @@ fn assign_master_pages_for_section(
                     })
                     .collect();
             }
+        }
+    }
+}
+
+fn update_master_page_carry_from_section(
+    section_index: usize,
+    section: &Section,
+    carry_master_odd: &mut Option<MasterPageRef>,
+    carry_master_even: &mut Option<MasterPageRef>,
+) {
+    use crate::model::header_footer::HeaderFooterApply;
+
+    for (master_page_index, master_page) in section.section_def.master_pages.iter().enumerate() {
+        if master_page.is_extension {
+            continue;
+        }
+        let master_ref = MasterPageRef {
+            section_index,
+            master_page_index,
+        };
+        match master_page.apply_to {
+            HeaderFooterApply::Both => {
+                *carry_master_odd = Some(master_ref.clone());
+                *carry_master_even = Some(master_ref);
+            }
+            HeaderFooterApply::Odd => *carry_master_odd = Some(master_ref),
+            HeaderFooterApply::Even => *carry_master_even = Some(master_ref),
         }
     }
 }
@@ -2152,6 +2222,8 @@ impl DocumentCore {
         let mut carry_header_even: Option<HeaderFooterRef> = None;
         let mut carry_footer_odd: Option<HeaderFooterRef> = None;
         let mut carry_footer_even: Option<HeaderFooterRef> = None;
+        let mut carry_master_odd: Option<MasterPageRef> = None;
+        let mut carry_master_even: Option<MasterPageRef> = None;
 
         // [Task #1046] reflow force-break hint (구역별). reflow 루프(paginate)가 누적해 전달.
         let empty_breaks: std::collections::HashSet<usize> = std::collections::HashSet::new();
@@ -2184,6 +2256,12 @@ impl DocumentCore {
                         }
                     }
                 }
+                update_master_page_carry_from_section(
+                    idx,
+                    section,
+                    &mut carry_master_odd,
+                    &mut carry_master_even,
+                );
                 continue;
             }
 
@@ -2257,6 +2335,7 @@ impl DocumentCore {
                         hide_empty_line: section.section_def.hide_empty_line,
                         respect_vpos_reset: self.respect_vpos_reset,
                         is_hwp3_variant: self.document.is_hwp3_variant,
+                        footnote_shape: Some(section.section_def.footnote_shape.clone()),
                     },
                 )
             } else {
@@ -2274,6 +2353,7 @@ impl DocumentCore {
                     self.document.is_hwp3_variant,
                     hwp3_origin_flow_spacing_before,
                     hwp3_origin_page_tolerance,
+                    Some(&section.section_def.footnote_shape),
                     Some(&section.section_def.endnote_shape),
                     force_breaks.get(idx).unwrap_or(&empty_breaks),
                     is_hwpx_source,
@@ -2430,7 +2510,19 @@ impl DocumentCore {
             apply_page_number_layouts_for_section(&mut result, section);
 
             // 바탕쪽 선택은 구역 간 쪽번호 carry 보정 이후 최종 page_number 기준으로 수행한다.
-            assign_master_pages_for_section(&mut result, idx, section);
+            assign_master_pages_for_section(
+                &mut result,
+                idx,
+                section,
+                &carry_master_odd,
+                &carry_master_even,
+            );
+            update_master_page_carry_from_section(
+                idx,
+                section,
+                &mut carry_master_odd,
+                &mut carry_master_even,
+            );
 
             // 구역 간 머리말/꼬리말 상속 (쪽번호 보정 이후 실행)
             if idx > 0 {
@@ -2779,6 +2871,79 @@ impl DocumentCore {
             };
             let measured = self.measured_sections.get(sec_idx);
 
+            // [Task #1700] cc.items 에 없는 문단(어울림 흡수 / 빈 줄 감춤)을 페이지 PI 로 표면화
+            // 하기 위한 사전 패스. 한글(OLE)은 이들을 본문 문단으로 카운트하므로 문단→페이지
+            // 매핑이 정합된다. 레이아웃/렌더 트리는 변경하지 않으므로 기하·페이지 수·시각 불변.
+            // 1) items 문단 → 표시 페이지(global+1) 매핑 — **마지막** 출현 페이지(다중 페이지 표는
+            //    끝 페이지에 빈 문단이 따라오므로 last-page 가 한글과 정합).
+            let sec_start_page = global_page;
+            let mut item_disp_page: std::collections::HashMap<usize, u32> =
+                std::collections::HashMap::new();
+            for (li, page) in pr.pages.iter().enumerate() {
+                let disp = sec_start_page + li as u32 + 1;
+                for cc in &page.column_contents {
+                    for item in &cc.items {
+                        let pidx = match item {
+                            PageItem::FullParagraph { para_index }
+                            | PageItem::PartialParagraph { para_index, .. }
+                            | PageItem::Table { para_index, .. }
+                            | PageItem::PartialTable { para_index, .. }
+                            | PageItem::Shape { para_index, .. } => Some(*para_index),
+                            _ => None,
+                        };
+                        if let Some(p) = pidx {
+                            item_disp_page.insert(p, disp);
+                        }
+                    }
+                }
+            }
+            // 2) 표면화 대상을 페이지별로 그룹화: (para_index, is_wrap, table_pi).
+            //    - 어울림(wrap-around): 앵커 표(table_para_index)의 페이지에 귀속.
+            //    - 빈 줄 감춤(hidden_empty_paras): 직전 item 문단(대개 표)의 페이지에 귀속.
+            let mut extra_by_page: std::collections::HashMap<u32, Vec<(usize, bool, usize)>> =
+                std::collections::HashMap::new();
+            let mut emitted_extra: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            for page in pr.pages.iter() {
+                for cc in &page.column_contents {
+                    for wp in &cc.wrap_around_paras {
+                        if !emitted_extra.insert(wp.para_index) {
+                            continue;
+                        }
+                        let disp = item_disp_page
+                            .get(&wp.table_para_index)
+                            .copied()
+                            .unwrap_or(sec_start_page + 1);
+                        extra_by_page.entry(disp).or_default().push((
+                            wp.para_index,
+                            true,
+                            wp.table_para_index,
+                        ));
+                    }
+                }
+            }
+            let mut hidden_sorted: Vec<usize> = pr
+                .hidden_empty_paras
+                .iter()
+                .copied()
+                .filter(|p| !item_disp_page.contains_key(p) && !emitted_extra.contains(p))
+                .collect();
+            hidden_sorted.sort_unstable();
+            for hidx in hidden_sorted {
+                let mut disp = sec_start_page + 1;
+                for j in (0..hidx).rev() {
+                    if let Some(d) = item_disp_page.get(&j) {
+                        disp = *d;
+                        break;
+                    }
+                }
+                extra_by_page
+                    .entry(disp)
+                    .or_default()
+                    .push((hidx, false, 0));
+                emitted_extra.insert(hidx);
+            }
+
             for (local_idx, page) in pr.pages.iter().enumerate() {
                 if let Some(pf) = page_filter {
                     if global_page != pf {
@@ -3050,6 +3215,40 @@ impl DocumentCore {
                                     separator_length, margin_above, margin_below, line_width, color & 0x00ff_ffff
                                 ));
                             }
+                        }
+                    }
+                }
+
+                // [Task #1700] cc.items 에 없는 문단(어울림 / 빈 줄 감춤) 표면화.
+                let disp_page = global_page + 1;
+                if let Some(list) = extra_by_page.get(&disp_page) {
+                    for (pidx, is_wrap, tpi) in list {
+                        let preview = paragraphs
+                            .get(*pidx)
+                            .map(|p| {
+                                let t: String = p
+                                    .text
+                                    .chars()
+                                    .filter(|c| *c > '\u{001F}')
+                                    .take(40)
+                                    .collect();
+                                if t.is_empty() {
+                                    "(빈)".to_string()
+                                } else {
+                                    t
+                                }
+                            })
+                            .unwrap_or_default();
+                        if *is_wrap {
+                            out.push_str(&format!(
+                                "    WrapAroundPara  pi={}  table_pi={}  \"{}\"\n",
+                                pidx, tpi, preview
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "    HiddenEmptyPara  pi={}  \"{}\"\n",
+                                pidx, preview
+                            ));
                         }
                     }
                 }
@@ -4137,6 +4336,127 @@ mod tests {
             active.master_page_index, 1,
             "final page_number=2 must select the Even master page, not the section-local Odd page"
         );
+    }
+
+    #[test]
+    fn missing_even_master_page_inherits_previous_even_master() {
+        use crate::model::document::{Document, Section, SectionDef};
+        use crate::model::header_footer::{HeaderFooterApply, MasterPage};
+        use crate::model::page::PageDef;
+        use crate::model::paragraph::Paragraph;
+
+        fn a4_section(section_def: SectionDef) -> Section {
+            Section {
+                section_def,
+                paragraphs: vec![Paragraph::default()],
+                raw_stream: None,
+            }
+        }
+
+        let page_def = PageDef {
+            width: 59528,
+            height: 84188,
+            margin_left: 8504,
+            margin_right: 8504,
+            margin_top: 5668,
+            margin_bottom: 4252,
+            margin_header: 4252,
+            margin_footer: 4252,
+            ..Default::default()
+        };
+
+        let mut document = Document::default();
+        document.sections.push(a4_section(SectionDef {
+            page_def: page_def.clone(),
+            master_pages: vec![MasterPage {
+                apply_to: HeaderFooterApply::Even,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        document.sections.push(a4_section(SectionDef {
+            page_def,
+            master_pages: vec![MasterPage {
+                apply_to: HeaderFooterApply::Odd,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        core.paginate();
+
+        let page = core
+            .pagination
+            .get(1)
+            .and_then(|result| result.pages.first())
+            .expect("section 1 first page");
+        assert_eq!(page.page_number, 2);
+        let active = page
+            .active_master_page
+            .as_ref()
+            .expect("section 1 even page should inherit previous even master page");
+        assert_eq!(active.section_index, 0);
+        assert_eq!(active.master_page_index, 0);
+    }
+
+    #[test]
+    fn single_base_master_page_applies_when_matching_parity_is_absent() {
+        use crate::model::document::{Document, Section, SectionDef};
+        use crate::model::header_footer::{HeaderFooterApply, MasterPage};
+        use crate::model::page::PageDef;
+        use crate::model::paragraph::Paragraph;
+
+        fn a4_section(section_def: SectionDef) -> Section {
+            Section {
+                section_def,
+                paragraphs: vec![Paragraph::default()],
+                raw_stream: None,
+            }
+        }
+
+        let page_def = PageDef {
+            width: 59528,
+            height: 84188,
+            margin_left: 8504,
+            margin_right: 8504,
+            margin_top: 5668,
+            margin_bottom: 4252,
+            margin_header: 4252,
+            margin_footer: 4252,
+            ..Default::default()
+        };
+
+        let mut document = Document::default();
+        document.sections.push(a4_section(SectionDef {
+            page_def: page_def.clone(),
+            ..Default::default()
+        }));
+        document.sections.push(a4_section(SectionDef {
+            page_def,
+            master_pages: vec![MasterPage {
+                apply_to: HeaderFooterApply::Odd,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let mut core = DocumentCore::new_empty();
+        core.set_document(document);
+        core.paginate();
+
+        let page = core
+            .pagination
+            .get(1)
+            .and_then(|result| result.pages.first())
+            .expect("section 1 first page");
+        assert_eq!(page.page_number, 2);
+        let active = page
+            .active_master_page
+            .as_ref()
+            .expect("single base master should apply to carried even page");
+        assert_eq!(active.master_page_index, 0);
     }
 
     #[test]
