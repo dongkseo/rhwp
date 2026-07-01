@@ -6404,8 +6404,28 @@ impl LayoutEngine {
             wrap_anchors,
             ..
         } = ctx;
+        let defer_visible_rowbreak_host_text = paragraphs.get(para_index).and_then(|para| {
+            para.controls
+                .get(control_index)
+                .and_then(|ctrl| match ctrl {
+                    Control::Table(t)
+                        if !t.common.treat_as_char
+                            && is_para_topbottom_float(&t.common)
+                            && matches!(
+                                t.page_break,
+                                crate::model::table::TablePageBreak::RowBreak
+                            )
+                            && para_has_non_whitespace_text(para) =>
+                    {
+                        Some(t.row_count as usize)
+                    }
+                    _ => None,
+                })
+        });
+        let render_deferred_rowbreak_host_text_after = defer_visible_rowbreak_host_text
+            .is_some_and(|row_count| is_continuation && end_cut.is_empty() && end_row >= row_count);
         // ── 분할 표 첫 부분: 호스트 문단 텍스트 렌더링 ──
-        if !is_continuation {
+        if !is_continuation && defer_visible_rowbreak_host_text.is_none() {
             if let Some(para) = paragraphs.get(para_index) {
                 let is_tac = para
                     .controls
@@ -6518,6 +6538,49 @@ impl LayoutEngine {
             pt_mt,
             false,
         );
+        if render_deferred_rowbreak_host_text_after {
+            if let Some(para) = paragraphs.get(para_index) {
+                let has_real_text = para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}');
+                if has_real_text {
+                    if let Some(comp) = composed.get(para_index) {
+                        let text_start_line = comp.lines.iter().position(|line| {
+                            line.runs
+                                .iter()
+                                .any(|r| r.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}'))
+                        });
+                        if let Some(start_line) = text_start_line {
+                            let text_end_line = comp
+                                .lines
+                                .iter()
+                                .rposition(|line| {
+                                    line.runs.iter().any(|r| {
+                                        r.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+                                    })
+                                })
+                                .map(|i| i + 1)
+                                .unwrap_or(comp.lines.len());
+                            para_start_y.insert(para_index, y_offset);
+                            y_offset = self.layout_partial_paragraph(
+                                tree,
+                                col_node,
+                                para,
+                                Some(comp),
+                                styles,
+                                col_area,
+                                y_offset,
+                                start_line,
+                                text_end_line,
+                                page_content.section_index,
+                                para_index,
+                                *multi_col_width,
+                                Some(bin_data_content),
+                                wrap_anchors.get(&para_index),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // [Task #1046 Stage 3 Class B/C] 분할 표 실제 콘텐츠 하단 기록 — 이후 더해지는
         // spacing_after/outer_margin_bottom(표 뒤 trailing 간격) 제외. overflow 검출이
         // 페이지 바닥의 후행 간격을 콘텐츠 초과로 오판하지 않도록 한다.

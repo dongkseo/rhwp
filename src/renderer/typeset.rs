@@ -129,6 +129,14 @@ struct VisibleFloatExclusion {
     bottom: f64,
 }
 
+#[derive(Debug, Clone)]
+struct DeferredTableControl {
+    para_index: usize,
+    control_index: usize,
+    is_first_placed: bool,
+    is_last_placed: bool,
+}
+
 /// 호스트 문단의 spacing (표 전/후)
 #[derive(Debug, Clone, Copy)]
 struct HostSpacing {
@@ -194,6 +202,9 @@ struct TypesetState {
     pending_body_wide_top_reserve: f64,
     /// visible text host 의 양수 offset 자리차지 표가 후속 문단을 밀어내는 구간.
     visible_float_exclusions: Vec<VisibleFloatExclusion>,
+    /// 같은 문단의 선행 RowBreak 표가 continuation 을 만들 때 후행 co-anchored 표를
+    /// 후속 섹션 블록 뒤로 잠시 미루기 위한 큐.
+    deferred_table_controls: Vec<DeferredTableControl>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -1151,6 +1162,7 @@ impl TypesetState {
             on_first_multicolumn_page: false,
             pending_body_wide_top_reserve: 0.0,
             visible_float_exclusions: Vec::new(),
+            deferred_table_controls: Vec::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
             is_hwp3_variant: false,
@@ -2782,6 +2794,16 @@ impl TypesetEngine {
                         st.wrap_around_any_seg = false;
                     }
                 }
+            }
+            if has_table {
+                self.flush_deferred_table_controls(
+                    &mut st,
+                    paragraphs,
+                    composed,
+                    styles,
+                    measured_tables,
+                    Some(para_idx),
+                );
             }
             // 비-TAC Picture/Shape Square wrap: engine.rs:380-397 동일 시멘틱.
             // 그림의 첫 lineseg cs가 0일 수 있어 any_seg_matches 허용 플래그 활성화.
@@ -8347,6 +8369,14 @@ impl TypesetEngine {
         }
 
         // 마지막 항목 처리
+        self.flush_deferred_table_controls(
+            &mut st,
+            paragraphs,
+            composed,
+            styles,
+            measured_tables,
+            None,
+        );
         if !st.current_items.is_empty() {
             st.flush_column_always();
         }
@@ -9217,6 +9247,31 @@ impl TypesetEngine {
         };
         let available = (st.available_height() - safety + footnote_margin_addback).max(0.0);
 
+        // [Task #1686] RowBreak 표 조각 뒤에 남는 빈 guide 문단 흡수.
+        // pr-1674처럼 표 셀 내부 vpos reset으로 페이지가 갈린 뒤, 뒤따르는 빈 문단들이
+        // 이전 좌표계의 큰 vpos(페이지 하단)를 그대로 갖고 다음 실질 앵커 표보다 아래에
+        // 기록될 수 있다. 이 빈 줄들을 flow 높이로 누적하면 다음 RowBreak 표가 한컴/PDF보다
+        // 늦게 시작해 page 5 내용과 총 페이지 수가 밀린다.
+        if prev_is_partial_table
+            && para.controls.is_empty()
+            && !para_has_visible_text(para)
+            && para.line_segs.len() == 1
+        {
+            let curr_vpos = para.line_segs.first().map(|s| s.vertical_pos);
+            let next_anchor_vpos = paragraphs
+                .iter()
+                .skip(para_idx + 1)
+                .find(|p| para_has_visible_text(p) || !p.controls.is_empty())
+                .and_then(|p| p.line_segs.first().map(|s| s.vertical_pos));
+            if let (Some(curr), Some(next)) = (curr_vpos, next_anchor_vpos) {
+                const EMPTY_GUIDE_RESET_GAP_HU: i32 = 2000;
+                if curr > next + EMPTY_GUIDE_RESET_GAP_HU {
+                    st.hidden_empty_paras.insert(para_idx);
+                    return;
+                }
+            }
+        }
+
         // 다단 레이아웃에서 문단 내 단 경계 감지
         // [Task #459] on_first_multicolumn_page 가드 제거: 다단 구역이 여러 페이지에 걸칠 때
         // 후속 페이지에서도 LINE_SEG vpos-reset 으로 인코딩된 단 경계를 인식해야 함.
@@ -9919,6 +9974,181 @@ impl TypesetEngine {
         }
     }
 
+    fn is_deferred_coanchored_rowbreak_table(
+        &self,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        fmt: &FormattedParagraph,
+    ) -> bool {
+        use crate::model::shape::{TextWrap, VertRelTo};
+
+        !para_has_visible_text(para)
+            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            && matches!(table.common.vert_rel_to, VertRelTo::Para)
+            && matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+            && signed_hwpunit(table.common.vertical_offset) > 0
+    }
+
+    fn is_coanchored_rowbreak_split_trigger_table(
+        &self,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        fmt: &FormattedParagraph,
+    ) -> bool {
+        use crate::model::shape::{TextWrap, VertRelTo};
+
+        !para_has_visible_text(para)
+            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            && matches!(table.common.vert_rel_to, VertRelTo::Para)
+            && matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+    }
+
+    fn should_defer_remaining_coanchored_rowbreak_tables(
+        &self,
+        st: &TypesetState,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        fmt: &FormattedParagraph,
+        pages_before_block_table: usize,
+    ) -> bool {
+        if !self.is_coanchored_rowbreak_split_trigger_table(para, table, fmt) {
+            return false;
+        }
+        if st.pages.len() <= pages_before_block_table {
+            return false;
+        }
+        matches!(
+            st.current_items.last(),
+            Some(PageItem::PartialTable {
+                is_continuation: true,
+                ..
+            })
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn flush_deferred_table_controls(
+        &self,
+        st: &mut TypesetState,
+        paragraphs: &[Paragraph],
+        composed: &[ComposedParagraph],
+        styles: &ResolvedStyleSet,
+        measured_tables: &[MeasuredTable],
+        trigger_para_idx: Option<usize>,
+    ) {
+        if st.deferred_table_controls.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut st.deferred_table_controls);
+        let mut remaining = Vec::new();
+        for deferred in pending {
+            if trigger_para_idx.is_some_and(|idx| idx <= deferred.para_index) {
+                remaining.push(deferred);
+                continue;
+            }
+
+            let Some(para) = paragraphs.get(deferred.para_index) else {
+                continue;
+            };
+            let Some(Control::Table(table)) = para.controls.get(deferred.control_index) else {
+                continue;
+            };
+
+            let host_col_w = st
+                .layout
+                .column_areas
+                .get(st.current_column as usize)
+                .map(|a| a.width)
+                .unwrap_or(st.layout.body_area.width);
+            let composed_para = composed.get(deferred.para_index);
+            let fmt = self.format_paragraph(para, composed_para, styles, Some(host_col_w));
+            if !self.is_deferred_coanchored_rowbreak_table(para, table, &fmt) {
+                continue;
+            }
+
+            let is_column_top = st.current_height < 1.0;
+            let ft = self.format_table(
+                para,
+                deferred.para_index,
+                deferred.control_index,
+                table,
+                measured_tables,
+                styles,
+                composed_para,
+                paragraphs.get(deferred.para_index + 1),
+                is_column_top,
+                st.is_hwpx_source,
+            );
+            let mt = measured_tables.iter().find(|mt| {
+                mt.para_index == deferred.para_index && mt.control_index == deferred.control_index
+            });
+            let para_start_height = st.current_height;
+            self.typeset_block_table(
+                st,
+                deferred.para_index,
+                deferred.control_index,
+                para,
+                table,
+                &ft,
+                &fmt,
+                mt,
+                styles,
+                para_start_height,
+                deferred.is_first_placed,
+                deferred.is_last_placed,
+            );
+
+            for (cell_idx, cell) in table.cells.iter().enumerate() {
+                for (cp_idx, cp) in cell.paragraphs.iter().enumerate() {
+                    for (cc_idx, cc) in cp.controls.iter().enumerate() {
+                        if let Control::Footnote(fn_ctrl) = cc {
+                            if let Some(page) = st.pages.last_mut() {
+                                page.footnotes.push(FootnoteRef {
+                                    number: fn_ctrl.number,
+                                    source: FootnoteSource::TableCell {
+                                        para_index: deferred.para_index,
+                                        table_control_index: deferred.control_index,
+                                        cell_index: cell_idx,
+                                        cell_para_index: cp_idx,
+                                        cell_control_index: cc_idx,
+                                    },
+                                });
+                            }
+                            let fn_height = estimate_footnote_note_height(fn_ctrl, self.dpi);
+                            st.add_footnote_height(fn_height);
+                        }
+                    }
+                }
+            }
+
+            if st.col_count == 1 {
+                st.vpos_prev_layout_para = Some(deferred.para_index);
+                if matches!(
+                    st.current_items.last(),
+                    Some(PageItem::Table { .. } | PageItem::PartialTable { .. })
+                ) {
+                    st.vpos_page_base = None;
+                    st.vpos_lazy_base = None;
+                    st.vpos_prev_partial_table =
+                        matches!(st.current_items.last(), Some(PageItem::PartialTable { .. }));
+                }
+            }
+        }
+
+        st.deferred_table_controls = remaining;
+    }
+
     /// 표가 포함된 문단을 처리한다.
     /// 각 컨트롤(표/도형)에 대해 format → fits → place/split 패턴 적용.
     fn typeset_table_paragraph(
@@ -10074,7 +10304,8 @@ impl TypesetEngine {
             .rev()
             .find(|&i| matches!(para.controls[i], Control::Table(_)));
 
-        for ctrl_idx in ctrl_order {
+        let mut break_after_current_table = false;
+        for (order_pos, ctrl_idx) in ctrl_order.iter().copied().enumerate() {
             let ctrl = &para.controls[ctrl_idx];
             match ctrl {
                 Control::Table(table) => {
@@ -10191,6 +10422,7 @@ impl TypesetEngine {
                     ) {
                         // Empty host para-float table placed by horizontal lane reservation.
                     } else {
+                        let pages_before_block_table = st.pages.len();
                         self.typeset_block_table(
                             st,
                             para_idx,
@@ -10205,6 +10437,43 @@ impl TypesetEngine {
                             is_first_placed,
                             is_last_placed,
                         );
+                        if self.should_defer_remaining_coanchored_rowbreak_tables(
+                            st,
+                            para,
+                            table,
+                            &fmt,
+                            pages_before_block_table,
+                        ) {
+                            let deferred: Vec<DeferredTableControl> = ctrl_order
+                                .iter()
+                                .skip(order_pos + 1)
+                                .copied()
+                                .filter_map(|next_ctrl_idx| {
+                                    let Control::Table(next_table) =
+                                        para.controls.get(next_ctrl_idx)?
+                                    else {
+                                        return None;
+                                    };
+                                    self.is_deferred_coanchored_rowbreak_table(
+                                        para, next_table, &fmt,
+                                    )
+                                    .then(|| {
+                                        DeferredTableControl {
+                                            para_index: para_idx,
+                                            control_index: next_ctrl_idx,
+                                            is_first_placed: first_placed_table
+                                                == Some(next_ctrl_idx),
+                                            is_last_placed: last_placed_table
+                                                == Some(next_ctrl_idx),
+                                        }
+                                    })
+                                })
+                                .collect();
+                            if !deferred.is_empty() {
+                                st.deferred_table_controls.extend(deferred);
+                                break_after_current_table = true;
+                            }
+                        }
                     }
 
                     // 표 셀 내 각주 수집 (Paginator engine.rs:679-701 동일)
@@ -10230,6 +10499,9 @@ impl TypesetEngine {
                                 }
                             }
                         }
+                    }
+                    if break_after_current_table {
+                        break;
                     }
                 }
                 Control::Shape(_) | Control::Picture(_) | Control::Equation(_) => {
@@ -11399,7 +11671,7 @@ impl TypesetEngine {
             // 정의상 일치한다(px content_offset·MeasuredTable 누적 제거).
             const MIN_TOP_KEEP_PX: f64 = 25.0;
             const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
-            const ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 0.1;
+            const ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 2.0;
             const HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 64.0;
             const LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX: f64 = 36.0;
             const LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 260.0;

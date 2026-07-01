@@ -61,7 +61,7 @@ jobs:
       candidate_sha: ${{ steps.detect.outputs.candidate_sha || '' }}
 
     steps:
-      - name: Detect mydocs-only fast pass
+      - name: Detect review-only fast pass
         id: detect
         continue-on-error: true
         uses: actions/github-script@v8
@@ -77,8 +77,35 @@ jobs:
               core.info(`fast_pass=${fastPass} reason=${reason} candidate_sha=${candidateSha}`);
             }
 
-            function isAllowedMydocsPath(filename) {
-              return filename.startsWith('mydocs/');
+            function isAllowedReviewPath(file) {
+              const filename = file.filename;
+              if (filename.startsWith('mydocs/')) {
+                return true;
+              }
+              if (file.status !== 'added') {
+                return false;
+              }
+              if (
+                filename.startsWith('samples/')
+                && (filename.endsWith('.hwp') || filename.endsWith('.hwpx'))
+              ) {
+                return true;
+              }
+              return filename.startsWith('pdf/') && filename.endsWith('.pdf');
+            }
+
+            function reviewOnlyLabel(files) {
+              const hasReferenceArtifact = files.some((file) => (
+                file.status === 'added'
+                && (
+                  (
+                    file.filename.startsWith('samples/')
+                    && (file.filename.endsWith('.hwp') || file.filename.endsWith('.hwpx'))
+                  )
+                  || (file.filename.startsWith('pdf/') && file.filename.endsWith('.pdf'))
+                )
+              ));
+              return hasReferenceArtifact ? 'review-reference-only' : 'mydocs-only';
             }
 
             function latestRun(runs) {
@@ -110,7 +137,7 @@ jobs:
                 return;
               }
 
-              let trailingMydocsOnlyCommits = 0;
+              let trailingReviewOnlyCommits = 0;
               let candidateSha = '';
 
               for (let index = commits.length - 1; index >= 0; index -= 1) {
@@ -128,13 +155,13 @@ jobs:
                   return;
                 }
 
-                const mydocsOnly = files.every((file) => isAllowedMydocsPath(file.filename));
-                if (mydocsOnly) {
+                const reviewOnly = files.every((file) => isAllowedReviewPath(file));
+                if (reviewOnly) {
                   if ((commit.parents || []).length !== 1) {
-                    setResult(false, `mydocs-only-merge-commit:${sha}`);
+                    setResult(false, `${reviewOnlyLabel(files)}-merge-commit:${sha}`);
                     return;
                   }
-                  trailingMydocsOnlyCommits += 1;
+                  trailingReviewOnlyCommits += 1;
                   continue;
                 }
 
@@ -142,14 +169,14 @@ jobs:
                 break;
               }
 
-              if (trailingMydocsOnlyCommits === 0) {
-                setResult(false, 'no-trailing-mydocs-commits');
+              if (trailingReviewOnlyCommits === 0) {
+                setResult(false, 'no-trailing-review-only-commits');
                 return;
               }
               if (!candidateSha) {
                 candidateSha = pr.base.sha;
-                core.info(`all PR commits are under mydocs; using base SHA ${candidateSha}`);
-                setResult(true, 'all-mydocs-no-render-impact', candidateSha);
+                core.info(`all PR commits are review-only; using base SHA ${candidateSha}`);
+                setResult(true, 'all-review-only-no-render-impact', candidateSha);
                 return;
               }
 
