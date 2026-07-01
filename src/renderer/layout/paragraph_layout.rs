@@ -2207,6 +2207,28 @@ impl LayoutEngine {
                 .unwrap_or(0);
             let line_flow_height =
                 line_height + equation_tac_extra_rows as f64 * (line_height + line_spacing_px);
+            let render_line_flow_height =
+                if cell_ctx.is_none() && para_index >= self.endnote_para_base.get() {
+                    // 미주 lineSeg의 행 진행값이 실제 TextLine bbox보다 작으면 단일 줄 미주가
+                    // 서로 겹친다. Pagination은 별도 압축 흐름을 쓰더라도 렌더 y 진행은
+                    // 실제 그려진 줄 높이를 최소값으로 보존한다.
+                    line_flow_height.max(max_fs).max(line_node.bbox.height)
+                } else {
+                    line_flow_height
+                };
+            let render_line_spacing_px =
+                if cell_ctx.is_none() && para_index >= self.endnote_para_base.get() {
+                    // 비가시 구분선/0mm 미주는 pagination과 render가 같은 압축 spacing을
+                    // 써야 단 하단 클리핑이 생기지 않는다. 다만 과한 음수값은 글자 겹침을
+                    // 만들 수 있으므로 실제 glyph 높이의 10% 범위로 제한한다.
+                    if line_spacing_px < 0.0 {
+                        line_spacing_px.max(-render_line_flow_height * 0.10)
+                    } else {
+                        line_spacing_px
+                    }
+                } else {
+                    line_spacing_px
+                };
             if equation_tac_extra_rows > 0 {
                 line_node.bbox.height = line_flow_height;
                 if let RenderNodeType::TextLine(ref mut text_line) = line_node.node_type {
@@ -5014,7 +5036,7 @@ impl LayoutEngine {
                 let content_bottom = if blank_spacer_line {
                     y
                 } else {
-                    y + line_flow_height
+                    y + render_line_flow_height
                 };
                 self.last_item_content_bottom.set(content_bottom);
                 if equation_only_endnote_tail_line && content_bottom > col_bottom {
@@ -5032,11 +5054,11 @@ impl LayoutEngine {
                     let trailing = if line_idx + 1 < end
                         || self.endnote_para_has_same_endnote_successor(para_index)
                     {
-                        line_spacing_px
+                        render_line_spacing_px
                     } else {
                         0.0
                     };
-                    y + line_flow_height + trailing + tac_picture_label_extra
+                    y + render_line_flow_height + trailing + tac_picture_label_extra
                 };
                 let next_y = endnote_line_vpos_y_end
                     .map(|prev| prev.max(line_bottom))
@@ -5051,7 +5073,7 @@ impl LayoutEngine {
             } else if skip_advance_empty_line {
                 // no advance
             } else {
-                y += line_flow_height + line_spacing_px + tac_picture_label_extra;
+                y += render_line_flow_height + render_line_spacing_px + tac_picture_label_extra;
             }
             prev_line_reserved_tac_picture_height = current_line_reserved_tac_picture_height;
         }

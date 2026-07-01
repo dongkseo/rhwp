@@ -3121,6 +3121,31 @@ fn fixup_hwp3_notes_in_paragraphs(
     }
 }
 
+fn normalize_hwp3_note_line_vpos(paragraph: &mut crate::model::paragraph::Paragraph) {
+    if paragraph.line_segs.len() <= 1 {
+        return;
+    }
+
+    let mut expected_vpos = None;
+    for line_seg in &mut paragraph.line_segs {
+        if let Some(expected) = expected_vpos {
+            if line_seg.vertical_pos == 0 && expected > 0 {
+                // HWP3 미주 내부에는 실제 단/쪽 리셋이 아닌 후속 줄 vpos=0이
+                // 저장되는 사례가 있다. 본문 문단의 페이지 리셋 의미는 유지하고,
+                // note 내부 일반 연속줄만 이전 줄 advance 기준으로 복원한다.
+                line_seg.vertical_pos = expected;
+            }
+        }
+
+        expected_vpos = Some(
+            line_seg
+                .vertical_pos
+                .saturating_add(line_seg.line_height)
+                .saturating_add(line_seg.line_spacing),
+        );
+    }
+}
+
 fn fixup_hwp3_notes_in_controls(
     controls: &mut [crate::model::control::Control],
     state: &mut Hwp3NoteFixupState,
@@ -3142,6 +3167,9 @@ fn fixup_hwp3_notes_in_controls(
                 state.endnote_number = state.endnote_number.saturating_add(1);
                 endnote.after_decoration_letter = ')' as u16;
                 endnote.number_shape = 0;
+                for paragraph in &mut endnote.paragraphs {
+                    normalize_hwp3_note_line_vpos(paragraph);
+                }
                 fixup_hwp3_notes_in_paragraphs(&mut endnote.paragraphs, state);
             }
             Control::Table(table) => {

@@ -75,6 +75,14 @@ fn format_endnote_marker_text(endnote: &crate::model::footnote::Endnote) -> Stri
 fn prepend_endnote_marker_text(para: &mut Paragraph, endnote: &crate::model::footnote::Endnote) {
     // 미주 번호는 렌더 시점에 가상 텍스트로 붙이므로, line_segs/char_shapes도
     // 같은 UTF-16 stream 기준으로 함께 밀어야 한다.
+    let leading_spaces = para
+        .text
+        .chars()
+        .take_while(|ch| matches!(*ch, ' ' | '\u{00A0}' | '\u{2007}'))
+        .count();
+    if leading_spaces > 0 {
+        para.delete_text_at(0, leading_spaces);
+    }
     let prefix = format!("{} ", format_endnote_marker_text(endnote));
     para.insert_text_at(0, &prefix);
 }
@@ -3743,7 +3751,7 @@ impl TypesetEngine {
                                 .unwrap_or(false);
                             let en_para = if compact_no_separator_spacing {
                                 compact_no_separator_para = en_para.clone();
-                                let divisor = 20;
+                                let divisor = 10;
                                 for line_seg in &mut compact_no_separator_para.line_segs {
                                     line_seg.line_spacing = -(line_seg.line_height / divisor);
                                 }
@@ -3753,6 +3761,12 @@ impl TypesetEngine {
                             };
                             let en_para_idx = paragraphs.len() + st.endnote_paragraphs.len();
                             let mut en_para_copy = render_en_para.clone();
+                            if compact_no_separator_spacing {
+                                let divisor = 10;
+                                for line_seg in &mut en_para_copy.line_segs {
+                                    line_seg.line_spacing = -(line_seg.line_height / divisor);
+                                }
+                            }
                             // line_segs vpos를 endnote 시작점 기준으로 오프셋
                             for ls in &mut en_para_copy.line_segs {
                                 ls.vertical_pos += endnote_start;
@@ -4220,7 +4234,9 @@ impl TypesetEngine {
                             let allow_default_late_question_tail = default_between_notes_gap
                                 && !zero_endnote_spacing_profile
                                 && default_nonzero_between_note_tail_candidate
-                                && st.current_column + 1 >= st.col_count;
+                                && st.current_column + 1 >= st.col_count
+                                && (has_visible_endnote_separator
+                                    || (fmt.line_heights.len() > 1 && fmt.total_height <= 32.0));
                             let suppress_late_question_gap_for_fit =
                                 allow_default_late_question_tail
                                     && st.current_column + 1 >= st.col_count
@@ -4298,6 +4314,8 @@ impl TypesetEngine {
                                     && emitted_endnote_count > 0
                                     && st.current_column + 1 >= st.col_count
                                     && st.current_height > available * 0.80
+                                    && fmt.line_heights.len() <= 2
+                                    && fmt.total_height <= 32.0
                                     && same_endnote_body_first_line_advance
                                         .map(|body_head| {
                                             // 구분선이 없는 마지막 단에서는 직전 미주의
@@ -4668,6 +4686,58 @@ impl TypesetEngine {
                             } else {
                                 None
                             };
+                            let next_endnote_first_para_fit_height = if ep_idx + 1
+                                == en_ctrl.paragraphs.len()
+                            {
+                                endnote_refs.get(en_ref_idx + 1).and_then(|next_ref| {
+                                    let next_host = paragraphs.get(next_ref.para_index)?;
+                                    let Control::Endnote(next_ctrl) =
+                                        next_host.controls.get(next_ref.control_index)?
+                                    else {
+                                        return None;
+                                    };
+                                    let mut next_para = next_ctrl.paragraphs.first()?.clone();
+                                    prepend_endnote_marker_text(&mut next_para, next_ctrl);
+
+                                    let next_comp =
+                                        crate::renderer::composer::compose_paragraph(&next_para);
+                                    let next_fmt = self.format_paragraph(
+                                        &next_para,
+                                        Some(&next_comp),
+                                        &styles,
+                                        Some(en_col_w),
+                                    );
+                                    Some(next_fmt.height_for_fit)
+                                })
+                            } else {
+                                None
+                            };
+                            let next_next_endnote_first_para_fit_height = if ep_idx + 1
+                                == en_ctrl.paragraphs.len()
+                            {
+                                endnote_refs.get(en_ref_idx + 2).and_then(|next_ref| {
+                                    let next_host = paragraphs.get(next_ref.para_index)?;
+                                    let Control::Endnote(next_ctrl) =
+                                        next_host.controls.get(next_ref.control_index)?
+                                    else {
+                                        return None;
+                                    };
+                                    let mut next_para = next_ctrl.paragraphs.first()?.clone();
+                                    prepend_endnote_marker_text(&mut next_para, next_ctrl);
+
+                                    let next_comp =
+                                        crate::renderer::composer::compose_paragraph(&next_para);
+                                    let next_fmt = self.format_paragraph(
+                                        &next_para,
+                                        Some(&next_comp),
+                                        &styles,
+                                        Some(en_col_w),
+                                    );
+                                    Some(next_fmt.height_for_fit)
+                                })
+                            } else {
+                                None
+                            };
                             let next_endnote_head_has_large_tac_picture = if ep_idx + 1
                                 == en_ctrl.paragraphs.len()
                             {
@@ -4823,6 +4893,24 @@ impl TypesetEngine {
                                         && ep_idx == 0
                                         && st.current_column + 1 >= st.col_count
                                         && st.current_height + en_fit > available);
+                            let no_separator_compact_final_note_first_line_tail_fits =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 < st.col_count
+                                    && fmt.line_heights.len() == 2
+                                    && !local_vpos_rewind
+                                    && !internal_vpos_rewind
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && next_endnote_first_para_fit_height.is_none()
+                                    && st.current_height > available * 0.90
+                                    && st.current_height + fmt.line_advance(0)
+                                        <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                    && st.current_height + en_fit > available - 50.0;
                             let split_endnote_to_fit = if compact_endnote_separator_profile
                                 && st.col_count > 1
                                 && !local_vpos_rewind
@@ -4922,6 +5010,42 @@ impl TypesetEngine {
                                 // 첫 줄로 넘기므로 마지막 줄 직전에 분할한다.
                                 (head_fits && tail_overflows && last_line_visible)
                                     .then_some(tail_split)
+                            } else {
+                                split_endnote_to_fit
+                            };
+                            let split_endnote_to_fit = if split_endnote_to_fit.is_none()
+                                && compact_endnote_separator_profile
+                                && default_between_notes_gap
+                                && compact_between_notes_gap
+                                && !has_visible_endnote_separator
+                                && ep_idx == 0
+                                && emitted_endnote_count > 0
+                                && en_ref.number > 0
+                                && st.current_column + 1 >= st.col_count
+                                && fmt.line_heights.len() == 2
+                                && !local_vpos_rewind
+                                && !internal_vpos_rewind
+                                && para_has_visible_text_or_equation(en_para)
+                                && st.current_height > available - 70.0
+                                && next_endnote_first_para_fit_height
+                                    .is_some_and(|next_h| next_h <= 18.0)
+                                && next_next_endnote_first_para_fit_height
+                                    .is_some_and(|next_h| next_h <= 18.0)
+                            {
+                                // SO-SUEOP p43처럼 마지막 단 하단에서 2줄 풀이 뒤에
+                                // 짧은 한 줄 풀이들이 이어지는 경우, 한컴은 2줄 풀이의
+                                // 첫 줄만 현재 쪽에 남기고 tail 한 줄을 다음 쪽 첫 줄로
+                                // 넘긴다. 다음다음 풀이가 긴 191→192→193 경계는 제외한다.
+                                Some(1)
+                            } else {
+                                split_endnote_to_fit
+                            };
+                            let split_endnote_to_fit = if split_endnote_to_fit.is_none()
+                                && no_separator_compact_final_note_first_line_tail_fits
+                            {
+                                // 마지막 미주의 2줄 문단은 한컴처럼 첫 줄만 첫 단
+                                // 하단에 남기고 나머지를 다음 단으로 이어 붙인다.
+                                Some(1)
                             } else {
                                 split_endnote_to_fit
                             };
@@ -5332,6 +5456,23 @@ impl TypesetEngine {
                                     (target.vertical_pos < first.vertical_pos).then_some(true)
                                 })
                                 .unwrap_or(false);
+                            if default_between_notes_gap
+                                && compact_endnote_separator_profile
+                                && compact_between_notes_gap
+                                && !has_visible_endnote_separator
+                                && internal_rewind_split.is_some()
+                                && ep_idx == 0
+                                && st.current_column + 1 >= st.col_count
+                                && st.current_height + total_advance_fit
+                                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                && endnote_has_visible_payload
+                            {
+                                // 비가시 구분선의 기본 미주에서는 저장 vpos rewind가
+                                // 있더라도 현재 단에 전체 문단이 실제 흐름 높이로 들어가면
+                                // 한컴처럼 문단을 쪼개지 않는다. 여기서 split하면 SO-SUEOP
+                                // 56번처럼 다음 미주들이 한 단 늦게 밀린다.
+                                internal_rewind_split = None;
+                            }
                             let new_endnote_stale_forward_vpos = compact_endnote_separator_profile
                                 && ep_idx == 0
                                 && emitted_endnote_count > 0
@@ -6295,7 +6436,7 @@ impl TypesetEngine {
                                         .unwrap_or(false);
                             let new_endnote_advance_threshold = if default_between_notes_gap {
                                 if st.current_column + 1 < st.col_count {
-                                    0.88
+                                    0.89
                                 } else {
                                     0.95
                                 }
@@ -7940,6 +8081,125 @@ impl TypesetEngine {
                                 && fmt.line_heights.len() == 1
                                 && st.current_height + fmt.line_advance(0)
                                     <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX + 2.0;
+                            let no_separator_compact_new_note_tail_fits_current_column =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && !local_vpos_rewind
+                                    && !internal_vpos_rewind
+                                    && fmt.line_heights.len() > 1
+                                    && endnote_has_visible_payload
+                                    && if st.current_column + 1 < st.col_count {
+                                        // 비가시 구분선의 첫 단은 새 미주 전체가 충분한
+                                        // 여유를 두고 들어갈 때만 조기 단 넘김을 억제한다.
+                                        st.current_height + en_fit <= available - 64.0
+                                    } else {
+                                        // 마지막 단에서는 한컴처럼 여러 줄 tail의 소폭
+                                        // bleed를 허용하되, 한 줄짜리 다음 번호까지 끌고
+                                        // 오지는 않는다.
+                                        en_fit <= 32.0
+                                            && st.current_height + en_fit
+                                                <= available
+                                                    + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                    };
+                            let no_separator_default_first_column_single_line_tail_fits =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 < st.col_count
+                                    && fmt.line_heights.len() == 1
+                                    && !local_vpos_rewind
+                                    && !internal_vpos_rewind
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && st.current_height + fmt.line_advance(0) <= available - 64.0;
+                            let no_separator_compact_new_note_overflows_current_column =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && fmt.total_height > 32.0
+                                    && st.current_height + en_fit > available;
+                            let no_separator_compact_last_column_title_before_tall_next =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 >= st.col_count
+                                    && fmt.line_heights.len() == 1
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && st.current_height > available * 0.90
+                                    && st.current_height + fmt.line_advance(0)
+                                        <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                    && next_endnote_first_para_fit_height.is_some_and(|next_h| {
+                                        next_h > 64.0
+                                            && st.current_height + fmt.line_advance(0) + next_h
+                                                > available
+                                                    + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                    });
+                            let no_separator_compact_last_column_single_line_tail_too_low =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 >= st.col_count
+                                    && fmt.line_heights.len() == 1
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && st.current_height + fmt.line_advance(0)
+                                        > available
+                                            - ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX * 0.5
+                                    && next_endnote_first_para_fit_height
+                                        .is_some_and(|next_h| next_h <= 18.0);
+                            let no_separator_compact_last_column_note_before_tall_next =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 >= st.col_count
+                                    && fmt.line_heights.len() > 1
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && st.current_height > available * 0.90
+                                    && st.current_height + en_fit <= available
+                                    && next_endnote_first_para_fit_height.is_some_and(|next_h| {
+                                        st.current_height + en_fit + next_h
+                                            > available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX
+                                    });
+                            let no_separator_compact_last_column_multi_line_tail_too_low =
+                                compact_endnote_separator_profile
+                                    && default_between_notes_gap
+                                    && compact_between_notes_gap
+                                    && !has_visible_endnote_separator
+                                    && ep_idx == 0
+                                    && emitted_endnote_count > 0
+                                    && en_ref.number > 0
+                                    && st.current_column + 1 >= st.col_count
+                                    && fmt.line_heights.len() > 1
+                                    && para_has_visible_text_or_equation(en_para)
+                                    && split_endnote_to_fit.is_none()
+                                    && st.current_height > available * 0.90
+                                    // 비가시 구분선 미주의 마지막 단에서는 계산상
+                                    // 맞더라도 렌더 라인 높이가 커져 하단이 잘릴 수
+                                    // 있으므로 다중 행 새 미주는 충분한 여백을 둔다.
+                                    && st.current_height + en_fit > available - 32.0;
                             let advance_for_new_endnote = st.col_count > 1
                                 && compact_endnote_separator_profile
                                 && ep_idx == 0
@@ -7948,6 +8208,10 @@ impl TypesetEngine {
                                 && !no_separator_last_column_new_note_head_without_gap_fits
                                 && !allow_default_late_question_tail
                                 && (!allow_default_column_bottom_question_title_tail
+                                    || no_separator_compact_last_column_single_line_tail_too_low
+                                    || no_separator_compact_last_column_title_before_tall_next
+                                    || no_separator_compact_last_column_note_before_tall_next
+                                    || no_separator_compact_last_column_multi_line_tail_too_low
                                     || (large_between_notes_vpos_head_outside
                                         && !allow_default_first_column_large_below_title_tail))
                                 && !allow_default_question_title_tail
@@ -7961,6 +8225,9 @@ impl TypesetEngine {
                                 && !allow_large_separator_first_column_tail
                                 && !zero_new_endnote_full_tail_fits_current_column
                                 && !zero_between_question_title_tail_fits_current_column
+                                && !no_separator_compact_new_note_tail_fits_current_column
+                                && !no_separator_compact_final_note_first_line_tail_fits
+                                && !no_separator_default_first_column_single_line_tail_fits
                                 && !large_between_zero_above_whole_note_small_bleed_fits
                                 && (!endnote_has_vpos_rewind
                                     || rewind_endnote_head_near_bottom
@@ -7969,7 +8236,12 @@ impl TypesetEngine {
                                 && (!new_endnote_stale_forward_vpos
                                     || large_between_notes_vpos_head_outside)
                                 && (st.current_height > available * new_endnote_advance_threshold
-                                    || large_between_notes_vpos_head_outside)
+                                    || large_between_notes_vpos_head_outside
+                                    || no_separator_compact_new_note_overflows_current_column
+                                    || no_separator_compact_last_column_single_line_tail_too_low
+                                    || no_separator_compact_last_column_title_before_tall_next
+                                    || no_separator_compact_last_column_note_before_tall_next
+                                    || no_separator_compact_last_column_multi_line_tail_too_low)
                                 && !st.current_items.is_empty();
                             let advance_for_internal_rewind = move_internal_rewind_equation_to_next
                                 && !st.current_items.is_empty();
@@ -7982,6 +8254,33 @@ impl TypesetEngine {
                                 st.advance_column_or_new_page();
                                 prev_en_bottom_vpos = None;
                                 prev_en_content_bottom_vpos = None;
+                            }
+                            let no_separator_default_tail_render_pullup_hu = if !advance_for_fit
+                                && !advance_for_new_endnote
+                                && !advance_for_internal_rewind
+                                && allow_default_column_bottom_question_title_tail
+                                && !has_visible_endnote_separator
+                                && st.current_column + 1 >= st.col_count
+                                && st.current_height > available * 0.92
+                                && fmt.line_heights.len() == 1
+                                && para_has_visible_text_or_equation(en_para)
+                            {
+                                Some(900)
+                            } else {
+                                None
+                            };
+                            if let Some(pullup_hu) = no_separator_default_tail_render_pullup_hu {
+                                if let Some(render_para) =
+                                    st.endnote_paragraphs.get_mut(en_para_local_idx)
+                                {
+                                    // 비가시 구분선 기본 미주의 마지막 단 한 줄 tail 묶음은
+                                    // 저장 vpos가 실제 frame 하단보다 한 줄가량 아래를 가리킬
+                                    // 수 있다. Pagination은 tail을 현재 단에 남기되, 렌더 vpos만
+                                    // 위로 당겨 127~129 같은 연속 번호가 frame 안에 보이게 한다.
+                                    for ls in &mut render_para.line_segs {
+                                        ls.vertical_pos -= pullup_hu;
+                                    }
+                                }
                             }
                             // 구분선 아래가 큰 기본 미주에서 제목 tail만 현재 단 하단에
                             // 남는 경우, 저장 vpos가 한 기본 미주 gap만큼 위로 당겨질 수
@@ -8199,8 +8498,18 @@ impl TypesetEngine {
                                 && st.current_height < 5.0
                                 && st.current_height + total_advance_fit
                                     <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX;
+                            let suppress_empty_column_fit_split = split_endnote_to_fit.is_some()
+                                && compact_endnote_separator_profile
+                                && !has_visible_endnote_separator
+                                && st.current_items.is_empty()
+                                && st.current_height < 5.0
+                                && !local_vpos_rewind
+                                && !internal_vpos_rewind
+                                && st.current_height + total_advance_fit
+                                    <= available + ENDNOTE_COLUMN_BOTTOM_BLEED_TOLERANCE_PX;
                             let split_candidate = if compact_non_default_empty_column_rewind_fits
                                 || suppress_empty_column_rewind_split
+                                || suppress_empty_column_fit_split
                             {
                                 None
                             } else {

@@ -236,3 +236,53 @@ fn issue_1692_so_sueop_hwp3_endnotes_follow_hwpx_numbering_and_width() {
     assert_eq!(hwp3_doc.doc_info.numberings[0].level_formats[1], "^2)");
     assert_eq!(hwp3_doc.doc_info.numberings[0].level_formats[2], "(^3)");
 }
+
+#[test]
+fn issue_1692_so_sueop_hwp3_endnote_internal_vpos_zero_is_normalized() {
+    let hwp3_doc = load("samples/SO-SUEOP.hwp");
+
+    let mut hwp3_endnotes = Vec::new();
+    collect_endnotes(&hwp3_doc.sections[0].paragraphs, &mut hwp3_endnotes);
+
+    let endnote_22 = hwp3_endnotes
+        .iter()
+        .find(|endnote| endnote.number == 22)
+        .expect("HWP3 endnote 22");
+    let line_vpos: Vec<i32> = endnote_22.paragraphs[0]
+        .line_segs
+        .iter()
+        .map(|seg| seg.vertical_pos)
+        .collect();
+
+    assert_eq!(
+        line_vpos,
+        vec![0, 960, 1920, 2880],
+        "HWP3 note-internal line vpos=0 must be normalized as a continuation line"
+    );
+}
+
+#[test]
+fn issue_1692_so_sueop_hwpx_endnote_internal_vpos_zero_is_normalized() {
+    let hwpx_doc = load("samples/SO-SUEOP.hwpx");
+
+    let mut hwpx_endnotes = Vec::new();
+    collect_endnotes(&hwpx_doc.sections[0].paragraphs, &mut hwpx_endnotes);
+
+    let endnote_161 = hwpx_endnotes
+        .iter()
+        .find(|endnote| endnote.number == 161)
+        .expect("HWPX endnote 161");
+    let para = &endnote_161.paragraphs[0];
+    assert_eq!(para.line_segs.len(), 2);
+
+    let first = &para.line_segs[0];
+    let second = &para.line_segs[1];
+    assert_eq!(
+        second.vertical_pos,
+        first
+            .vertical_pos
+            .saturating_add(first.line_height)
+            .saturating_add(first.line_spacing),
+        "HWPX note-internal line vpos=0 must be normalized as a continuation line"
+    );
+}
