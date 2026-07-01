@@ -25,10 +25,13 @@
 
 ## 한계 / 후속
 - 40px 버퍼로 잡히는 각주-tail 케이스(-8쪽)만 수정. 잔여 near-empty 18개(+8쪽)는 **다중 원인**:
-  PartialParagraph/PartialTable 격리, 비각주 tail 등. 각각 별도 원인이라 본 수정 범위 밖(후속).
+  PartialParagraph/PartialTable 격리, 비각주 tail 등. 각각 별도 원인이라 본 수정 범위 밖이다. 후속 #1733에서
+  분리 추적한다.
 - 전체 각주 예약을 제외하는 더 공격적 버전도 시험했으나 동일 250 결과 → 겹침 위험 없는 40px 버전 채택.
 - #1718(표 over-fill)과 정반대 방향(텍스트 under-fill). razor-thin 다중원인의 부분 개선.
 
 ## 산출물
 - 소스: `src/renderer/typeset.rs` (state 필드 `skip_footnote_margin_once` + 가드/fit 2곳)
-- 재현: hwpdocs `국제고속선기준.hwpx`(대형이라 samples 미포함; 경로 문서화)
+- 재현 HWPX: `samples/task1725/text_footnote_tail_overpagination.hwpx`
+- 검증 기준 HWP: `samples/task1725/text_footnote_tail_overpagination.hwp`
+- 검증 기준 PDF: `pdf/text_footnote_tail_overpagination-2024.pdf` (Hwp 2024, 242쪽)
