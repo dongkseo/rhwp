@@ -158,6 +158,22 @@ fn build_raw_ctrl_data(common: &crate::model::shape::CommonObjAttr) -> Vec<u8> {
     data
 }
 
+fn hwp3_color_index_to_color_ref(color: u8) -> crate::model::ColorRef {
+    // 한글 3.0 글자 모양의 1바이트 색상값은 기본 8색 인덱스이다.
+    // 내부 ColorRef는 0x00BBGGRR 순서이므로 SVG/CSS 변환 전 BGR 값으로 정규화한다.
+    match color {
+        0 => 0x00000000, // 검정
+        1 => 0x00FF0000, // 파랑
+        2 => 0x0000FF00, // 초록
+        3 => 0x00FFFF00, // 청록
+        4 => 0x000000FF, // 빨강
+        5 => 0x00FF00FF, // 자주
+        6 => 0x0000FFFF, // 노랑
+        7 => 0x00FFFFFF, // 흰색
+        _ => 0x00000000,
+    }
+}
+
 pub(crate) fn convert_char_shape(
     hwp3_cs: &crate::parser::hwp3::records::Hwp3CharShape,
 ) -> crate::model::style::CharShape {
@@ -177,6 +193,7 @@ pub(crate) fn convert_char_shape(
     ];
     cs.ratios = hwp3_cs.ratios;
     cs.spacings = hwp3_cs.spacings;
+    cs.text_color = hwp3_color_index_to_color_ref(hwp3_cs.text_color);
     cs.attr = hwp3_cs.attr as u32;
     cs.italic = hwp3_cs.is_italic();
     cs.bold = hwp3_cs.is_bold();
@@ -3293,6 +3310,30 @@ mod tests {
         assert_eq!(pbf.spacing_bottom, 160);
         assert_eq!(pbf.basis, PageBorderBasis::BodyBased);
         assert_eq!(pbf.ui_basis, PageBorderUiBasis::Page);
+    }
+
+    #[test]
+    fn task1692_hwp3_color_index_maps_to_color_ref() {
+        assert_eq!(hwp3_color_index_to_color_ref(0), 0x00000000);
+        assert_eq!(hwp3_color_index_to_color_ref(1), 0x00FF0000);
+        assert_eq!(hwp3_color_index_to_color_ref(2), 0x0000FF00);
+        assert_eq!(hwp3_color_index_to_color_ref(3), 0x00FFFF00);
+        assert_eq!(hwp3_color_index_to_color_ref(4), 0x000000FF);
+        assert_eq!(hwp3_color_index_to_color_ref(5), 0x00FF00FF);
+        assert_eq!(hwp3_color_index_to_color_ref(6), 0x0000FFFF);
+        assert_eq!(hwp3_color_index_to_color_ref(7), 0x00FFFFFF);
+        assert_eq!(hwp3_color_index_to_color_ref(255), 0x00000000);
+    }
+
+    #[test]
+    fn task1692_convert_char_shape_preserves_text_color() {
+        let hwp3_cs = crate::parser::hwp3::records::Hwp3CharShape {
+            text_color: 1,
+            ..Default::default()
+        };
+        let cs = convert_char_shape(&hwp3_cs);
+
+        assert_eq!(cs.text_color, 0x00FF0000);
     }
 
     #[test]
