@@ -657,6 +657,21 @@ fn issue_1692_so_sueop_hwp3_page22_relationship_box_uses_table_flow() {
         hwp3_body.1,
         hwp3_table.1 + hwp3_table.3
     );
+    let hwp3_body_text = text_concat_in_tree(&hwp3_tree, "Body");
+    for expected in [
+        "① ․윤두꺼비",
+        "② 상훈은유학까지",
+        "③ 종수는 할아버지가",
+        "④ 종학은 이 작품에서",
+        "⑤ 경손은 할아버지가",
+        "경어체  → 풍자의 효과",
+        "사실주의의 효과 → 고발",
+    ] {
+        assert!(
+            hwp3_body_text.contains(expected),
+            "HWP3 page 22 body text must contain {expected:?}"
+        );
+    }
 
     let hwp3_follow = text_bbox_in_tree(&hwp3_tree, " 그와 유사한 인물은?")
         .expect("HWP3 page 22 follow-up question bbox");

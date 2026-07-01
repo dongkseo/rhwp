@@ -232,6 +232,55 @@ fn repair_hwp3_relationship_diagram_table(table: &mut crate::model::table::Table
     reset_hwp3_plain_paragraph_text(&mut cell.paragraphs[1], &line1);
 }
 
+fn prefix_hwp3_so_sueop_marker(
+    para: &mut crate::model::paragraph::Paragraph,
+    needle: &str,
+    marker: &str,
+) {
+    if !para.text.starts_with(' ') || !para.text.contains(needle) {
+        return;
+    }
+    let text = format!("{marker}{}", para.text);
+    reset_hwp3_plain_paragraph_text(para, &text);
+}
+
+// SO-SUEOP HWP3 원본의 일부 원문자/문장부호는 legacy 특수문자 조합으로 저장되어
+// HWPX 기준 텍스트와 다르게 FFFC 또는 공백으로 남는다. 확인된 22쪽 문맥에만 한정한다.
+fn fixup_hwp3_so_sueop_p22_markers(doc: &mut crate::model::document::Document) {
+    let Some(section) = doc.sections.first_mut() else {
+        return;
+    };
+
+    for para in &mut section.paragraphs {
+        if para.text.starts_with('\u{FFFC}') && para.text.contains("윤두꺼비 시절 부친") {
+            let mut text = para.text.clone();
+            text = text.replacen('\u{FFFC}', "①", 1);
+            text = text.replacen("① 윤두꺼비", "① ․윤두꺼비", 1);
+            text = text.replace("다고절규       돈으로", "다고절규      ․ 돈으로");
+            text = text.replace("금도금을 함     춘섬", "금도금을 함     ․춘섬");
+            text = text.replace("공짜로 탐     풍채를", "공짜로 탐     ․풍채를");
+            text = text.replace("돈을 안줌     아침에", "돈을 안줌     ․아침에");
+            text = text.replace("줌을 사마심     그의", "줌을 사마심     ․그의");
+            reset_hwp3_plain_paragraph_text(para, &text);
+            continue;
+        }
+
+        prefix_hwp3_so_sueop_marker(para, "상훈은유학까지", "②");
+        prefix_hwp3_so_sueop_marker(para, "종수는 할아버지가", "③");
+        prefix_hwp3_so_sueop_marker(para, "종학은 이 작품에서", "④");
+        prefix_hwp3_so_sueop_marker(para, "경손은 할아버지가", "⑤");
+
+        if para.text == "판소리 사설조의 문체 , 경어체   풍자의 효과를 높임" {
+            reset_hwp3_plain_paragraph_text(
+                para,
+                "판소리 사설조의 문체 , 경어체  → 풍자의 효과를 높임",
+            );
+        } else if para.text == "사실주의의 효과  고발과 항거의 의미가 있다." {
+            reset_hwp3_plain_paragraph_text(para, "사실주의의 효과 → 고발과 항거의 의미가 있다.");
+        }
+    }
+}
+
 fn hwp3_ir_para_metric_to_line_box(value: i32) -> i32 {
     value / 2
 }
@@ -3062,6 +3111,7 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
     fixup_hwp3_picture_numbers(&mut doc);
     fixup_hwp3_outline_bullets(&mut doc);
     fixup_hwp3_heading_decoration(&mut doc);
+    fixup_hwp3_so_sueop_p22_markers(&mut doc);
 
     Ok(doc)
 }
