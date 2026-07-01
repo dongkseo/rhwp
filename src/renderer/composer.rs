@@ -1679,6 +1679,22 @@ fn pua_plain_text_display(ch: char) -> Option<&'static str> {
     }
 }
 
+/// 한글 방점(U+302E/U+302F)을 렌더용 spacing 가운데 점 글리프로 치환한다. (Task #1735)
+///
+/// U+302E/U+302F 는 유니코드 결합문자(combining mark)라, 유효한 base 없이
+/// (줄 시작·공백 뒤) 셰이핑되면 브라우저/엔진이 dotted-circle(U+25CC)
+/// placeholder 를 삽입하고 톤 점을 그 위에 쌓아 한컴과 다르게 표기된다.
+/// 한컴은 방점을 독립 spacing 점으로 렌더하므로, 렌더 경로에서 결합 성질이
+/// 없는 spacing 점 글리프로 치환한다. IR 텍스트는 불변(측정/캐럿/텍스트추출
+/// 보존)이며, 측정 폭 정합은 text_measurement 의 전각 분류로 맞춘다.
+fn tone_mark_display(ch: char) -> Option<char> {
+    match ch {
+        '\u{302E}' => Some('\u{00B7}'), // 방점 → · MIDDLE DOT
+        '\u{302F}' => Some('\u{205A}'), // 쌍방점 → ⁚ TWO DOT PUNCTUATION (세로 두 점)
+        _ => None,
+    }
+}
+
 /// 일반 텍스트 렌더링/paint contract 경로에서 한컴 PUA 문자를 표시 문자열로 확장한다.
 ///
 /// HWP TAC filler `U+F081C` 는 레이아웃 측정에는 원문으로 남겨 0폭 규칙을
@@ -1696,7 +1712,9 @@ pub fn expand_pua_display_text(text: &str) -> String {
         if ch == '\u{F081C}' {
             continue;
         }
-        if let Some(replacement) = pua_plain_text_display(ch) {
+        if let Some(dot) = tone_mark_display(ch) {
+            out.push(dot);
+        } else if let Some(replacement) = pua_plain_text_display(ch) {
             out.push_str(replacement);
         } else if let Some(jamos) = map_pua_old_hangul(ch) {
             out.extend(jamos.iter().copied());
