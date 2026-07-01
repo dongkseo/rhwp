@@ -1824,7 +1824,11 @@ fn is_narrow_punctuation(c: char) -> bool {
         '\u{00B7}' |  // · MIDDLE DOT
         '\u{2018}' |  // ' LEFT SINGLE QUOTATION MARK
         '\u{2019}' |  // ' RIGHT SINGLE QUOTATION MARK
-        '\u{2027}' // ‧ HYPHENATION POINT
+        '\u{2027}' |  // ‧ HYPHENATION POINT
+        // [Task #1735] 한글 방점. 렌더 경로에서 좁은 가운데 점(·)으로 치환되므로
+        // 측정 폭도 narrow 로 맞춰 측정-렌더 폭 정합 유지(0.5em 기본 폴백 방지).
+        '\u{302E}' |  // 〮 HANGUL SINGLE DOT TONE MARK (방점)
+        '\u{302F}' // 〯 HANGUL DOUBLE DOT TONE MARK (쌍방점)
     )
 }
 
@@ -2442,6 +2446,31 @@ mod tests {
             style.font_size * 0.35,
             dot_advance
         );
+    }
+
+    /// [Task #1735] 방점 U+302E/U+302F 는 렌더 경로에서 좁은 가운데 점(·)으로
+    /// 치환·렌더되므로, 측정 폭도 narrow(≤0.35em)로 분류해 측정-렌더 폭 정합을
+    /// 유지한다(0.5em 기본 폴백 방지).
+    #[test]
+    fn test_narrow_glyph_tone_marks() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: UNREGISTERED_FONT.to_string(),
+            font_size: 16.667,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        for text in &["가\u{302E}나", "가\u{302F}나"] {
+            let positions = m.compute_char_positions(text, &style);
+            let advance = positions[2] - positions[1];
+            assert!(
+                advance <= style.font_size * 0.35,
+                "tone mark advance should be ≤ font_size * 0.35 ({:.2}), got {:.2} for {:?}",
+                style.font_size * 0.35,
+                advance,
+                text
+            );
+        }
     }
 
     #[test]
