@@ -2498,11 +2498,14 @@ impl LayoutEngine {
                                     text_height += eq_h;
                                 }
                             }
-                            Control::Table(t) => {
-                                // 중첩 표 높이: 행 높이 합산
-                                let nested_h = self.calc_nested_table_height(t, styles);
-                                text_height += nested_h;
-                            }
+                            // [Task #1658] 중첩 표 높이를 composed(text_height)에 가산하지 않는다.
+                            // 가산하면 stored vpos(last_seg_end, nested 포함) 및 아래 nested_bottom
+                            // 과 double-count 되어 total_content_height 가 ~2× 과대 → Center/Bottom
+                            // offset≈0 → 상단정렬(valign over-count, kkyu8925 제보). 중첩 표 기여는
+                            // final max 의 vpos_height(B)·nested_bottom 이 담당하며, composed 의
+                            // line_height 가 중첩을 반영하는 케이스는 composed 가, 미반영(과소)
+                            // 케이스는 nested_bottom 이 max 로 보정한다(#44 under-count 가드 보존).
+                            Control::Table(_) => {}
                             _ => {}
                         }
                     }
@@ -5186,10 +5189,13 @@ impl LayoutEngine {
                 // [Task #1658] 미세 fragment 낭비 페이지 방지: 거대 셀이 페이지를 가로질러 분할될
                 // 때 셀 내용 vpos reset(hard_break_before)이 촘촘하면, 잔여공간이 충분한데도 reset 마다
                 // 페이지를 끊어 2줄 이하만 담은 낭비 페이지가 양산된다(법령 별표 거대 셀:
-                // 별표1 5→4쪽, 산업통상부 별표4 33→28쪽). 현재 fragment 가 ≤2 유닛이고 유닛이 들어가며
-                // 잔여공간이 tolerance 초과면 그 reset break 를 흡수한다. #1488(가시 문단 사이 reset 을
-                // 3 유닛 소비 후 보존)은 j>start+2 라 영향 없음.
-                let tiny_fragment_waste = j <= start + 2
+                // 별표1 5→4쪽, 산업통상부 별표4 33→27쪽). 흡수 임계: continuation(start>0, 셀 중간
+                // 조각)은 ≤3 유닛, fresh(start==0)는 ≤2 유닛. continuation 의 reset 은 셀 내부
+                // page-wrap 인데 rhwp 가 한글 break 보다 1~3줄 일찍 capacity-break 하여 reset 직전
+                // 1~3줄 orphan 을 만든다(한글 COM 대조: 한글 break @line 5/40/75 vs rhwp 3·6/74·76).
+                // fresh 의 ≤2 는 #1488(가시 문단 사이 reset 3유닛 후 보존)을 깨지 않도록 유지한다.
+                let waste_thresh = if start > 0 { 3 } else { 2 };
+                let tiny_fragment_waste = j <= start + waste_thresh
                     && !u.empty_spacer
                     && h + u.height <= avail_height
                     && avail_height - h > HARD_BREAK_REMAINING_TOLERANCE_PX;
