@@ -2274,26 +2274,27 @@ impl TypesetEngine {
             // 가드 제외 조건:
             //   - 다음 pi 가 force_page_break (column_type==Page/Section) 인 경우 발동 안 함
             //     (정상 쪽나누기 신호 — 단독 페이지 발생 안 함, hwp-multi-001 회귀 차단)
-            let next_will_vpos_reset =
-                if !st.current_items.is_empty() && para_idx + 1 < paragraphs.len() {
-                    let next_para = &paragraphs[para_idx + 1];
-                    let next_force_break = next_para.column_type == ColumnBreakType::Page
-                        || next_para.column_type == ColumnBreakType::Section;
-                    if next_force_break {
-                        false
-                    } else {
-                        // [Task #470] 다단 섹션에서는 nv == 0 → nv < cl 로 완화 (컬럼 헤더 오프셋).
-                        // 단일 단에서는 partial-table split 회귀 (issue #418) 회피 위해 nv == 0 유지.
-                        paragraph_saved_vpos_reset_starts_new_page_after(
-                            para,
-                            next_para,
-                            st.col_count,
-                            st.is_hwp3_variant,
-                        )
-                    }
-                } else {
+            let next_will_vpos_reset = if (!st.current_items.is_empty() || !st.pages.is_empty())
+                && para_idx + 1 < paragraphs.len()
+            {
+                let next_para = &paragraphs[para_idx + 1];
+                let next_force_break = next_para.column_type == ColumnBreakType::Page
+                    || next_para.column_type == ColumnBreakType::Section;
+                if next_force_break {
                     false
-                };
+                } else {
+                    // [Task #470] 다단 섹션에서는 nv == 0 → nv < cl 로 완화 (컬럼 헤더 오프셋).
+                    // 단일 단에서는 partial-table split 회귀 (issue #418) 회피 위해 nv == 0 유지.
+                    paragraph_saved_vpos_reset_starts_new_page_after(
+                        para,
+                        next_para,
+                        st.col_count,
+                        st.is_hwp3_variant,
+                    )
+                }
+            } else {
+                false
+            };
 
             // [Task #1725 v2] 현재 일반텍스트 tail 과 새 페이지(vpos-reset) 사이에 빈 문단이 1개
             // 끼어 immediate-next reset 을 놓치는 각주-tail 케이스(국제고속선기준 pi=537/2378).
@@ -2330,6 +2331,27 @@ impl TypesetEngine {
                 //  잘못 skip 되어 표 누락).
                 let is_empty_no_ctrl = para.text.is_empty() && para.controls.is_empty();
                 if is_empty_no_ctrl {
+                    // 페이지 하단 vpos 를 가진 빈 문단이 다음 vpos=0 본문을 잇는 경우.
+                    // fit 가능으로 emit 하더라도 뒤쪽 overflow 방어에서 빈 문단 단독 페이지로
+                    // 이동할 수 있으므로, fit 판정 전에 0-높이로 흡수한다.
+                    let page_bottom_empty_reset_bridge =
+                        para.line_segs.first().is_some_and(|seg| {
+                            let body_h_hu = crate::renderer::px_to_hwpunit(
+                                st.layout.body_area.height,
+                                self.dpi,
+                            );
+                            seg.vertical_pos > body_h_hu * 70 / 100
+                        });
+                    if page_bottom_empty_reset_bridge {
+                        st.hidden_empty_paras.insert(para_idx);
+                        if !st.current_items.is_empty() {
+                            st.current_items.push(PageItem::FullParagraph {
+                                para_index: para_idx,
+                            });
+                        }
+                        continue;
+                    }
+
                     // [#1648] 빈 문단이 현재 페이지에 들어가면 정상 배치한다(한글 동작 —
                     //   페이지 하단에 빈 줄 1개). 들어가지 않을 때만 skip 하여 단독 빈 페이지를
                     //   차단한다. 종전엔 fit 무검사로 fit 하는 빈 문단까지 드롭하여, 페이지를
@@ -13430,6 +13452,82 @@ mod tests {
                 PageItem::FullParagraph { para_index: 1 }
             ]
         ));
+        assert!(matches!(
+            result.pages[1].column_contents[0].items.as_slice(),
+            [PageItem::FullParagraph { para_index: 2 }]
+        ));
+    }
+
+    #[test]
+    fn page_bottom_empty_paragraph_before_vpos_reset_does_not_create_blank_page() {
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let layout = PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI);
+        let body_height_hu =
+            crate::renderer::px_to_hwpunit(layout.available_body_height(), DEFAULT_DPI);
+        let line_height = 1000;
+        let line_spacing = 400;
+
+        let paras = vec![
+            Paragraph {
+                text: "lead".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: body_height_hu - 100,
+                    text_height: body_height_hu - 100,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                line_segs: vec![LineSeg {
+                    vertical_pos: body_height_hu - 1200,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                text: "next page".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &[],
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        assert_eq!(result.pages.len(), 2);
+        assert!(result.hidden_empty_paras.contains(&1));
+        let has_empty_only_page = result.pages.iter().any(|page| {
+            page.column_contents.iter().any(|col| {
+                matches!(
+                    col.items.as_slice(),
+                    [PageItem::FullParagraph { para_index: 1 }]
+                )
+            })
+        });
+        assert!(!has_empty_only_page);
         assert!(matches!(
             result.pages[1].column_contents[0].items.as_slice(),
             [PageItem::FullParagraph { para_index: 2 }]
