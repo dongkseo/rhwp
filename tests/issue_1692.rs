@@ -3,12 +3,20 @@
 use rhwp::model::control::Control;
 use rhwp::model::footnote::Endnote;
 use rhwp::model::paragraph::Paragraph;
-use rhwp::model::style::HeadType;
+use rhwp::model::style::{Alignment, HeadType};
+use rhwp::parser::ole_container::is_hmapsi_ole_container;
 use rhwp::parser::parse_document;
+use rhwp::wasm_api::HwpDocument;
+use serde_json::Value;
 
 fn load(path: &str) -> rhwp::model::document::Document {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     parse_document(&bytes).unwrap_or_else(|e| panic!("parse {path}: {e:?}"))
+}
+
+fn load_wasm_doc(path: &str) -> HwpDocument {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    HwpDocument::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse wasm {path}: {e:?}"))
 }
 
 fn collect_endnotes<'a>(paragraphs: &'a [Paragraph], out: &mut Vec<&'a Endnote>) {
@@ -59,6 +67,89 @@ fn collect_endnotes_in_controls<'a>(controls: &'a [Control], out: &mut Vec<&'a E
             _ => {}
         }
     }
+}
+
+fn first_header_paragraph<'a>(
+    doc: &'a rhwp::model::document::Document,
+    needle: &str,
+) -> &'a Paragraph {
+    doc.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|paragraph| paragraph.controls.iter())
+        .find_map(|control| match control {
+            Control::Header(header) => header
+                .paragraphs
+                .iter()
+                .find(|paragraph| paragraph.text.contains(needle)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("header paragraph containing {needle}"))
+}
+
+fn page_render_tree(doc: &HwpDocument, page: u32) -> Value {
+    let json = doc
+        .get_page_render_tree(page)
+        .unwrap_or_else(|err| panic!("page render tree {page}: {err:?}"));
+    serde_json::from_str(&json).unwrap_or_else(|err| panic!("parse render tree {page}: {err}"))
+}
+
+fn text_width_in_tree(node: &Value, ancestor_type: &str, text: &str) -> Option<f64> {
+    fn walk(node: &Value, ancestor_type: &str, text: &str, in_ancestor: bool) -> Option<f64> {
+        let node_type = node.get("type").and_then(Value::as_str).unwrap_or("");
+        let now_in_ancestor = in_ancestor || node_type == ancestor_type;
+        if now_in_ancestor
+            && node_type == "TextRun"
+            && node.get("text").and_then(Value::as_str) == Some(text)
+        {
+            return node
+                .get("bbox")
+                .and_then(|bbox| bbox.get("w"))
+                .and_then(Value::as_f64);
+        }
+
+        node.get("children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find_map(|child| walk(child, ancestor_type, text, now_in_ancestor))
+    }
+
+    walk(node, ancestor_type, text, false)
+}
+
+fn text_concat_in_tree(node: &Value, ancestor_type: &str) -> String {
+    fn walk(node: &Value, ancestor_type: &str, in_ancestor: bool, out: &mut String) {
+        let node_type = node.get("type").and_then(Value::as_str).unwrap_or("");
+        let now_in_ancestor = in_ancestor || node_type == ancestor_type;
+        if now_in_ancestor && node_type == "TextRun" {
+            if let Some(text) = node.get("text").and_then(Value::as_str) {
+                out.push_str(text);
+            }
+        }
+
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            for child in children {
+                walk(child, ancestor_type, now_in_ancestor, out);
+            }
+        }
+    }
+
+    let mut out = String::new();
+    walk(node, ancestor_type, false, &mut out);
+    out
+}
+
+fn contains_node_type(node: &Value, node_type: &str) -> bool {
+    if node.get("type").and_then(Value::as_str) == Some(node_type) {
+        return true;
+    }
+
+    node.get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|child| contains_node_type(child, node_type))
 }
 
 #[test]
@@ -235,6 +326,83 @@ fn issue_1692_so_sueop_hwp3_endnotes_follow_hwpx_numbering_and_width() {
     assert_eq!(hwp3_doc.doc_info.numberings[0].level_formats[0], "^1.");
     assert_eq!(hwp3_doc.doc_info.numberings[0].level_formats[1], "^2)");
     assert_eq!(hwp3_doc.doc_info.numberings[0].level_formats[2], "(^3)");
+}
+
+#[test]
+fn issue_1692_so_sueop_header_footer_page5_matches_reference_contract() {
+    let hwp3_model = load("samples/SO-SUEOP.hwp");
+    let hwpx_model = load("samples/SO-SUEOP.hwpx");
+
+    let hwp3_header = first_header_paragraph(&hwp3_model, "수업용소설해설");
+    let hwpx_header = first_header_paragraph(&hwpx_model, "수업용소설해설");
+    assert_eq!(
+        hwp3_model.doc_info.para_shapes[hwp3_header.para_shape_id as usize].alignment,
+        Alignment::Justify,
+        "HWP3 원본 머리말은 단일 줄 Justify이며 렌더 단계에서 머리말 폭으로 분배해야 한다"
+    );
+    assert_eq!(
+        hwpx_model.doc_info.para_shapes[hwpx_header.para_shape_id as usize].alignment,
+        Alignment::Justify,
+        "HWPX DISTRIBUTE_SPACE 머리말 문단은 공백 기반 Justify로 파싱되어야 한다"
+    );
+
+    let hwp3_doc = load_wasm_doc("samples/SO-SUEOP.hwp");
+    let hwpx_doc = load_wasm_doc("samples/SO-SUEOP.hwpx");
+    assert_eq!(hwp3_doc.page_count(), 46);
+    assert_eq!(hwpx_doc.page_count(), 46);
+
+    let hwp3_tree = page_render_tree(&hwp3_doc, 4);
+    let hwpx_tree = page_render_tree(&hwpx_doc, 4);
+
+    for tree in [&hwp3_tree, &hwpx_tree] {
+        let footer_text = text_concat_in_tree(tree, "Footer");
+        assert!(
+            footer_text.contains("협성고등학교"),
+            "page 5 footer school label must render"
+        );
+        assert!(
+            footer_text.contains('5'),
+            "page 5 footer AutoNumber(Page) must render the current page number"
+        );
+    }
+
+    let hwp3_header_width = text_width_in_tree(&hwp3_tree, "Header", "수업용소설해설 박전현선생")
+        .expect("HWP3 page 5 distributed header text width");
+    assert!(
+        hwp3_header_width > 500.0,
+        "HWP3 justified header should span the header width, got {hwp3_header_width}"
+    );
+
+    let hwpx_header_width = text_width_in_tree(&hwpx_tree, "Header", "수업용소설해설 박전현선생")
+        .expect("HWPX page 5 distributed header text width");
+    assert!(
+        hwpx_header_width > 500.0,
+        "HWPX distributed header should span the header width, got {hwpx_header_width}"
+    );
+}
+
+#[test]
+fn issue_1692_so_sueop_hwpx_title_ole_renders_from_embedded_preview() {
+    let hwpx_model = load("samples/SO-SUEOP.hwpx");
+    let ole_content = hwpx_model
+        .bin_data_content
+        .first()
+        .expect("SO-SUEOP HWPX must load ole1.ole as BinData #1");
+    assert!(
+        is_hmapsi_ole_container(&ole_content.data),
+        "SO-SUEOP title OLE must be identified as HMapsi fallback content"
+    );
+
+    let hwpx_doc = load_wasm_doc("samples/SO-SUEOP.hwpx");
+    let tree = page_render_tree(&hwpx_doc, 0);
+    assert!(
+        contains_node_type(&tree, "RawSvg") || contains_node_type(&tree, "Image"),
+        "SO-SUEOP page 1 title OLE must render as image-like content"
+    );
+    assert!(
+        !contains_node_type(&tree, "Placeholder"),
+        "SO-SUEOP page 1 title OLE must not fall back to Placeholder"
+    );
 }
 
 #[test]

@@ -297,6 +297,58 @@ fn reflow_matrix_textbox_para(
 }
 
 impl LayoutEngine {
+    fn push_hwpx_hmapsi_preview_clip_node(
+        &self,
+        tree: &mut PageRenderTree,
+        parent: &mut RenderNode,
+        bbox: BoundingBox,
+        cfb_data: &[u8],
+    ) -> bool {
+        if !self.is_hwpx_source.get()
+            || !crate::parser::ole_container::is_hmapsi_ole_container(cfb_data)
+        {
+            return false;
+        }
+        let (page_width, page_height) = match &tree.root.node_type {
+            RenderNodeType::Page(page) if page.page_index == 0 => (page.width, page.height),
+            _ => return false,
+        };
+        let preview = self.hwpx_page_preview.borrow();
+        let Some(preview) = preview.as_ref() else {
+            return false;
+        };
+
+        use base64::Engine;
+        let node_id = tree.next_id();
+        let clip_id = format!("hmapsi-preview-clip-{node_id}");
+        let href = format!(
+            "data:{};base64,{}",
+            preview.mime,
+            base64::engine::general_purpose::STANDARD.encode(&preview.data)
+        );
+        let svg = format!(
+            "<defs><clipPath id=\"{}\" clipPathUnits=\"userSpaceOnUse\"><rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\"/></clipPath></defs>\
+<image x=\"0\" y=\"0\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"none\" clip-path=\"url(#{})\" xlink:href=\"{}\" href=\"{}\"/>",
+            clip_id,
+            bbox.x,
+            bbox.y,
+            bbox.width,
+            bbox.height,
+            page_width,
+            page_height,
+            clip_id,
+            href,
+            href
+        );
+        let node = RenderNode::new(
+            node_id,
+            RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode { svg }),
+            bbox,
+        );
+        parent.children.push(node);
+        true
+    }
+
     pub(crate) fn scan_textbox_overflow(
         &self,
         paragraphs: &[Paragraph],
@@ -1851,6 +1903,16 @@ impl LayoutEngine {
                                     rendered = true;
                                 }
                             }
+                        }
+                        if !rendered
+                            && self.push_hwpx_hmapsi_preview_clip_node(
+                                tree,
+                                parent,
+                                BoundingBox::new(render_x, render_y, render_w, render_h),
+                                &content.data,
+                            )
+                        {
+                            rendered = true;
                         }
                     } // !rendered (CFB path)
                 }
