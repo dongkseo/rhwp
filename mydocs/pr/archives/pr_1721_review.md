@@ -9,6 +9,7 @@
 - 관련 이슈: #1720
 - 문서 작성 시점 상태: `MERGEABLE`, GitHub Actions 통과(원 PR 기준)
 - 처리 방침: #1719와 함께 `upstream/devel` 기준 통합 cherry-pick PR 로 수용 후보
+- 최종 처리: 통합 PR #1727 merge commit `150ca316ee557d6bf95928302166e037d7467b03` 으로 반영 완료, 원 PR #1721 supersede close 완료
 
 ## 변경 요약
 
@@ -74,3 +75,22 @@ Blocking finding 없음.
 ## 최종 판단
 
 통합 cherry-pick PR 로 수용 가능.
+
+## merge 후 확정 기록
+
+- 통합 PR: #1727
+- merge commit: `150ca316ee557d6bf95928302166e037d7467b03`
+- 원 PR #1721 상태: supersede close 완료
+- 관련 이슈 #1720 상태: 수동 close 완료
+- #1720 인프라 사용 후속 이슈: #1728 `RowBreak 표 continuation 5~6쪽 PDF 기준 시각 차이 보정`
+- 후속 샘플 보강:
+  - `samples/table_giant_cell_overfill.hwpx`
+  - `pdf/table_giant_cell_overfill-2024.pdf`
+  - `samples/table_scattered_header_rowbreak.hwp`
+  - `pdf/table_scattered_header_rowbreak-2024.pdf`
+
+### 후속 확인
+
+macOS 로컬에서는 Windows 한글 COM end-to-end를 실행하지 않았으므로 #1720 도구의 한글 대조 전체
+파이프라인은 후속 환경에서 계속 확인한다. 이번 후속 PR에는 #1728 재현에 필요한 PDF 기준 파일과
+HWP/HWPX 비교 입력을 함께 포함한다.

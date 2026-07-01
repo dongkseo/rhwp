@@ -10,6 +10,7 @@
 - 관련 이슈: #1718
 - 문서 작성 시점 상태: `MERGEABLE`, `Build & Test` 진행 중(원 PR 기준)
 - 처리 방침: #1721과 함께 `upstream/devel` 기준 통합 cherry-pick PR 로 수용 후보
+- 최종 처리: 통합 PR #1727 merge commit `150ca316ee557d6bf95928302166e037d7467b03` 으로 반영 완료, 원 PR #1719 supersede close 완료
 
 ## 변경 요약
 
@@ -72,3 +73,22 @@ Blocking finding 없음.
 ## 최종 판단
 
 통합 cherry-pick PR 로 수용 가능.
+
+## merge 후 확정 기록
+
+- 통합 PR: #1727
+- merge commit: `150ca316ee557d6bf95928302166e037d7467b03`
+- 원 PR #1719 상태: supersede close 완료
+- 관련 이슈 #1718 상태: 수동 close 완료
+- 후속 이슈: #1728 `RowBreak 표 continuation 5~6쪽 PDF 기준 시각 차이 보정`
+- 후속 샘플 보강:
+  - `samples/table_giant_cell_overfill.hwpx`
+  - `pdf/table_giant_cell_overfill-2024.pdf`
+  - `samples/table_scattered_header_rowbreak.hwp`
+  - `pdf/table_scattered_header_rowbreak-2024.pdf`
+
+### 후속 이슈 분리 사유
+
+#1727은 대형 RowBreak 셀의 over-fill under-pagination을 완화해 대표 샘플을 40쪽에서 42쪽으로
+개선했다. 다만 `table_giant_cell_overfill.hwp`와 `table_scattered_header_rowbreak.hwp`의 5~6쪽은
+PDF 기준 페이지 컷과 상하 배치가 아직 다르므로, merge를 막지 않고 #1728로 분리 추적한다.
