@@ -5430,7 +5430,7 @@ impl LayoutEngine {
         color: crate::model::ColorRef,
     ) -> f64 {
         y_offset += hwpunit_to_px(margin_above as i32, self.dpi);
-        let has_separator = line_type != 0 && line_width_raw != 0;
+        let has_separator = line_type != 0 || line_width_raw != 0 || separator_length != 0;
         let line_width = if has_separator {
             let line_width = border_width_to_px(line_width_raw).max(0.5);
             let sep_length = if separator_length > 0 {

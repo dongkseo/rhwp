@@ -5032,10 +5032,10 @@ impl TypesetEngine {
                                 && next_next_endnote_first_para_fit_height
                                     .is_some_and(|next_h| next_h <= 18.0)
                             {
-                                // SO-SUEOP p43처럼 마지막 단 하단에서 2줄 풀이 뒤에
-                                // 짧은 한 줄 풀이들이 이어지는 경우, 한컴은 2줄 풀이의
-                                // 첫 줄만 현재 쪽에 남기고 tail 한 줄을 다음 쪽 첫 줄로
-                                // 넘긴다. 다음다음 풀이가 긴 191→192→193 경계는 제외한다.
+                                // 마지막 단 하단에서 2줄 풀이 뒤에 짧은 한 줄 풀이들이
+                                // 이어지는 비가시 구분선 미주는, 한컴처럼 2줄 풀이의 첫 줄만
+                                // 현재 쪽에 남기고 tail 한 줄을 다음 쪽 첫 줄로 넘긴다.
+                                // 다음다음 풀이가 긴 경계는 제외한다.
                                 Some(1)
                             } else {
                                 split_endnote_to_fit
@@ -5469,8 +5469,8 @@ impl TypesetEngine {
                             {
                                 // 비가시 구분선의 기본 미주에서는 저장 vpos rewind가
                                 // 있더라도 현재 단에 전체 문단이 실제 흐름 높이로 들어가면
-                                // 한컴처럼 문단을 쪼개지 않는다. 여기서 split하면 SO-SUEOP
-                                // 56번처럼 다음 미주들이 한 단 늦게 밀린다.
+                                // 한컴처럼 문단을 쪼개지 않는다. 여기서 split하면 뒤따르는
+                                // 미주들이 한 단 늦게 밀릴 수 있다.
                                 internal_rewind_split = None;
                             }
                             let new_endnote_stale_forward_vpos = compact_endnote_separator_profile
@@ -13187,9 +13187,6 @@ impl EndnoteFlowProfile {
     }
 
     fn separator_height_px(self, dpi: f64) -> f64 {
-        if !self.visible_separator {
-            return 0.0;
-        }
         let line_height = if self.visible_separator {
             border_width_to_px(self.separator_line_width).max(0.5)
         } else {
@@ -13231,13 +13228,10 @@ fn endnote_has_compact_separator_below(shape: &FootnoteShape) -> bool {
 }
 
 fn endnote_has_visible_separator(shape: &FootnoteShape) -> bool {
-    shape.separator_line_type != 0 && shape.separator_line_width != 0
+    shape.separator_line_type != 0 || shape.separator_line_width != 0 || shape.separator_length != 0
 }
 
 fn endnote_separator_height_px(shape: &FootnoteShape, dpi: f64) -> f64 {
-    if !endnote_has_visible_separator(shape) {
-        return 0.0;
-    }
     let line_height = if endnote_has_visible_separator(shape) {
         border_width_to_px(shape.separator_line_width).max(0.5)
     } else {

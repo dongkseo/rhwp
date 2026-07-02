@@ -662,11 +662,20 @@ fn issue_1692_so_sueop_hwp3_page22_relationship_box_uses_table_flow() {
         .expect("HWP3 page 22 relationship diagram table bbox");
     let hwp3_body = text_bbox_containing_in_tree(&hwp3_tree, "윤두꺼비 시절 부친 말대가리")
         .expect("HWP3 page 22 first body line bbox");
+    let hwpx_body = text_bbox_containing_in_tree(&hwpx_tree, "윤두꺼비 시절 부친 말대가리")
+        .expect("HWPX page 22 first body line bbox");
+    let hwp3_table_bottom = hwp3_table.1 + hwp3_table.3;
     assert!(
-        hwp3_body.1 >= hwp3_table.1 + hwp3_table.3 + 4.0,
-        "HWP3 p22 body y={} must start below relationship table bottom={}",
+        hwp3_body.1 >= hwp3_table_bottom - 0.5 && hwp3_body.1 <= hwp3_table_bottom + 1.5,
+        "HWP3 p22 body y={} must start immediately after relationship table bottom={}",
         hwp3_body.1,
-        hwp3_table.1 + hwp3_table.3
+        hwp3_table_bottom
+    );
+    assert!(
+        (hwp3_body.1 - hwpx_body.1).abs() <= 1.0,
+        "HWP3 p22 first body y={} must match HWPX y={}",
+        hwp3_body.1,
+        hwpx_body.1
     );
     let hwp3_body_text = text_concat_in_tree(&hwp3_tree, "Body");
     for expected in [
@@ -686,13 +695,14 @@ fn issue_1692_so_sueop_hwp3_page22_relationship_box_uses_table_flow() {
 
     let hwp3_follow = text_bbox_in_tree(&hwp3_tree, " 그와 유사한 인물은?")
         .expect("HWP3 page 22 follow-up question bbox");
-    let hwpx_follow = text_bbox_in_tree(&hwpx_tree, " 그와 유사한 인물은?")
-        .expect("HWPX page 22 follow-up question bbox");
+    // SO-SUEOP-2024.pdf p22에서 pdftotext -bbox-layout로 추출한 yMin=359.796pt를
+    // 96dpi 렌더 좌표로 환산한 기준값이다.
+    let pdf_follow_y = 359.796 * 96.0 / 72.0;
     assert!(
-        (hwp3_follow.1 - hwpx_follow.1).abs() <= 3.0,
-        "HWP3 follow-up question y={} must match HWPX y={}",
+        (hwp3_follow.1 - pdf_follow_y).abs() <= 1.0,
+        "HWP3 follow-up question y={} must match PDF y={}",
         hwp3_follow.1,
-        hwpx_follow.1
+        pdf_follow_y
     );
 }
 

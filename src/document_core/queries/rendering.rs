@@ -35,24 +35,10 @@ fn uses_hwp3_origin_page_tolerance(document: &Document) -> bool {
 }
 
 fn uses_hwp3_origin_flow_spacing_before(document: &Document) -> bool {
-    if document.is_hwp3_variant {
-        return true;
-    }
-    if document.header.version.major != 3 {
-        return false;
-    }
-
-    let total_paragraphs: usize = document.sections.iter().map(|s| s.paragraphs.len()).sum();
-    if total_paragraphs <= 50 {
-        return false;
-    }
-
-    let para_shape_ratio = document.doc_info.para_shapes.len() as f64 / total_paragraphs as f64;
-    // sample16 계열 HWP3 원본은 paragraph마다 독립 ParaShape가 매우 풍부해
-    // 한컴 3mm 격자 정합을 위해 기존 spacing_before 복원 경로를 유지한다.
-    // SO-SUEOP처럼 HWPX 기준본과 같은 HWP3 원본은 이 비율이 낮아 기본 1/2
-    // 해소값을 그대로 써야 p1 표지 배치가 맞는다.
-    para_shape_ratio > 2.0
+    // HWP3-origin HWP5 변환본은 parser 단계에서 ParaShape spacing 계열을 절반으로
+    // 정규화하므로, 본문 흐름 계산에서는 원래 spacing_before를 복원한다.
+    // 원본 HWP3는 HWP3 parser가 만든 spacing 값을 기준으로 삼아 여기서 재확대하지 않는다.
+    document.is_hwp3_variant
 }
 
 fn should_insert_hwp3_title_filler_page(

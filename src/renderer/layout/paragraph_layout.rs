@@ -5823,8 +5823,8 @@ pub fn map_pua_bullet_char(ch: char) -> char {
             // 부재 → render-time substitution. 측정/렌더링 양쪽 자동 적용.
             // sample11.hwp 머리말/꼬리말 가로선 패턴 (각 85+ 회) 시각 정합.
             0xF080F => '\u{2501}', // ━ BOX DRAWINGS HEAVY HORIZONTAL (한컴 — 굵은 가로선)
-            // [Task #1692 Stage 9] SO-SUEOP 관계도 선문자.
-            // 한컴은 U+F0811/F0817/F081A를 자체 글리프로 이어진 계보선처럼 렌더한다.
+            // [Task #1692 Stage 9] HWP3 관계도 계열 선문자.
+            // 한컴은 U+F0811/F0817/F081A를 자체 글리프로 이어진 선처럼 렌더한다.
             // 공개 폰트 경로에서는 .notdef 두부가 나오므로 대응 가능한 box drawing으로 낮춘다.
             0xF0811 => '\u{250C}', // ┌ BOX DRAWINGS LIGHT DOWN AND RIGHT
             0xF0817 => '\u{2514}', // └ BOX DRAWINGS LIGHT UP AND RIGHT

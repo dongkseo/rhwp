@@ -200,112 +200,29 @@ fn reset_hwp3_plain_paragraph_text(para: &mut crate::model::paragraph::Paragraph
     para.has_para_text = !para.text.is_empty();
 }
 
-fn reset_hwp3_plain_paragraph_text_with_control_positions(
-    para: &mut crate::model::paragraph::Paragraph,
-    text: &str,
-    control_positions: &[usize],
-) {
-    para.text = text.to_string();
-    para.char_offsets.clear();
-
-    let mut utf16_pos = 0u32;
-    let mut last_offset = 0u32;
-    for (idx, ch) in para.text.chars().enumerate() {
-        let preceding_controls = control_positions.iter().filter(|&&pos| pos <= idx).count();
-        let offset = utf16_pos + preceding_controls as u32 * 8;
-        para.char_offsets.push(offset);
-        last_offset = offset + ch.encode_utf16(&mut [0; 2]).len() as u32;
-        utf16_pos += ch.encode_utf16(&mut [0; 2]).len() as u32;
-    }
-
-    para.char_count = last_offset;
-    para.has_para_text = !para.text.is_empty();
+fn hwp3_paragraphs_have_renderable_content(
+    paragraphs: &[crate::model::paragraph::Paragraph],
+) -> bool {
+    paragraphs
+        .iter()
+        .any(|para| !para.text.trim().is_empty() || !para.controls.is_empty())
 }
 
-fn repair_hwp3_relationship_diagram_table(table: &mut crate::model::table::Table) {
-    if table.row_count != 1 || table.col_count != 1 || table.cells.len() != 1 {
-        return;
+fn hwp3_is_treat_as_char_visual_control(ctrl: &crate::model::control::Control) -> bool {
+    match ctrl {
+        crate::model::control::Control::Picture(pic) => pic.common.treat_as_char,
+        crate::model::control::Control::Shape(shape) => shape.common().treat_as_char,
+        _ => false,
     }
-    let Some(cell) = table.cells.first_mut() else {
-        return;
-    };
-    if cell.paragraphs.len() < 2 {
-        return;
-    }
-
-    let first_words: Vec<&str> = cell.paragraphs[0].text.split_whitespace().collect();
-    if first_words != ["윤직원", "윤창식", "윤종수", "윤경손"] {
-        return;
-    }
-    let second = &cell.paragraphs[1].text;
-    if !second.contains("춘섬(15세 기생)") || !second.contains("윤종학") {
-        return;
-    }
-
-    let h = "\u{F081A}";
-    let line0 = format!(
-        "① 윤직원{}② 윤창식\u{F0811}{}③ 윤종수{}⑤ 윤경손",
-        h.repeat(8),
-        h.repeat(5),
-        h.repeat(5),
-    );
-    let line1 = format!("     춘섬(15세 기생)      \u{F0817}{}④ 윤종학", h.repeat(5),);
-    reset_hwp3_plain_paragraph_text(&mut cell.paragraphs[0], &line0);
-    reset_hwp3_plain_paragraph_text(&mut cell.paragraphs[1], &line1);
 }
 
-fn prefix_hwp3_so_sueop_marker(
-    para: &mut crate::model::paragraph::Paragraph,
-    needle: &str,
-    marker: &str,
-) {
-    if !para.text.starts_with(' ') || !para.text.contains(needle) {
-        return;
-    }
-    let text = format!("{marker}{}", para.text);
-    reset_hwp3_plain_paragraph_text(para, &text);
-}
-
-// SO-SUEOP HWP3 원본의 일부 원문자/문장부호는 legacy 특수문자 조합으로 저장되어
-// HWPX 기준 텍스트와 다르게 FFFC 또는 공백으로 남는다. 확인된 22쪽 문맥에만 한정한다.
-fn fixup_hwp3_so_sueop_p22_markers(doc: &mut crate::model::document::Document) {
-    let Some(section) = doc.sections.first_mut() else {
-        return;
-    };
-
-    for para in &mut section.paragraphs {
-        if para.text.starts_with('\u{FFFC}') && para.text.contains("윤두꺼비 시절 부친") {
-            let mut text = para.text.clone();
-            text = text.replacen('\u{FFFC}', "①", 1);
-            text = text.replacen("① 윤두꺼비", "① ․윤두꺼비", 1);
-            text = text.replace("다고절규       돈으로", "다고절규      ․ 돈으로");
-            text = text.replace("금도금을 함     춘섬", "금도금을 함     ․춘섬");
-            text = text.replace("공짜로 탐     풍채를", "공짜로 탐     ․풍채를");
-            text = text.replace("돈을 안줌     아침에", "돈을 안줌     ․아침에");
-            text = text.replace("줌을 사마심     그의", "줌을 사마심     ․그의");
-            let endnote_pos = text
-                .find("가문의 영예(")
-                .map(|byte_pos| {
-                    text[..byte_pos].chars().count() + "가문의 영예(".chars().count() + 5
-                })
-                .unwrap_or_else(|| text.chars().count());
-            reset_hwp3_plain_paragraph_text_with_control_positions(para, &text, &[0, endnote_pos]);
-            continue;
-        }
-
-        prefix_hwp3_so_sueop_marker(para, "상훈은유학까지", "②");
-        prefix_hwp3_so_sueop_marker(para, "종수는 할아버지가", "③");
-        prefix_hwp3_so_sueop_marker(para, "종학은 이 작품에서", "④");
-        prefix_hwp3_so_sueop_marker(para, "경손은 할아버지가", "⑤");
-
-        if para.text == "판소리 사설조의 문체 , 경어체   풍자의 효과를 높임" {
-            reset_hwp3_plain_paragraph_text(
-                para,
-                "판소리 사설조의 문체 , 경어체  → 풍자의 효과를 높임",
-            );
-        } else if para.text == "사실주의의 효과  고발과 항거의 의미가 있다." {
-            reset_hwp3_plain_paragraph_text(para, "사실주의의 효과 → 고발과 항거의 의미가 있다.");
-        }
+fn strip_hwp3_single_tac_visual_marker(para: &mut crate::model::paragraph::Paragraph) {
+    if para.text == "\u{FFFC}"
+        && para.controls.len() == 1
+        && hwp3_is_treat_as_char_visual_control(&para.controls[0])
+    {
+        reset_hwp3_plain_paragraph_text(para, "");
+        para.has_para_text = true;
     }
 }
 
@@ -458,7 +375,7 @@ fn hwp3_para_flow_spacing(para_shape: Option<&crate::model::style::ParaShape>) -
 
 fn hwp3_note_column_width_hu(column_width_hu: i32) -> i32 {
     // HWP3 미주는 HWPX 기준 출력처럼 본문 영역 안에서 2단으로 흘린다.
-    // SO-SUEOP 기준의 단 간격은 5mm에 해당하는 1416 HWPUNIT로 관측된다.
+    // 한글 97 계열의 기본 미주 단 간격은 5mm에 해당하는 1416 HWPUNIT로 본다.
     const HWP3_NOTE_COLUMN_GAP_HU: i32 = 1416;
     column_width_hu
         .saturating_sub(HWP3_NOTE_COLUMN_GAP_HU)
@@ -1339,15 +1256,13 @@ pub(crate) fn parse_paragraph_list(
                                 3 => crate::model::shape::CaptionDirection::Right,
                                 _ => crate::model::shape::CaptionDirection::Bottom,
                             };
-                            table.caption = Some(crate::model::shape::Caption {
-                                direction: caption_direction,
-                                width: caption_width as _,
-                                paragraphs: caption_paras,
-                                ..Default::default()
-                            });
-
-                            if obj_type == 1 {
-                                repair_hwp3_relationship_diagram_table(&mut table);
+                            if hwp3_paragraphs_have_renderable_content(&caption_paras) {
+                                table.caption = Some(crate::model::shape::Caption {
+                                    direction: caption_direction,
+                                    width: caption_width as _,
+                                    paragraphs: caption_paras,
+                                    ..Default::default()
+                                });
                             }
 
                             if obj_type == 2 {
@@ -1561,64 +1476,65 @@ pub(crate) fn parse_paragraph_list(
                                 _ => crate::model::shape::CaptionDirection::Bottom,
                             };
 
-                            let caption = crate::model::shape::Caption {
-                                direction: caption_direction,
-                                width: caption_width as _,
-                                paragraphs: caption_paras,
-                                ..Default::default()
-                            };
+                            let caption = hwp3_paragraphs_have_renderable_content(&caption_paras)
+                                .then(|| crate::model::shape::Caption {
+                                    direction: caption_direction,
+                                    width: caption_width as _,
+                                    paragraphs: caption_paras,
+                                    ..Default::default()
+                                });
 
                             if pic_type == 0 || pic_type == 1 || pic_type == 2 {
-                                pic.caption = Some(caption);
+                                pic.caption = caption;
                                 parsed_picture = Some(pic);
                             } else if pic_type == 3 {
                                 // For drawing objects, we might attach the caption if the root is a known shape
                                 if let Some(mut drawing_obj) = parsed_drawing_object.take() {
                                     match &mut drawing_obj {
                                         crate::model::shape::ShapeObject::Group(g) => {
-                                            g.caption = Some(caption);
+                                            g.caption = caption.clone();
                                             pic.common.width = g.common.width;
                                             pic.common.height = g.common.height;
                                             g.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Line(l) => {
-                                            l.drawing.caption = Some(caption);
+                                            l.drawing.caption = caption.clone();
                                             pic.common.width = l.common.width;
                                             pic.common.height = l.common.height;
                                             l.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Rectangle(r) => {
-                                            r.drawing.caption = Some(caption);
+                                            r.drawing.caption = caption.clone();
                                             pic.common.width = r.common.width;
                                             pic.common.height = r.common.height;
                                             r.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Ellipse(e) => {
-                                            e.drawing.caption = Some(caption);
+                                            e.drawing.caption = caption.clone();
                                             pic.common.width = e.common.width;
                                             pic.common.height = e.common.height;
                                             e.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Arc(a) => {
-                                            a.drawing.caption = Some(caption);
+                                            a.drawing.caption = caption.clone();
                                             pic.common.width = a.common.width;
                                             pic.common.height = a.common.height;
                                             a.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Polygon(p) => {
-                                            p.drawing.caption = Some(caption);
+                                            p.drawing.caption = caption.clone();
                                             pic.common.width = p.common.width;
                                             pic.common.height = p.common.height;
                                             p.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Curve(c) => {
-                                            c.drawing.caption = Some(caption);
+                                            c.drawing.caption = caption.clone();
                                             pic.common.width = c.common.width;
                                             pic.common.height = c.common.height;
                                             c.common = pic.common.clone();
                                         }
                                         crate::model::shape::ShapeObject::Picture(p) => {
-                                            p.caption = Some(caption);
+                                            p.caption = caption.clone();
                                             pic.common.width = p.common.width;
                                             pic.common.height = p.common.height;
                                             p.common = pic.common.clone();
@@ -1832,11 +1748,37 @@ pub(crate) fn parse_paragraph_list(
                             // 헤더 직후가 정상 단락 내용이므로 추가 skip 없음.
                         }
 
-                        // ch=15(숨은설명), ch=16(머리말/꼬리말), ch=17(각주/미주)는
-                        // HWP5 모델에서 인라인 앵커가 없는 비인라인 컨트롤이다.
-                        // \u{FFFC}를 text_string에 넣으면 폰트 미지원 글리프("?")로 렌더링되므로 생략.
-                        let is_non_inline_ctrl = ch == 15 || ch == 16 || ch == 17;
-                        if !is_non_inline_ctrl {
+                        let is_non_tac_table = ch == 10
+                            && parsed_table
+                                .as_ref()
+                                .is_some_and(|table| !table.common.treat_as_char);
+                        let is_tac_picture_or_shape = ch == 11
+                            && (parsed_picture
+                                .as_ref()
+                                .is_some_and(|pic| pic.common.treat_as_char)
+                                || parsed_drawing_object
+                                    .as_ref()
+                                    .is_some_and(|shape| shape.common().treat_as_char));
+                        let is_tac_line = ch == 14
+                            && parsed_line
+                                .as_ref()
+                                .is_some_and(|line| line.common.treat_as_char);
+                        let is_control_only_marker =
+                            text_string.is_empty() && i >= para_info.char_count as usize;
+                        let preserve_invisible_anchor_gap = ch == 17 || is_non_tac_table;
+                        // ch=15(숨은설명), ch=16(머리말/꼬리말), 비-TAC 표,
+                        // 단독 TAC 그림/도형/선 자리 문단은 화면에 보이는 대체 글자를
+                        // 만들지 않는다. 미주/각주와 비-TAC 표는 본문 안의 8유닛 앵커 슬롯을
+                        // 별도로 보존해 컨트롤 위치를 잃지 않게 한다.
+                        let omit_visible_marker = ch == 15
+                            || ch == 16
+                            || preserve_invisible_anchor_gap
+                            || (is_control_only_marker && (is_tac_picture_or_shape || is_tac_line));
+                        if omit_visible_marker {
+                            if preserve_invisible_anchor_gap {
+                                utf16_len += 8;
+                            }
+                        } else {
                             char_offsets.push(utf16_len);
                             utf16_len += 1;
                             text_string.push('\u{FFFC}');
@@ -2124,6 +2066,7 @@ pub(crate) fn parse_paragraph_list(
         para.controls = controls;
         para.ctrl_data_records = ctrl_data_records;
         para.has_para_text = !para.text.is_empty() || !para.controls.is_empty();
+        strip_hwp3_single_tac_visual_marker(&mut para);
 
         let mut char_shapes = Vec::new();
         char_shapes.push(CharShapeRef {
@@ -2489,6 +2432,15 @@ pub(crate) fn parse_paragraph_list(
             }
         }
 
+        if para.text.is_empty()
+            && para.controls.len() == 1
+            && hwp3_is_treat_as_char_visual_control(&para.controls[0])
+        {
+            for seg in para.line_segs.iter_mut() {
+                seg.line_spacing = 0;
+            }
+        }
+
         // HWP3 후처리: tac=false(부동) + 자리차지(TopAndBottom) 그림의
         // caption.width=0 보정 (layout_body_picture 캡션 렌더링에 그림 너비 사용).
         // paginator는 Control::Picture 처리 시 pic_h를 current_height에 추가하므로
@@ -2590,11 +2542,11 @@ pub(crate) fn parse_paragraph_list(
         {
             // 페이지 break 시 vpos reset (anchor 검출 전 reset 필수 — Stage A+D 정정)
             // [Task #724] force_vpos_reset (빈 paragraph + page break flag) 도 reset 적용
-            if matches!(
+            let starts_new_page = matches!(
                 para.column_type,
                 crate::model::paragraph::ColumnBreakType::Page
-            ) || force_vpos_reset
-            {
+            ) || force_vpos_reset;
+            if starts_new_page {
                 acc_section_vpos = 0;
                 wrap_zone_end_vpos = 0;
             }
@@ -2683,7 +2635,7 @@ pub(crate) fn parse_paragraph_list(
             // 가 한글97 layout 시점에 본 line 부터 새 페이지 인식). HWP5 v2024 변환본의
             // paragraph 내 ls[i].vpos=0 영역 정합 (typeset Task #321 vpos-reset guard
             // 영역 trigger 정합).
-            if !para.line_segs.is_empty() {
+            if !starts_new_page && !para.line_segs.is_empty() {
                 acc_section_vpos = acc_section_vpos.saturating_add(para_flow_spacing.0);
             }
             for (i, seg) in para.line_segs.iter_mut().enumerate() {
@@ -3139,7 +3091,6 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
     fixup_hwp3_picture_numbers(&mut doc);
     fixup_hwp3_outline_bullets(&mut doc);
     fixup_hwp3_heading_decoration(&mut doc);
-    fixup_hwp3_so_sueop_p22_markers(&mut doc);
 
     Ok(doc)
 }
