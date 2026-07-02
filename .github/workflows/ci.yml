@@ -251,7 +251,14 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Build
-        run: cargo build --release --verbose
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME}"
+            cargo build --profile release-test --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME}"
+            cargo build --release --verbose
+          fi
 
       # [Task #1192 A] canvas_layer_tree_matches_legacy* 는 feature gate 없는 lib 테스트로
       # 아래 "Run lib tests"에 이미 포함된다. 별도 step 은 순수 중복이라 제거.
@@ -269,13 +276,34 @@ jobs:
             libfreetype6-dev
 
       - name: Native Skia tests
-        run: cargo test --release --features native-skia skia --lib --verbose
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME}"
+            cargo test --profile release-test --features native-skia skia --lib --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME}"
+            cargo test --release --features native-skia skia --lib --verbose
+          fi
 
       - name: Run lib tests
-        run: cargo test --release --lib --verbose
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME}"
+            cargo test --profile release-test --lib --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME}"
+            cargo test --release --lib --verbose
+          fi
 
       - name: Run integration tests
-        run: cargo test --profile release-test --tests --verbose
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME}"
+            cargo test --profile release-test --tests --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME}"
+            cargo test --release --tests --verbose
+          fi
 
       - name: Clippy
         run: cargo clippy -- -D warnings

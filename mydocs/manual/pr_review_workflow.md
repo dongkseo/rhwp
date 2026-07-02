@@ -44,6 +44,42 @@ gh pr view N --repo edwardkim/rhwp --json additions,deletions,files,commits
 - **FIRST_TIME_CONTRIBUTOR**: 환영 인사 + 세심한 피드백 톤
 - **기존 기여자**: 이전 PR 컨텍스트 참고
 
+### 2.4 update branch 이후 이전 SHA CI 강제 취소
+
+PR 검토 중 contributor 또는 maintainer 가 `Update branch` / `devel` merge 로 PR head 를 갱신하면, 이전 head
+SHA 에서 시작된 GitHub Actions run 이 그대로 남아 새 head 의 required check 와 섞여 보일 수 있다. 이 경우
+다음 순서로 **이전 SHA run 만** 정리한다. 최신 PR head 의 CI 는 취소하지 않는다.
+
+1. 최신 PR head SHA 를 확인한다.
+
+```bash
+gh pr view N --repo edwardkim/rhwp --json headRefOid
+```
+
+2. 취소 대상이 되는 이전 SHA 의 run 을 확인한다.
+
+```bash
+gh run list --repo edwardkim/rhwp --commit <old-sha> \
+  --json databaseId,workflowName,status,conclusion,headSha,url --limit 20
+```
+
+3. `queued` / `pending` / `in_progress` run 은 일반 cancel 을 시도하지 않고, 처음부터 GitHub Actions
+   **force-cancel API** 로 취소한다.
+
+```bash
+gh api --method POST repos/edwardkim/rhwp/actions/runs/<run-id>/force-cancel
+```
+
+4. 최종 상태가 `status: completed`, `conclusion: cancelled` 인지 확인한다.
+
+```bash
+gh run list --repo edwardkim/rhwp --commit <old-sha> \
+  --json databaseId,workflowName,status,conclusion,headSha,url --limit 20
+```
+
+기록 예시: PR #1738 검토 중 이전 SHA `00bc0428173c9f413171f3b070c923089320d050` 의 CI/CodeQL run 은
+처음부터 `force-cancel` API 로 최종 `cancelled` 처리했다.
+
 ## 3. 리뷰 문서 작성
 
 maintainer 일반 경로에서는 각 PR 마다 리뷰 문서 2건을 active 경로에 작성한다.

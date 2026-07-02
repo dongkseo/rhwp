@@ -91,6 +91,8 @@ pub struct AdapterReport {
     pub section_def_single_master_page_flags_materialized: u32,
     /// HWPX SectionDef masterPageCnt=2 flags 를 한컴 HWP 저장 관례로 보정한 횟수
     pub section_def_multi_master_page_flags_materialized: u32,
+    /// HWPX SectionDef hide_empty_line bool 을 HWP5 flags bit 19로 동기화한 횟수
+    pub section_def_hide_empty_line_flag_materialized: u32,
     /// HWPX AutoNumber 뒤 fixed-width space 문단의 HWP5 PARA_RANGE_TAG materialize 횟수
     pub autonum_fwspace_range_tag_materialized: u32,
     /// HWPX AutoNumber 뒤 fixed-width space 문단의 char shape start_pos 보정 횟수
@@ -143,6 +145,7 @@ impl AdapterReport {
                 + self.following_section_break_type_materialized
                 + self.section_def_single_master_page_flags_materialized
                 + self.section_def_multi_master_page_flags_materialized
+                + self.section_def_hide_empty_line_flag_materialized
                 + self.autonum_fwspace_range_tag_materialized
                 + self.autonum_fwspace_char_shape_offsets_materialized
                 + self.header_footer_fwspace_control_materialized
@@ -985,6 +988,7 @@ fn materialize_para_header_tail(para: &mut Paragraph, report: &mut AdapterReport
 }
 
 fn adapt_section_def(section_def: &mut SectionDef, report: &mut AdapterReport) {
+    materialize_section_def_hide_empty_line_flag(section_def, report);
     materialize_single_master_page_flags(section_def, report);
     materialize_multi_master_page_flags(section_def, report);
     materialize_section_def_master_page_tail(section_def, report);
@@ -995,6 +999,24 @@ fn adapt_section_def(section_def: &mut SectionDef, report: &mut AdapterReport) {
             report,
             ParagraphContext::MasterPage,
         );
+    }
+}
+
+fn materialize_section_def_hide_empty_line_flag(
+    section_def: &mut SectionDef,
+    report: &mut AdapterReport,
+) {
+    const HIDE_EMPTY_LINE_FLAG: u32 = 0x0008_0000;
+
+    let old_flags = section_def.flags;
+    if section_def.hide_empty_line {
+        section_def.flags |= HIDE_EMPTY_LINE_FLAG;
+    } else {
+        section_def.flags &= !HIDE_EMPTY_LINE_FLAG;
+    }
+
+    if section_def.flags != old_flags {
+        report.section_def_hide_empty_line_flag_materialized += 1;
     }
 }
 
@@ -2015,6 +2037,29 @@ mod tests {
         let mut second = AdapterReport::new();
         adapt_section_def(&mut section_def, &mut second);
         assert_eq!(second.section_def_multi_master_page_flags_materialized, 0);
+    }
+
+    #[test]
+    fn task1654_hide_empty_line_flag_materializes_before_section_def_control_copy() {
+        let mut section = Section::default();
+        section.section_def.hide_empty_line = true;
+        section.section_def.flags &= !0x0008_0000;
+        section.paragraphs.push(Paragraph::default());
+
+        let mut doc = Document {
+            sections: vec![section],
+            ..Default::default()
+        };
+
+        let report = convert_hwpx_to_hwp_ir(&mut doc);
+        assert_eq!(report.section_def_hide_empty_line_flag_materialized, 1);
+        assert_ne!(doc.sections[0].section_def.flags & 0x0008_0000, 0);
+
+        let Control::SectionDef(section_def) = &doc.sections[0].paragraphs[0].controls[0] else {
+            panic!("SectionDef 컨트롤이 삽입되어야 함");
+        };
+        assert!(section_def.hide_empty_line);
+        assert_ne!(section_def.flags & 0x0008_0000, 0);
     }
 
     #[test]
