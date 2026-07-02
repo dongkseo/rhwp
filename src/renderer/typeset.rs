@@ -230,6 +230,9 @@ struct TypesetState {
     /// 같은 문단의 선행 RowBreak 표가 continuation 을 만들 때 후행 co-anchored 표를
     /// 후속 섹션 블록 뒤로 잠시 미루기 위한 큐.
     deferred_table_controls: Vec<DeferredTableControl>,
+    /// [Task #1753] 지연 이월되는 visible-host 자리차지 표 직전에 현재 쪽 잔여 공간으로
+    /// 선행 배치(prefill)된 후속 문단들 — 메인 루프에서 스킵.
+    prefilled_paras: std::collections::HashSet<usize>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -1109,6 +1112,45 @@ fn saved_bounds_fit_at_flow_tail(bounds: (f64, f64), current_height: f64, availa
     top + 16.0 >= current_height && bottom <= available + 0.5
 }
 
+/// [Task #1749] 저장 flow 가 이 문단을 "페이지 마지막 줄"로 인코딩했는가.
+///
+/// saved bounds 신뢰(`saved_single_line_bottom_fits`)는 저장 LINE_SEG vpos 가 페이지
+/// 배정을 인코딩한다는 전제 위에 있다. 페이지-마지막 증거는 세 가지다:
+/// ① 다음 문단의 첫 실줄이 없음(문서/구역 끝 — fe6de3ef 합성 테스트 보호 케이스),
+/// ② 다음 실줄이 현재 줄보다 작은 vpos 로 리셋(다음 줄이 새 쪽),
+/// ③ 다음 실줄에 도달하기 전에 명시적 쪽/구역나누기 문단이 있음 — 누적좌표 문서는
+///    쪽 경계에서도 vpos 가 리셋되지 않으므로(예: 결재문서 36375752 pi26→pi27
+///    [쪽나누기]) 리셋 검사만으로는 이 증거를 볼 수 없다. 신뢰 경로는 vpos 를
+///    페이지 기준점 상대값으로 쓰므로 누적좌표라도 페이지 내 위치는 유효하다.
+/// 어느 증거도 없이 다음 vpos 가 증가 지속하면(예: 결재문서 36371084 pi18→pi19)
+/// 저장 vpos 로 페이지를 알 수 없으므로 신뢰하지 않는다 — 누적높이 판정으로 복귀해
+/// 쪽 경계 overfill 을 막는다.
+fn saved_flow_marks_page_last(paragraphs: &[Paragraph], para_idx: usize) -> bool {
+    let curr_vpos = match paragraphs
+        .get(para_idx)
+        .and_then(|p| p.line_segs.iter().find(|ls| !is_synthetic_line_seg(ls)))
+    {
+        Some(ls) => ls.vertical_pos,
+        None => return false,
+    };
+    for next_para in paragraphs.iter().skip(para_idx + 1) {
+        if matches!(
+            next_para.column_type,
+            ColumnBreakType::Page | ColumnBreakType::Section
+        ) {
+            return true;
+        }
+        if let Some(next) = next_para
+            .line_segs
+            .iter()
+            .find(|ls| !is_synthetic_line_seg(ls))
+        {
+            return next.vertical_pos < curr_vpos;
+        }
+    }
+    true
+}
+
 fn positive_vpos_end_before_negative_wrap(para: &Paragraph) -> Option<i32> {
     let last_real = para
         .line_segs
@@ -1192,6 +1234,7 @@ impl TypesetState {
             pending_body_wide_top_reserve: 0.0,
             visible_float_exclusions: Vec::new(),
             deferred_table_controls: Vec::new(),
+            prefilled_paras: std::collections::HashSet::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
             tail_overflow_tolerance_once: 0.0,
@@ -1316,6 +1359,36 @@ impl TypesetState {
         }
         // [Task #1082] 단 flush 시 본문 last bottom vpos 리셋(미주 vpos-delta 시드 정합).
         self.prev_body_bottom_vpos = None;
+    }
+
+    /// [Task #1745] 흡수된 어울림 문단 기록 — 다쪽 분할 표는 첫 fragment column 에 소급.
+    ///
+    /// 한글은 어울림 문단을 anchor 표의 시작 쪽(첫 fragment) 옆 wrap 띠에 배치한다.
+    /// RowBreak 분할 표는 흡수 시점에 첫 fragment column 이 이미 flush 되어 있으므로,
+    /// 현재 column 에 anchor 의 첫 fragment(비연속 PartialTable/Table)가 없으면
+    /// `pages` 에서 찾아 그 column 의 wrap_around_paras 에 push 한다.
+    fn record_wrap_around_para(&mut self, wrap_para: crate::renderer::pagination::WrapAroundPara) {
+        let anchor = wrap_para.table_para_index;
+        let is_first_fragment = |it: &PageItem| match it {
+            PageItem::Table { para_index, .. } => *para_index == anchor,
+            PageItem::PartialTable {
+                para_index,
+                is_continuation,
+                ..
+            } => *para_index == anchor && !*is_continuation,
+            _ => false,
+        };
+        if !self.current_items.iter().any(is_first_fragment) {
+            for page in self.pages.iter_mut() {
+                for col in page.column_contents.iter_mut() {
+                    if col.items.iter().any(is_first_fragment) {
+                        col.wrap_around_paras.push(wrap_para);
+                        return;
+                    }
+                }
+            }
+        }
+        self.current_column_wrap_around_paras.push(wrap_para);
     }
 
     /// 비어있어도 flush
@@ -1895,6 +1968,10 @@ impl TypesetEngine {
             Self::collect_header_footer_controls(paragraphs, section_index);
 
         for (para_idx, para) in paragraphs.iter().enumerate() {
+            // [Task #1753] 지연 이월 표 직전에 선행 채움(prefill)으로 이미 배치된 문단 스킵.
+            if st.prefilled_paras.contains(&para_idx) {
+                continue;
+            }
             // 표 컨트롤 감지
             let has_table = self.paragraph_has_table(para);
 
@@ -2667,7 +2744,8 @@ impl TypesetEngine {
                             })
                             .unwrap_or(false);
                         if last_seg_match || is_empty_para {
-                            st.current_column_wrap_around_paras.push(
+                            // [Task #1745] 다쪽 분할 표는 첫 fragment column 에 소급 기록.
+                            st.record_wrap_around_para(
                                 crate::renderer::pagination::WrapAroundPara {
                                     para_index: para_idx,
                                     table_para_index: st.wrap_around_table_para,
@@ -2824,6 +2902,8 @@ impl TypesetEngine {
                     styles,
                     measured_tables,
                     page_def,
+                    paragraphs,
+                    composed,
                 );
             }
 
@@ -2867,13 +2947,24 @@ impl TypesetEngine {
                         }
                     });
                     if is_wrap_around {
-                        st.wrap_around_cs =
-                            para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
-                        st.wrap_around_sw = para
-                            .line_segs
-                            .first()
-                            .map(|s| s.segment_width as i32)
-                            .unwrap_or(0);
+                        // [Task #1745] 텍스트 혼합 anchor(첫 LINE_SEG 가 전폭 텍스트 줄)면
+                        // anchor LINE_SEG 가 wrap 띠를 인코딩하지 않으므로 표 geometry 로
+                        // 띠 (cs, sw) 를 도출해 후속 문단 매칭에 사용 (한글: 후속 문단을
+                        // 표 옆 잔여 띠에 배치 — samples/task1745).
+                        if let Some((strip_cs, strip_sw)) =
+                            crate::renderer::text_anchor_square_table_strip(para)
+                        {
+                            st.wrap_around_cs = strip_cs;
+                            st.wrap_around_sw = strip_sw;
+                        } else {
+                            st.wrap_around_cs =
+                                para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
+                            st.wrap_around_sw = para
+                                .line_segs
+                                .first()
+                                .map(|s| s.segment_width as i32)
+                                .unwrap_or(0);
+                        }
                         st.wrap_around_table_para = para_idx;
                         st.wrap_around_any_seg = false;
                     }
@@ -9727,6 +9818,9 @@ impl TypesetEngine {
             && fmt.spacing_after <= 0.5
             && para.controls.is_empty()
             && !st.current_items.is_empty()
+            // [Task #1749] 저장 flow 가 이 줄을 페이지 마지막으로 인코딩한 경우에만
+            // bounds 신뢰 — 누적좌표 문서의 쪽 경계 overfill 차단.
+            && saved_flow_marks_page_last(paragraphs, para_idx)
             && current_page_vpos_base
                 .and_then(|base| single_line_visible_bounds_px(para, base, self.dpi))
                 .is_some_and(|bounds| {
@@ -9926,7 +10020,27 @@ impl TypesetEngine {
                     bottom_px <= st.base_available_height() + 0.5
                 })
                 .unwrap_or(false);
-        if (st.current_height >= available || remaining < first_line_h)
+        // [Task #1750] 저장 LINE_SEG 가 문단 전체를 새 쪽 상단으로 인코딩한 경우
+        // (첫 줄 vpos 가 near-top 으로 리셋 + 직전 문단은 페이지 하단부) 분할하지
+        // 않고 페이지를 넘긴다. 단일 단 vpos-reset 가드(line 2279)는 cv==0 만
+        // 인정하므로 near-top(예: 700HU) 리셋 문서는 분할 경로로 새어 들어와
+        // 첫 줄이 이전 쪽 말미에 남는다 (3024019 pi22: ls[0] vpos=700, 한글도
+        // 문단 전체를 새 쪽 배치). 전체 배치가 이미 실패한 분할 직전에만 적용해
+        // 일반 흐름(#418/#321 보수 기준)은 건드리지 않는다.
+        let stored_whole_para_reset = st.col_count == 1
+            && para_idx > 0
+            && para
+                .line_segs
+                .first()
+                .filter(|ls| !is_synthetic_line_seg(ls))
+                .map(|ls| ls.vertical_pos > 0 && ls.vertical_pos <= 2500)
+                .unwrap_or(false)
+            && paragraphs[para_idx - 1]
+                .line_segs
+                .last()
+                .map(|s| s.vertical_pos + s.line_height > 60_000)
+                .unwrap_or(false);
+        if (st.current_height >= available || remaining < first_line_h || stored_whole_para_reset)
             && !st.current_items.is_empty()
             && !hwp_first_line_before_reset_fits
         {
@@ -10433,6 +10547,8 @@ impl TypesetEngine {
                 para_start_height,
                 deferred.is_first_placed,
                 deferred.is_last_placed,
+                paragraphs,
+                composed,
             );
 
             for (cell_idx, cell) in table.cells.iter().enumerate() {
@@ -10477,6 +10593,7 @@ impl TypesetEngine {
 
     /// 표가 포함된 문단을 처리한다.
     /// 각 컨트롤(표/도형)에 대해 format → fits → place/split 패턴 적용.
+    #[allow(clippy::too_many_arguments)]
     fn typeset_table_paragraph(
         &self,
         st: &mut TypesetState,
@@ -10487,6 +10604,9 @@ impl TypesetEngine {
         styles: &ResolvedStyleSet,
         measured_tables: &[MeasuredTable],
         _page_def: &PageDef,
+        // [Task #1753] 지연 이월 표의 후속 문단 prefill 용 전체 슬라이스.
+        paragraphs_all: &[Paragraph],
+        composed_all: &[ComposedParagraph],
     ) {
         // 호스트 문단 format (TAC 표의 높이 보정용)
         let host_col_w = st
@@ -10762,6 +10882,8 @@ impl TypesetEngine {
                             para_start_height,
                             is_first_placed,
                             is_last_placed,
+                            paragraphs_all,
+                            composed_all,
                         );
                         if self.should_defer_remaining_coanchored_rowbreak_tables(
                             st,
@@ -11422,6 +11544,90 @@ impl TypesetEngine {
     /// 비-TAC 블록 표의 조판: fits → place / split(Break Token 기반).
     /// 기존 Paginator의 split_table_rows와 동일한 세밀한 분할 로직.
     #[allow(clippy::too_many_arguments)]
+    /// [Task #1753] 지연 이월되는 visible-host 자리차지 표의 후속 문단 선행 채움.
+    ///
+    /// 한글은 자리차지(TopAndBottom·vert=Para) RowBreak 표가 현재 쪽 잔여 공간에 안
+    /// 들어가 다음 쪽으로 이월될 때, 후속 텍스트를 현재 쪽 잔여 공간에 먼저 채운다
+    /// (fill-before-deferred-float — 2814765 pi52/53, 한글 PDF·저장 LINE_SEG 정합).
+    /// rhwp 순차 모델에서는 이월 직전에 후속 control-free 문단들을 현재 쪽에 선행
+    /// 배치하고 `prefilled_paras` 로 메인 루프에서 스킵한다.
+    ///
+    /// 가드: 단일 단 + 현재 쪽에 항목 존재 + 텍스트 anchor + RowBreak 자리차지 표
+    /// (v_off ≥ 0). 후보 문단은 저장 첫 실줄 vpos 가 (host vpos, 본문높이HU] 구간
+    /// (같은 쪽 연속 인코딩 — 누적좌표 문서는 자연 배제)이고 누적높이 fit 일 때만.
+    #[allow(clippy::too_many_arguments)]
+    fn prefill_before_deferred_table(
+        &self,
+        st: &mut TypesetState,
+        para_idx: usize,
+        para: &Paragraph,
+        table: &crate::model::table::Table,
+        paragraphs_all: &[Paragraph],
+        composed_all: &[ComposedParagraph],
+        styles: &ResolvedStyleSet,
+    ) {
+        const MAX_PREFILL: usize = 8;
+        if st.col_count != 1 || st.current_items.is_empty() {
+            return;
+        }
+        if !para_has_visible_text(para)
+            || !crate::renderer::float_placement::is_para_topbottom_float(&table.common)
+            || signed_hwpunit(table.common.vertical_offset) < 0
+            || !matches!(
+                table.page_break,
+                crate::model::table::TablePageBreak::RowBreak
+            )
+        {
+            return;
+        }
+        let Some(host_vpos) = para
+            .line_segs
+            .iter()
+            .find(|ls| !is_synthetic_line_seg(ls))
+            .map(|ls| ls.vertical_pos)
+        else {
+            return;
+        };
+        let body_h_hu = crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi);
+        if host_vpos < 0 || host_vpos > body_h_hu {
+            return; // 누적좌표 등 — 저장 flow 로 같은 쪽 여부를 알 수 없음
+        }
+        let col_w = st
+            .layout
+            .column_areas
+            .get(st.current_column as usize)
+            .map(|a| a.width)
+            .unwrap_or(st.layout.body_area.width);
+        let end = paragraphs_all.len().min(para_idx + 1 + MAX_PREFILL);
+        for next_idx in (para_idx + 1)..end {
+            let next = &paragraphs_all[next_idx];
+            if !next.controls.is_empty() {
+                break;
+            }
+            let Some(seg) = next.line_segs.iter().find(|ls| !is_synthetic_line_seg(ls)) else {
+                break;
+            };
+            // 저장 flow 가 host 와 같은 쪽 연속임을 인코딩한 경우만.
+            if seg.vertical_pos <= host_vpos
+                || seg.vertical_pos.saturating_add(seg.line_height) > body_h_hu
+            {
+                break;
+            }
+            let fmt_n =
+                self.format_paragraph(next, composed_all.get(next_idx), styles, Some(col_w));
+            if st.current_height + fmt_n.height_for_fit > st.available_height() - 4.0 {
+                break;
+            }
+            let trim_sb =
+                !st.is_hwp3_variant && !para_near_rowbreak_table(paragraphs_all, next_idx);
+            st.current_items.push(PageItem::FullParagraph {
+                para_index: next_idx,
+            });
+            st.current_height += fmt_n.flow_advance_height(next, st.col_count, trim_sb);
+            st.prefilled_paras.insert(next_idx);
+        }
+    }
+
     fn typeset_block_table(
         &self,
         st: &mut TypesetState,
@@ -11436,6 +11642,9 @@ impl TypesetEngine {
         para_start_height: f64,
         is_first_placed: bool,
         is_last_placed: bool,
+        // [Task #1753] 지연 이월 직전 후속 문단 prefill 용 전체 슬라이스.
+        paragraphs_all: &[Paragraph],
+        composed_all: &[ComposedParagraph],
     ) {
         // 표 내 각주를 고려한 가용 높이 계산 (Paginator engine.rs:583-586 동일)
         let total_footnote =
@@ -11827,6 +12036,18 @@ impl TypesetEngine {
                 || remaining_on_page < min_content
                 || multirow_clean_defer
             {
+                // [Task #1753] visible-host 자리차지 RowBreak 표가 다음 쪽으로 이월되기
+                // 직전, 후속 문단을 현재 쪽 잔여 공간에 선행 채움(한글 fill-before-
+                // deferred-float 정합 — 2814765 pi52/53 은 9쪽 하단, 표는 10쪽부터).
+                self.prefill_before_deferred_table(
+                    st,
+                    para_idx,
+                    para,
+                    table,
+                    paragraphs_all,
+                    composed_all,
+                    styles,
+                );
                 st.advance_column_or_new_page();
             }
         }
@@ -13281,6 +13502,49 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    fn para_at_vpos(vpos: i32) -> Paragraph {
+        Paragraph {
+            line_segs: vec![LineSeg {
+                vertical_pos: vpos,
+                line_height: 1300,
+                text_height: 1300,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// [Task #1749] 저장 flow 페이지-마지막 인코딩 판정
+    #[test]
+    fn test_saved_flow_marks_page_last() {
+        // (a) 다음 실줄 없음(문서 끝) — 신뢰 (fe6de3ef 합성 테스트 보호 케이스)
+        let doc_end = vec![para_at_vpos(0), para_at_vpos(72626)];
+        assert!(saved_flow_marks_page_last(&doc_end, 1));
+
+        // (b) 다음 줄 vpos 리셋(새 쪽) — 신뢰
+        let reset = vec![para_at_vpos(72626), para_at_vpos(700)];
+        assert!(saved_flow_marks_page_last(&reset, 0));
+
+        // (c) 누적좌표(다음 vpos 증가 지속) — 불신 (36371084 pi18→pi19)
+        let cumulative = vec![para_at_vpos(72626), para_at_vpos(74902)];
+        assert!(!saved_flow_marks_page_last(&cumulative, 0));
+
+        // (d) 빈 line_segs 문단 건너뛰고 다음 실줄로 판정
+        let with_empty = vec![
+            para_at_vpos(72626),
+            Paragraph::default(),
+            para_at_vpos(74902),
+        ];
+        assert!(!saved_flow_marks_page_last(&with_empty, 0));
+
+        // (e) 누적좌표라도 다음 문단이 명시적 쪽나누기면 페이지-마지막 증거로 신뢰
+        //     (36375752 pi26→pi27 [쪽나누기]: vpos 137484→140204 리셋 없음)
+        let mut page_break_next = para_at_vpos(140204);
+        page_break_next.column_type = ColumnBreakType::Page;
+        let cumulative_with_break = vec![para_at_vpos(137484), page_break_next];
+        assert!(saved_flow_marks_page_last(&cumulative_with_break, 0));
     }
 
     fn page_with_items(items: Vec<PageItem>) -> PageContent {
