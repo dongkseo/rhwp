@@ -2187,6 +2187,7 @@ impl DocumentCore {
                 pages: Vec::new(),
                 wrap_around_paras: Vec::new(),
                 hidden_empty_paras: std::collections::HashSet::new(),
+                pre_emitted_host_paras: std::collections::HashSet::new(),
                 endnotes: Vec::new(),
                 endnote_paragraphs: Vec::new(),
                 endnote_para_sources: Vec::new(),
@@ -3489,6 +3490,9 @@ impl DocumentCore {
         if let Some(pr) = self.pagination.get(sec_idx) {
             self.layout_engine
                 .set_hidden_empty_paras(&pr.hidden_empty_paras);
+            // [Task #1755] pre-emit 된 host 문단 → fragment 쪽 host 렌더 억제.
+            self.layout_engine
+                .set_pre_emitted_host_paras(&pr.pre_emitted_host_paras);
             self.layout_engine
                 .set_endnote_para_sources(paragraphs.len(), &pr.endnote_para_sources);
             // 섹션 미주 모양의 정규화 여백 전달 → HeightCursor min-gap 및 renderer overflow 판정.

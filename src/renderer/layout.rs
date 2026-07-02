@@ -936,6 +936,9 @@ pub struct LayoutEngine {
     last_item_endnote_equation_tail_line_box: std::cell::Cell<bool>,
     /// 빈 줄 감추기로 높이 0 처리된 문단 인덱스 집합
     hidden_empty_paras: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// [Task #1755] 지연 이월 표의 host 텍스트 줄이 typeset 에서 이월 전 쪽에
+    /// PartialParagraph 로 pre-emit 된 문단 집합 — 마지막 fragment 뒤 host 렌더 억제.
+    pre_emitted_host_paras: std::cell::RefCell<std::collections::HashSet<usize>>,
     /// 렌더용 가상 미주 문단 시작 인덱스
     endnote_para_base: std::cell::Cell<usize>,
     /// 가상 미주 문단별 원본 위치
@@ -1025,6 +1028,7 @@ impl LayoutEngine {
             last_item_content_bottom: std::cell::Cell::new(f64::NAN),
             last_item_endnote_equation_tail_line_box: std::cell::Cell::new(false),
             hidden_empty_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
+            pre_emitted_host_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
             endnote_para_base: std::cell::Cell::new(usize::MAX),
             endnote_para_sources: std::cell::RefCell::new(Vec::new()),
             endnote_between_notes_hu: std::cell::Cell::new(0),
@@ -1217,6 +1221,11 @@ impl LayoutEngine {
     /// 빈 줄 감추기 문단 집합 설정
     pub fn set_hidden_empty_paras(&self, paras: &std::collections::HashSet<usize>) {
         *self.hidden_empty_paras.borrow_mut() = paras.clone();
+    }
+
+    /// [Task #1755] 이월 전 쪽에 host 텍스트가 pre-emit 된 문단 집합 설정
+    pub fn set_pre_emitted_host_paras(&self, paras: &std::collections::HashSet<usize>) {
+        *self.pre_emitted_host_paras.borrow_mut() = paras.clone();
     }
 
     /// 렌더용 가상 미주 문단과 원본 Endnote 내부 문단의 매핑을 설정한다.
@@ -6498,10 +6507,15 @@ impl LayoutEngine {
                     _ => None,
                 })
         });
-        let render_deferred_rowbreak_host_text_after = defer_visible_rowbreak_host_text
-            .is_some_and(|row_count| is_continuation && end_cut.is_empty() && end_row >= row_count);
+        // [Task #1755] typeset 이 host 텍스트 줄을 이월 전 쪽에 PartialParagraph 로
+        // pre-emit 한 문단은 fragment 쪽 host 렌더(첫 부분/마지막 뒤 모두)를 억제한다.
+        let host_pre_emitted = self.pre_emitted_host_paras.borrow().contains(&para_index);
+        let render_deferred_rowbreak_host_text_after = !host_pre_emitted
+            && defer_visible_rowbreak_host_text.is_some_and(|row_count| {
+                is_continuation && end_cut.is_empty() && end_row >= row_count
+            });
         // ── 분할 표 첫 부분: 호스트 문단 텍스트 렌더링 ──
-        if !is_continuation && defer_visible_rowbreak_host_text.is_none() {
+        if !is_continuation && defer_visible_rowbreak_host_text.is_none() && !host_pre_emitted {
             if let Some(para) = paragraphs.get(para_index) {
                 let is_tac = para
                     .controls

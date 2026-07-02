@@ -233,6 +233,9 @@ struct TypesetState {
     /// [Task #1753] 지연 이월되는 visible-host 자리차지 표 직전에 현재 쪽 잔여 공간으로
     /// 선행 배치(prefill)된 후속 문단들 — 메인 루프에서 스킵.
     prefilled_paras: std::collections::HashSet<usize>,
+    /// [Task #1755] 이월 전 쪽에 host 텍스트 줄을 PartialParagraph 로 pre-emit 한 문단 —
+    /// layout 의 마지막 fragment 뒤 host 렌더 억제 신호(PaginationResult 로 전달).
+    pre_emitted_host_paras: std::collections::HashSet<usize>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -1235,6 +1238,7 @@ impl TypesetState {
             visible_float_exclusions: Vec::new(),
             deferred_table_controls: Vec::new(),
             prefilled_paras: std::collections::HashSet::new(),
+            pre_emitted_host_paras: std::collections::HashSet::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
             tail_overflow_tolerance_once: 0.0,
@@ -8802,6 +8806,7 @@ impl TypesetEngine {
             pages: st.pages,
             wrap_around_paras: Vec::new(),
             hidden_empty_paras: st.hidden_empty_paras,
+            pre_emitted_host_paras: st.pre_emitted_host_paras,
             endnotes: st.endnotes,
             endnote_paragraphs: st.endnote_paragraphs,
             endnote_para_sources: st.endnote_para_sources,
@@ -11598,6 +11603,27 @@ impl TypesetEngine {
             .get(st.current_column as usize)
             .map(|a| a.width)
             .unwrap_or(st.layout.body_area.width);
+        // [Task #1755] host 텍스트 줄을 이월 전 쪽에 pre-emit (한글: 제목 줄은 anchor
+        // 흐름 위치 = 이월 전 쪽 하단). layout 의 마지막 fragment 뒤 host 렌더는
+        // pre_emitted_host_paras 신호로 억제된다. 후속 문단 prefill 보다 먼저 배치해
+        // 한글 순서(제목 → 후속 문단)를 유지하고, host 줄이 안 들어가면 prefill 도
+        // 하지 않는다(순서 역전 방지 — 한글도 이때는 전부 다음 쪽).
+        if !st.pre_emitted_host_paras.contains(&para_idx) {
+            let host_fmt =
+                self.format_paragraph(para, composed_all.get(para_idx), styles, Some(col_w));
+            let host_lines = host_fmt.line_heights.len();
+            let host_h = host_fmt.line_advances_sum(0..host_lines);
+            if host_lines == 0 || st.current_height + host_h > st.available_height() - 4.0 {
+                return;
+            }
+            st.current_items.push(PageItem::PartialParagraph {
+                para_index: para_idx,
+                start_line: 0,
+                end_line: host_lines,
+            });
+            st.current_height += host_h;
+            st.pre_emitted_host_paras.insert(para_idx);
+        }
         let end = paragraphs_all.len().min(para_idx + 1 + MAX_PREFILL);
         for next_idx in (para_idx + 1)..end {
             let next = &paragraphs_all[next_idx];
