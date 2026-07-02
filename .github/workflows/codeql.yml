@@ -124,6 +124,18 @@ jobs:
               }
 
               const pr = context.payload.pull_request;
+              const prFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner,
+                repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              if (prFiles.length > 0 && prFiles.every((file) => isAllowedReviewPath(file))) {
+                core.info(`all PR files are review-only; using base SHA ${pr.base.sha}`);
+                setResult(true, 'all-review-only-no-code-impact', pr.base.sha);
+                return;
+              }
+
               const commits = await github.paginate(github.rest.pulls.listCommits, {
                 owner,
                 repo,
