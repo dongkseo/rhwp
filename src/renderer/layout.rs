@@ -3691,6 +3691,23 @@ impl LayoutEngine {
                 PageItem::PartialTable { para_index, .. } => *para_index,
                 PageItem::Shape { para_index, .. } => *para_index,
                 PageItem::EndnoteSeparator { .. } => {
+                    // [미주 구분선 위치 — 한컴 정합] 직전 본문 문단 마지막 줄의 trailing
+                    // 줄간격(line_spacing)은 한컴이 note 영역에 포함하지 않는다. rhwp 문단
+                    // advance 는 포함하므로 그만큼 note 영역(구분선+본문)을 위로 올린다.
+                    let trailing_ls_px = col_content.items[..item_ordinal]
+                        .iter()
+                        .rev()
+                        .find_map(|it| match it {
+                            PageItem::FullParagraph { para_index }
+                            | PageItem::PartialParagraph { para_index, .. } => paragraphs
+                                .get(*para_index)
+                                .and_then(|p| p.line_segs.last())
+                                .filter(|ls| ls.line_spacing > 0)
+                                .map(|ls| hwpunit_to_px(ls.line_spacing, self.dpi)),
+                            _ => None,
+                        })
+                        .unwrap_or(0.0);
+                    y_offset = (y_offset - trailing_ls_px).max(0.0);
                     let (new_y, _) = self.layout_column_item(
                         tree,
                         &mut col_node,
@@ -5452,7 +5469,7 @@ impl LayoutEngine {
         col_node: &mut RenderNode,
         col_area: &LayoutRect,
         mut y_offset: f64,
-        separator_length: i16,
+        separator_length: i32,
         margin_above: i16,
         margin_below: i16,
         line_type: u8,

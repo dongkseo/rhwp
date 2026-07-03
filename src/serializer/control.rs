@@ -386,7 +386,9 @@ fn serialize_footnote_shape(fs: &FootnoteShape) -> Vec<u8> {
     w.write_u16(fs.prefix_char as u16).unwrap();
     w.write_u16(fs.suffix_char as u16).unwrap();
     w.write_u16(fs.start_number).unwrap();
-    w.write_i16(fs.separator_length).unwrap();
+    // HWP5 노트 구분선 길이는 i16 슬롯. 한컴 전폭 sentinel(14692344)은 i16을 넘지만
+    // HWP5 포맷 한계상 하위 16비트로 기록한다(HWPX 경로는 i32 원본을 보존).
+    w.write_i16(fs.separator_length as i16).unwrap();
     w.write_i16(fs.separator_margin_top).unwrap();
     w.write_i16(fs.separator_margin_bottom).unwrap();
     w.write_i16(fs.note_spacing).unwrap();

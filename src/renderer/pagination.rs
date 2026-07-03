@@ -326,8 +326,8 @@ pub enum PageItem {
     },
     /// 미주 영역 시작 구분선
     EndnoteSeparator {
-        /// 구분선 길이 (HWP 단위)
-        separator_length: i16,
+        /// 구분선 길이 (HWP 단위). 한컴 전폭 sentinel(14692344)이 i16을 넘으므로 i32.
+        separator_length: i32,
         /// 구분선 위 여백 (HWP 단위)
         margin_above: i16,
         /// 구분선 아래 여백 (HWP 단위)
