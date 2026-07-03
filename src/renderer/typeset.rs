@@ -262,6 +262,8 @@ struct TypesetState {
     /// [Task #1007] HWP3-origin HWP5 변환본 여부 — widow 방지 등 variant-specific
     /// behavior 분기에 사용.
     is_hwp3_variant: bool,
+    /// 원본 HWP3 파일 여부 — HWP5 변환본 휴리스틱과 분리해 HWP3 저장 LINE_SEG 계약에 사용.
+    is_hwp3_source: bool,
     /// [Task #1147] HWPX 원본 여부 — HWPX 의 LINE_SEG 시멘틱은 빈 앵커 TopAndBottom 표에서
     /// host_line_spacing 을 표 다음 갭으로 더하지 않음. HWP5/HWP3 와 분리.
     is_hwpx_source: bool,
@@ -1023,30 +1025,42 @@ fn internal_vpos_page_break_line(
     line_count: usize,
     body_height_px: f64,
     dpi: f64,
+    hwp3_lineseg_source: bool,
 ) -> Option<usize> {
-    if !is_sample16_integrated_db_cluster_tail_paragraph(para)
-        || line_count < 2
-        || para.line_segs.len() < line_count
-    {
+    if line_count < 2 || para.line_segs.len() < line_count {
         return None;
     }
 
     let first = para.line_segs.first()?;
+    let sample16_tail = is_sample16_integrated_db_cluster_tail_paragraph(para);
+    let hwp3_text_rewind =
+        hwp3_lineseg_source && para.controls.is_empty() && para_has_visible_text(para);
+    if !sample16_tail && !hwp3_text_rewind {
+        return None;
+    }
+
     if first.vertical_pos <= 0 || hwpunit_to_px(first.vertical_pos, dpi) < body_height_px * 0.7 {
         return None;
     }
 
-    para.line_segs
+    para.line_segs[..line_count]
         .windows(2)
         .enumerate()
         .find_map(|(prev_idx, pair)| {
             let prev = &pair[0];
             let cur = &pair[1];
-            if !is_synthetic_line_seg(prev)
-                && !is_synthetic_line_seg(cur)
-                && prev.vertical_pos > 0
-                && cur.vertical_pos <= 0
-            {
+            if is_synthetic_line_seg(prev) || is_synthetic_line_seg(cur) || prev.vertical_pos <= 0 {
+                return None;
+            }
+
+            let sample16_reset = sample16_tail && cur.vertical_pos <= 0;
+            let hwp3_rewind_reset = hwp3_text_rewind
+                && cur.vertical_pos < prev.vertical_pos
+                && hwpunit_to_px(prev.vertical_pos + prev.line_height, dpi)
+                    >= body_height_px * 0.72
+                && hwpunit_to_px(cur.vertical_pos, dpi) <= body_height_px * 0.06;
+
+            if sample16_reset || hwp3_rewind_reset {
                 Some(prev_idx + 1)
             } else {
                 None
@@ -1311,6 +1325,7 @@ impl TypesetState {
             skip_footnote_margin_once: false,
             tail_overflow_tolerance_once: 0.0,
             is_hwp3_variant: false,
+            is_hwp3_source: false,
             is_hwpx_source: false,
             hide_empty_line: false,
             hidden_empty_lines: 0,
@@ -1972,6 +1987,7 @@ impl TypesetEngine {
             None,
             force_break_before,
             false,
+            false,
         )
     }
 
@@ -1999,6 +2015,7 @@ impl TypesetEngine {
         footnote_shape: Option<&FootnoteShape>,
         endnote_shape: Option<&FootnoteShape>,
         force_break_before: &std::collections::HashSet<usize>,
+        is_hwp3_source: bool,
         is_hwpx_source: bool,
     ) -> PaginationResult {
         let layout = PageLayoutInfo::from_page_def(page_def, column_def, self.dpi);
@@ -2036,6 +2053,7 @@ impl TypesetEngine {
         );
         st.hide_empty_line = hide_empty_line;
         st.is_hwp3_variant = is_hwp3_variant;
+        st.is_hwp3_source = is_hwp3_source;
         // [Task #1472] format_paragraph 의 미주 수식 indent_scale 보정용.
         self.is_hwp3_variant.set(is_hwp3_variant);
         st.is_hwpx_source = is_hwpx_source;
@@ -9995,6 +10013,7 @@ impl TypesetEngine {
             fmt.line_heights.len(),
             st.layout.body_area.height,
             self.dpi,
+            st.is_hwp3_source,
         )
         .or_else(|| {
             sample16_missing_lineseg_tail_break_line(
@@ -14187,6 +14206,7 @@ mod tests {
             Some(&shape),
             None,
             &std::collections::HashSet::new(),
+            false,
             false,
         );
 

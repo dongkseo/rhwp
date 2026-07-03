@@ -2363,6 +2363,7 @@ impl DocumentCore {
                     Some(&section.section_def.footnote_shape),
                     Some(&section.section_def.endnote_shape),
                     force_breaks.get(idx).unwrap_or(&empty_breaks),
+                    matches!(self.source_format, crate::parser::FileFormat::Hwp3),
                     is_hwpx_source,
                 )
             };
