@@ -278,6 +278,29 @@ jobs:
       # 아래 "Run lib tests"에 이미 포함된다. 별도 step 은 순수 중복이라 제거.
       # (native-skia 테스트는 default feature 가 아니므로 전용 step 을 유지한다.)
 
+      # [Task #1667] Keep the command surface unchanged, but run default-feature
+      # test targets immediately after Build so restored target reuse can be
+      # measured before wasm/native-skia feature changes affect fingerprints.
+      - name: Run integration tests
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] || [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/devel" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
+            cargo test --profile release-test --tests --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
+            cargo test --release --tests --verbose
+          fi
+
+      - name: Run lib tests
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] || [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/devel" ]]; then
+            echo "profile=release-test event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
+            cargo test --profile release-test --lib --verbose
+          else
+            echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
+            cargo test --release --lib --verbose
+          fi
+
       - name: Check WASM target
         run: cargo check --target wasm32-unknown-unknown --lib
 
@@ -297,26 +320,6 @@ jobs:
           else
             echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
             cargo test --release --features native-skia skia --lib --verbose
-          fi
-
-      - name: Run lib tests
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] || [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/devel" ]]; then
-            echo "profile=release-test event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
-            cargo test --profile release-test --lib --verbose
-          else
-            echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
-            cargo test --release --lib --verbose
-          fi
-
-      - name: Run integration tests
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] || [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/devel" ]]; then
-            echo "profile=release-test event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
-            cargo test --profile release-test --tests --verbose
-          else
-            echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
-            cargo test --release --tests --verbose
           fi
 
       - name: Clippy
