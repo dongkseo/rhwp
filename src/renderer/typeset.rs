@@ -10352,7 +10352,15 @@ impl TypesetEngine {
         } else {
             0.0
         };
-        let outer_bottom = if is_tac {
+        // [Task #1841] visible-host 자리차지(TopAndBottom) 표는 outer_margin_bottom 을
+        // 후속 재개 간격에 포함한다 (layout 재개 y 가산과 대칭 — 렌더/pagination 정합).
+        // 한글 실측: 표 하단→첫 줄 gap 한글 18.7pt = rhwp 10.2pt + outer_bottom 8.5pt
+        // (결재문서 헤더 표 852HU 계열, 동작소방서 36385142/관악소방서 36389312).
+        // 전면(모든 비-TAC) 적용은 한컴 핀 테스트(1086/1156/1692 쪽수·분할)와 충돌 —
+        // 렌더 좌표가 실제로 바뀌는 visible-host float 형상으로 한정한다.
+        let is_visible_host_float =
+            is_para_topbottom_float(&table.common) && para_has_non_whitespace_text(para);
+        let outer_bottom = if is_tac || is_visible_host_float {
             hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi)
         } else {
             0.0

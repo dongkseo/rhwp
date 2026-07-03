@@ -6067,6 +6067,15 @@ impl LayoutEngine {
                         );
                     }
                     table_y_end = table_visual_end;
+                    // [Task #1841] 자리차지(TopAndBottom) 표 아래에서 host 본문이 재개될 때
+                    // 표의 바깥 여백 bottom 을 띄운다 (한글 실측: 표 하단→첫 줄 gap =
+                    // rhwp 10.2pt + outer_bottom 8.5pt = 한글 18.7pt, 결재문서 헤더 표
+                    // 852HU 계열 — 동작소방서 36385142/관악소방서 36389312).
+                    let visible_outer_bottom_px = if is_current_visible_para_float {
+                        hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi)
+                    } else {
+                        0.0
+                    };
                     y_offset = if is_current_visible_para_float {
                         if signed_hwpunit(t.common.vertical_offset) > 0 {
                             table_y_before
@@ -6078,9 +6087,9 @@ impl LayoutEngine {
                             } else {
                                 0.0
                             };
-                            table_visual_end + inter_float_gap
+                            table_visual_end + inter_float_gap + visible_outer_bottom_px
                         } else {
-                            table_y_before.max(table_visual_end)
+                            table_y_before.max(table_visual_end + visible_outer_bottom_px)
                         }
                     } else if table_visual_shift > 0.0 {
                         (table_visual_end - table_visual_shift).max(table_y_before)

@@ -762,11 +762,19 @@ fn issue_1692_so_sueop_hwp3_page22_relationship_box_uses_table_flow() {
     let hwpx_body = text_bbox_containing_in_tree(&hwpx_tree, "윤두꺼비 시절 부친 말대가리")
         .expect("HWPX page 22 first body line bbox");
     let hwp3_table_bottom = hwp3_table.1 + hwp3_table.3;
+    // [Task #1841] 관계도 표(자리차지, outer_margin_bottom=852HU=11.36px) 아래 본문은
+    // 표 하단 + 바깥 여백 bottom 에서 시작한다. 권위 PDF(pdf/SO-SUEOP-2024.pdf p22)
+    // 실측: 표 하단 경계 246.0pt → 본문 첫 줄 상단 ≈255.6pt (gap ≈9.6pt ≈ om_bottom).
+    // 종전 "+1.5px 이내" 핀은 om_bottom 누락 렌더의 보상값이었다. 본 assert 의 목적
+    // (본문이 표 아래 flow 로 예약되는지)은 불변.
+    let om_bottom_px = 852.0 / 7200.0 * 96.0; // 11.36px
     assert!(
-        hwp3_body.1 >= hwp3_table_bottom - 0.5 && hwp3_body.1 <= hwp3_table_bottom + 1.5,
-        "HWP3 p22 body y={} must start immediately after relationship table bottom={}",
+        hwp3_body.1 >= hwp3_table_bottom + om_bottom_px - 1.5
+            && hwp3_body.1 <= hwp3_table_bottom + om_bottom_px + 1.5,
+        "HWP3 p22 body y={} must start at relationship table bottom={} + outer_margin_bottom={:.2}",
         hwp3_body.1,
-        hwp3_table_bottom
+        hwp3_table_bottom,
+        om_bottom_px
     );
     assert!(
         (hwp3_body.1 - hwpx_body.1).abs() <= 1.0,
@@ -792,11 +800,14 @@ fn issue_1692_so_sueop_hwp3_page22_relationship_box_uses_table_flow() {
 
     let hwp3_follow = text_bbox_in_tree(&hwp3_tree, " 그와 유사한 인물은?")
         .expect("HWP3 page 22 follow-up question bbox");
-    // SO-SUEOP-2024.pdf p22에서 pdftotext -bbox-layout로 추출한 yMin=359.796pt를
-    // 96dpi 렌더 좌표로 환산한 기준값이다.
-    let pdf_follow_y = 359.796 * 96.0 / 72.0;
+    // [Task #1841] 기준값 재측정: SO-SUEOP-2024.pdf p22 를 PyMuPDF line bbox 로
+    // 재측정한 y0=366.72pt(=489.0px). 종전 pdftotext -bbox-layout yMin=359.796pt
+    // (479.7px) 핀은 좌표 관례 차이로, 자리차지 표 outer_margin_bottom 누락 시절의
+    // 렌더(479.3px)와 우연히 일치했던 값이다. om_bottom 반영 후 본문 첫 줄도
+    // 권위 PDF y0=337.8px 와 0.8px 정합 (종전 325.6px = 12px 상향 오차).
+    let pdf_follow_y = 366.72 * 96.0 / 72.0;
     assert!(
-        (hwp3_follow.1 - pdf_follow_y).abs() <= 1.0,
+        (hwp3_follow.1 - pdf_follow_y).abs() <= 2.5,
         "HWP3 follow-up question y={} must match PDF y={}",
         hwp3_follow.1,
         pdf_follow_y

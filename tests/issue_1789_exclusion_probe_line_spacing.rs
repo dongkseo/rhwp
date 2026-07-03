@@ -5,10 +5,14 @@
 //! 공간에 들어가는 줄이 spacing 포함분 수 px 겹침만으로 표 아래로 밀린다.
 //!
 //! Regression shape (samples/task1789/exclusion_probe_line_spacing.hwpx, 36385142):
-//! - 문단 0.8("다. 위원구성…") 저장 lineseg vpos=34925 → y≈529.9px (표 위 유지)
-//! - zone top ≈ 552.7px, 잉크 하단 545.9px(겹침 없음), lh+ls 555.5px(2.8px 겹침)
-//! - 수정 전: 문단이 zone.bottom(≈875px)으로 밀려 345px 변위. HWP5 재파스 렌더와
-//!   저장 lineseg 는 529.9px 로 일치 (한컴 정답).
+//! - 문단 0.8("다. 위원구성…") 저장 lineseg vpos=34925 → 표 위 공간에 유지되어야 한다
+//! - 수정 전: 문단이 zone.bottom(≈875px)으로 밀려 345px 변위
+//!
+//! [Task #1841] 핀 좌표 정정: 종전 529.9px 는 om_bottom 누락 렌더의 보상값이었다.
+//! 저장 vpos 산술 = 34925HU(465.7px) + body_top 75.6px = 541.3px 이며, 헤더 표
+//! outer_margin_bottom(852HU=11.36px) 반영 후 렌더가 이 값에 수렴한다 (한글 2022
+//! PDF baseline 대조 p1 median +0.07pt — task_m100_1841 참조). 본 테스트의 목적
+//! (exclusion 프로브가 line_spacing 과대 판정으로 345px 밀지 않는지)은 불변.
 
 use std::fs;
 use std::path::Path;
@@ -52,10 +56,10 @@ fn issue_1789_line_above_para_float_table_stays_at_saved_vpos() {
     let mut ys = Vec::new();
     collect(&json, false, &mut ys);
 
-    // 문단 0.8 첫 줄: 저장 lineseg 위치(≈529.9px)에 있어야 한다.
+    // 문단 0.8 첫 줄: 저장 lineseg 위치(34925HU + body_top = ≈541.3px)에 있어야 한다.
     assert!(
-        ys.iter().any(|y| (y - 529.9).abs() < 2.0),
-        "표 위 공간에 들어가는 줄(저장 vpos=34925 → ≈529.9px)이 없다 — exclusion 프로브가 \
+        ys.iter().any(|y| (y - 541.3).abs() < 2.0),
+        "표 위 공간에 들어가는 줄(저장 vpos=34925 → ≈541.3px)이 없다 — exclusion 프로브가 \
          line_spacing 포함 높이로 과대 판정하여 표 아래로 밀었을 가능성. body TextLine y: {:?}",
         ys.iter()
             .map(|y| (y * 10.0).round() / 10.0)
