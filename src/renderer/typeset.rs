@@ -32,9 +32,40 @@ use crate::renderer::{
 // rendering.rs에서 paragraphs + endnote_paragraphs를 합쳐서 전달.
 use super::pagination::{
     estimate_footnote_note_height, footnote_between_notes_margin_px,
-    footnote_separator_overhead_px, ColumnContent, EndnoteParaSource, EndnoteRef, FootnoteRef,
-    FootnoteSource, HeaderFooterRef, PageContent, PageItem, PaginationResult,
+    footnote_separator_overhead_px, ColumnContent, EndnoteDeferral, EndnoteParaSource, EndnoteRef,
+    FootnoteRef, FootnoteSource, HeaderFooterRef, PageContent, PageItem, PaginationResult,
 };
+
+/// [미주 배치] `en_ref` 의 미주 본문(en_ctrl)을 해석한다. 현재 구역 미주면 본문
+/// paragraphs 에서, END_OF_DOCUMENT 로 문서 끝에 모인 앞 구역 미주면 deferral
+/// 목록에서 찾는다. (참조 표시 위첨자는 원 위치에 남고 본문만 여기서 렌더.)
+fn resolve_endnote_content<'a>(
+    en_ref: &EndnoteRef,
+    section_index: usize,
+    paragraphs: &'a [Paragraph],
+    deferral: &'a EndnoteDeferral<'a>,
+) -> Option<&'a crate::model::footnote::Endnote> {
+    if en_ref.section_index == section_index {
+        match paragraphs
+            .get(en_ref.para_index)
+            .and_then(|p| p.controls.get(en_ref.control_index))
+        {
+            Some(Control::Endnote(en_ctrl)) => Some(en_ctrl.as_ref()),
+            _ => None,
+        }
+    } else if let EndnoteDeferral::RenderAll(deferred) = deferral {
+        deferred
+            .iter()
+            .find(|d| {
+                d.reff.section_index == en_ref.section_index
+                    && d.reff.para_index == en_ref.para_index
+                    && d.reff.control_index == en_ref.control_index
+            })
+            .map(|d| &d.endnote)
+    } else {
+        None
+    }
+}
 
 fn note_number_format_from_hwp_code(code: u8) -> RenderNumberFormat {
     match code {
@@ -1988,6 +2019,7 @@ impl TypesetEngine {
             force_break_before,
             false,
             false,
+            EndnoteDeferral::None,
         )
     }
 
@@ -2017,6 +2049,7 @@ impl TypesetEngine {
         force_break_before: &std::collections::HashSet<usize>,
         is_hwp3_source: bool,
         is_hwpx_source: bool,
+        endnote_deferral: EndnoteDeferral<'_>,
     ) -> PaginationResult {
         let layout = PageLayoutInfo::from_page_def(page_def, column_def, self.dpi);
         self.is_hwpx_source.set(is_hwpx_source);
@@ -3497,6 +3530,22 @@ impl TypesetEngine {
             variant_prev_para_idx = Some(para_idx);
         }
 
+        // [미주 배치 — Hancom EndnoteEndOfSection/EndnoteEndOfDocument]
+        // 기본(None)/단일 구역: 이 구역 미주를 구역 끝에 렌더 (구역 끝 ≡ 문서 끝).
+        // Suppress(END_OF_DOCUMENT 비-마지막 구역): 참조 표시는 인라인 유지, 본문은
+        //   문서 끝으로 미루므로 여기서 비운다.
+        // RenderAll(END_OF_DOCUMENT 마지막 구역): 앞선 구역 미주(문서 순서) → 이 구역
+        //   미주 순으로 endnote_refs 앞에 이어 붙여 모두 문서 끝에 렌더한다.
+        match &endnote_deferral {
+            EndnoteDeferral::Suppress => st.endnotes.clear(),
+            EndnoteDeferral::RenderAll(deferred) => {
+                let mut merged: Vec<EndnoteRef> = deferred.iter().map(|d| d.reff.clone()).collect();
+                merged.append(&mut st.endnotes);
+                st.endnotes = merged;
+            }
+            EndnoteDeferral::None => {}
+        }
+
         // [Task #836] 미주 paragraphs를 본문 흐름에 가상 삽입
         // 한컴 정합: 미주는 섹션 마지막에 일반 본문처럼 2단 레이아웃 플로우를 따름
         // 미주 paragraphs를 endnote_paragraphs Vec에 모으고, ENDNOTE_PARA_BASE 이상 인덱스로 마킹
@@ -3531,8 +3580,11 @@ impl TypesetEngine {
             }
 
             for (en_ref_idx, en_ref) in endnote_refs.iter().enumerate() {
-                if let Some(para) = paragraphs.get(en_ref.para_index) {
-                    if let Some(Control::Endnote(en_ctrl)) = para.controls.get(en_ref.control_index)
+                // [미주 배치] 현재 구역 미주는 본문 paragraphs 에서, 문서 끝으로 미뤄진
+                // 앞 구역 미주(RenderAll)는 deferral 목록에서 본문(en_ctrl)을 해석한다.
+                if let Some(en_ctrl) =
+                    resolve_endnote_content(en_ref, section_index, paragraphs, &endnote_deferral)
+                {
                     {
                         if !emitted_endnote_separator {
                             if let (Some(shape), Some(profile)) =
@@ -14208,6 +14260,7 @@ mod tests {
             &std::collections::HashSet::new(),
             false,
             false,
+            EndnoteDeferral::None,
         );
 
         let expected = footnote_separator_overhead_px(&shape, DEFAULT_DPI)
