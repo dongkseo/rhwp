@@ -184,6 +184,9 @@ pub struct TypesetEngine {
 /// 한글은 하드 페이지 경계 직전 tail 을 본문 하단(여백 침범 무시)에 배치하므로, rhwp 가 수 px
 /// over-fill 한 경우에도 tail 을 현재 페이지에 유지해 near-empty 페이지 over-pagination 을 막는다.
 const TAIL_BREAK_OVERFLOW_TOLERANCE_PX: f64 = 20.0;
+/// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
+/// 제한된 tail 경로에만 허용하는 누적 높이 drift 완화값.
+const SAVED_TAIL_VPOS_OVERFLOW_TOLERANCE_PX: f64 = 128.0;
 
 struct TypesetState {
     /// 완성된 페이지 목록
@@ -1131,8 +1134,51 @@ fn line_seg_visible_bounds_px(seg: &LineSeg, page_vpos_base: i32, dpi: f64) -> O
 }
 
 fn saved_bounds_fit_at_flow_tail(bounds: (f64, f64), current_height: f64, available: f64) -> bool {
+    saved_bounds_fit_at_flow_tail_with_tolerance(bounds, current_height, available, 16.0)
+}
+
+fn saved_bounds_fit_at_flow_tail_with_tolerance(
+    bounds: (f64, f64),
+    current_height: f64,
+    available: f64,
+    tolerance_px: f64,
+) -> bool {
     let (top, bottom) = bounds;
-    top + 16.0 >= current_height && bottom <= available + 0.5
+    top + tolerance_px >= current_height && bottom <= available + 0.5
+}
+
+fn saved_line_range_fits_body_tail(
+    para: &Paragraph,
+    start_line: usize,
+    end_line: usize,
+    body_height_px: f64,
+    dpi: f64,
+) -> bool {
+    if start_line >= end_line || end_line > para.line_segs.len() {
+        return false;
+    }
+
+    let mut prev_vpos: Option<i32> = None;
+    for seg in &para.line_segs[start_line..end_line] {
+        if is_synthetic_line_seg(seg) || seg.vertical_pos <= 0 {
+            return false;
+        }
+        if prev_vpos.is_some_and(|prev| seg.vertical_pos < prev) {
+            return false;
+        }
+        let bottom_px = hwpunit_to_px(seg.vertical_pos + seg.line_height, dpi);
+        if bottom_px > body_height_px + 0.5 {
+            return false;
+        }
+        prev_vpos = Some(seg.vertical_pos);
+    }
+
+    true
+}
+
+fn paragraph_text_looks_like_list_continuation_tail(para: &Paragraph) -> bool {
+    let text = para.text.trim_start();
+    text.starts_with('.') || text.starts_with('-') || text.starts_with('·') || text.starts_with('•')
 }
 
 /// [Task #1749] 저장 flow 가 이 문단을 "페이지 마지막 줄"로 인코딩했는가.
@@ -2471,6 +2517,76 @@ impl TypesetEngine {
                 st.skip_safety_margin_once = true;
                 st.skip_footnote_margin_once = true;
                 st.tail_overflow_tolerance_once = TAIL_BREAK_OVERFLOW_TOLERANCE_PX;
+            }
+
+            // [Task #1733] 페이지 하단 빈 줄이 다음 vpos-reset 흐름 앞에 1개 이상 끼는 경우.
+            // 기존 가드는 "현재 빈 문단 바로 다음이 reset" 인 경우만 흡수한다. 국제고속선기준은
+            // 빈 줄 2개 뒤 본문이 새 쪽 상단으로 reset 되거나, 빈 줄 뒤 하단 제목 1줄이 있고
+            // 그 다음 본문이 reset 되는 형태가 있어 near-empty 페이지가 남는다. 현재 빈 문단이
+            // 이미 페이지 하단 vpos 를 가지고 있고, 뒤쪽 저장 flow 가 reset 을 명확히 보일 때만
+            // 0-높이로 흡수한다.
+            let empty_tail_bridge_to_reset = !next_will_vpos_reset
+                && !st.current_items.is_empty()
+                && !st
+                    .current_items
+                    .iter()
+                    .any(|item| matches!(item, PageItem::PartialTable { .. }))
+                && para.text.is_empty()
+                && para.controls.is_empty()
+                && para.line_segs.first().is_some_and(|seg| {
+                    let body_h_hu =
+                        crate::renderer::px_to_hwpunit(st.layout.body_area.height, self.dpi);
+                    seg.vertical_pos > body_h_hu * 70 / 100
+                })
+                && {
+                    let mut idx = para_idx + 1;
+                    let mut prev = para;
+                    let mut found = false;
+                    while let Some(next_para) = paragraphs.get(idx) {
+                        if next_para.text.is_empty() && next_para.controls.is_empty() {
+                            prev = next_para;
+                            idx += 1;
+                            continue;
+                        }
+
+                        let reset_after_empty_run =
+                            paragraph_saved_vpos_reset_starts_new_page_after(
+                                prev,
+                                next_para,
+                                st.col_count,
+                                st.is_hwp3_variant,
+                            );
+                        let high_tail_heading_then_reset = para_has_visible_text(next_para)
+                            && next_para.controls.is_empty()
+                            && next_para.line_segs.first().is_some_and(|seg| {
+                                let body_h_hu = crate::renderer::px_to_hwpunit(
+                                    st.layout.body_area.height,
+                                    self.dpi,
+                                );
+                                seg.vertical_pos > body_h_hu * 70 / 100
+                            })
+                            && paragraphs.get(idx + 1).is_some_and(|after| {
+                                after.column_type != ColumnBreakType::Page
+                                    && after.column_type != ColumnBreakType::Section
+                                    && paragraph_saved_vpos_reset_starts_new_page_after(
+                                        next_para,
+                                        after,
+                                        st.col_count,
+                                        st.is_hwp3_variant,
+                                    )
+                            });
+
+                        found = reset_after_empty_run || high_tail_heading_then_reset;
+                        break;
+                    }
+                    found
+                };
+            if empty_tail_bridge_to_reset {
+                st.hidden_empty_paras.insert(para_idx);
+                st.current_items.push(PageItem::FullParagraph {
+                    para_index: para_idx,
+                });
+                continue;
             }
 
             if next_will_vpos_reset {
@@ -9925,10 +10041,31 @@ impl TypesetEngine {
                 .is_some_and(|bounds| {
                     saved_bounds_fit_at_flow_tail(bounds, st.current_height, st.available_height())
                 });
+        let saved_list_tail_body_vpos_fits = forced_page_break_line.is_none()
+            && st.col_count == 1
+            && fmt.line_heights.len() == 1
+            && fmt.spacing_after <= 0.5
+            && para.controls.is_empty()
+            && !st.current_items.is_empty()
+            && paragraph_text_looks_like_list_continuation_tail(para)
+            && saved_flow_marks_page_last(paragraphs, para_idx)
+            && para
+                .line_segs
+                .first()
+                .and_then(|seg| line_seg_visible_bounds_px(seg, 0, self.dpi))
+                .is_some_and(|bounds| {
+                    saved_bounds_fit_at_flow_tail_with_tolerance(
+                        bounds,
+                        st.current_height,
+                        st.base_available_height(),
+                        SAVED_TAIL_VPOS_OVERFLOW_TOLERANCE_PX,
+                    )
+                });
 
         if forced_page_break_line.is_none()
             && (st.current_height + fmt.height_for_fit <= available
-                || saved_single_line_bottom_fits)
+                || saved_single_line_bottom_fits
+                || saved_list_tail_body_vpos_fits)
         {
             // place: 전체 배치
             st.current_items.push(PageItem::FullParagraph {
@@ -10176,6 +10313,7 @@ impl TypesetEngine {
             // 현재 페이지에 들어갈 줄 범위 결정
             let mut cumulative = 0.0;
             let mut end_line = cursor_line;
+            let mut used_saved_tail_vpos_fit = false;
             for li in cursor_line..line_count {
                 if forced_page_break_line
                     .map(|break_line| li == break_line && li > cursor_line)
@@ -10222,9 +10360,29 @@ impl TypesetEngine {
                                 bottom_px <= st.base_available_height()
                             })
                             .unwrap_or(false);
-                    if !hwp_authoritative {
+                    let overflow = cumulative + content_h - avail_for_lines;
+                    // [Task #1733] 국제고속선기준 잔여 over-pagination 완화:
+                    // 누적 높이 drift 로는 다음 쪽으로 밀리지만, 저장 LINE_SEG 가 남은
+                    // tail 줄들을 모두 현재 쪽 본문 하단 안에 두고 있고 중간 vpos reset 이
+                    // 없으면 한컴 저장 flow 를 신뢰한다. 문단 전체/표/다단에는 적용하지 않고
+                    // partial paragraph split 지점에서만 작동시켜 하단 겹침 회귀를 줄인다.
+                    let saved_tail_vpos_fit = forced_page_break_line.is_none()
+                        && st.col_count == 1
+                        && para.controls.is_empty()
+                        && !st.current_items.is_empty()
+                        && !para_near_rowbreak_table(paragraphs, para_idx)
+                        && overflow <= SAVED_TAIL_VPOS_OVERFLOW_TOLERANCE_PX
+                        && saved_line_range_fits_body_tail(
+                            para,
+                            li,
+                            line_count,
+                            st.base_available_height(),
+                            self.dpi,
+                        );
+                    if !hwp_authoritative && !saved_tail_vpos_fit {
                         break;
                     }
+                    used_saved_tail_vpos_fit |= saved_tail_vpos_fit;
                 }
                 cumulative += fmt.line_advance(li);
                 end_line = li + 1;
@@ -10290,7 +10448,10 @@ impl TypesetEngine {
                 } else {
                     cumulative
                 };
-                if overflow_threshold > avail_for_lines && !st.current_items.is_empty() {
+                if overflow_threshold > avail_for_lines
+                    && !st.current_items.is_empty()
+                    && !used_saved_tail_vpos_fit
+                {
                     st.advance_column_or_new_page();
                     continue;
                 }
@@ -11845,10 +12006,27 @@ impl TypesetEngine {
                     crate::renderer::hwpunit_to_px(first_seg.vertical_pos as i32, self.dpi);
                 // 호스트 본문 lines + 표는 절대 좌표 → cur_h 는 first_vpos + host lines 만 진행.
                 let pre_lines_h = fmt.line_advances_sum(0..fmt.line_heights.len());
-                if target_y > st.current_height && target_y + pre_lines_h <= available {
-                    st.current_height = target_y;
+                let can_sync = target_y > st.current_height && target_y + pre_lines_h <= available;
+                // [Task #1858] Paper 앵커 자리차지 표는 절대좌표(table_layout vert=Paper)로
+                // 그려지며 flow 를 소비하지 않는다. 첫 박스는 host vpos 로 current_height 를
+                // sync 해 본문 텍스트를 정렬하지만, 같은 host 문단에 co-anchored 된 후속 Paper
+                // 박스는 target_y(=동일 host vpos)가 이미 sync 된 current_height 이하라 기존
+                // 가드(target_y > current_height)를 통과하지 못하고 flow 경로로 빠져 각 박스가
+                // 높이를 소비 → 페이지가 폭발했다(3143097: 용지앵커 서식상자 22개가 모두 1쪽
+                // 용지좌표에 있는데 한컴 1쪽 대비 rhwp 3~4쪽). 후속 co-anchored Paper 박스도
+                // 절대배치(0 flow)한다. 단독 Paper 박스(선행 없음·sync 불가)는 기존대로 flow.
+                let has_preceding_paper_float = para.controls.iter().take(ctrl_idx).any(|c| {
+                    matches!(c, Control::Table(t)
+                        if !t.common.treat_as_char
+                            && matches!(t.common.text_wrap, TextWrap::TopAndBottom)
+                            && matches!(t.common.vert_rel_to, VertRelTo::Paper))
+                });
+                if can_sync || has_preceding_paper_float {
+                    if can_sync {
+                        st.current_height = target_y;
+                    }
                     // table_total = 0: 표 자체는 cur_h advance 에 영향 없음 (Paper-absolute).
-                    // 호스트 본문 lines 만 place_table_with_text 가 pre_height 로 추가.
+                    // 호스트 본문 lines 만 place_table_with_text 가 pre_height 로 추가(첫 박스만).
                     self.place_table_with_text(
                         st,
                         para_idx,
@@ -12298,11 +12476,31 @@ impl TypesetEngine {
         // 단 상단 시작 표(18151945 별표7)와 텍스트 선행 표는 기존 분할 유지.
         let total_rows_h: f64 =
             cut_row_h.iter().sum::<f64>() + cs * row_count.saturating_sub(1) as f64;
-        let preceded_by_same_para_float = st.current_items.iter().any(|it| match it {
-            PageItem::Table { para_index, .. } | PageItem::PartialTable { para_index, .. } => {
-                *para_index == para_idx
-            }
-            _ => false,
+        // [Task #1853] 이월 그룹은 같은 문단의 **진짜 flow 스택 float**(자리차지·문단
+        // 앵커·글자처럼 아님)로 한정한다. 선행 항목의 소스 컨트롤을 조회해
+        // is_para_topbottom(!tac && TopAndBottom && vert=Para) 인 표만 선행 float 로
+        // 센다. `para_index` 만 비교하면 (a) 표 자신의 tac=true 캡션 상자(156767631
+        // 캡션 ci=1, 78842 캡션 ci=0)나 (b) vert=용지 페이지-절대 앵커 상자(3143097
+        // pi2 의 상자 22개)까지 "선행 형제 float" 로 오분류해, 분할 가능한 본체 표를
+        // 통째로 다음 쪽으로 밀어 +1쪽 회귀가 났다(#1844 서베이). 별표4(2448877)의
+        // 표1 은 tac=false·TopAndBottom·vert=Para 라 그대로 인정되어 정합을 유지한다.
+        let preceded_by_same_para_float = st.current_items.iter().any(|it| {
+            let ci = match it {
+                PageItem::Table {
+                    para_index,
+                    control_index,
+                }
+                | PageItem::PartialTable {
+                    para_index,
+                    control_index,
+                    ..
+                } if *para_index == para_idx => *control_index,
+                _ => return false,
+            };
+            matches!(
+                para.controls.get(ci),
+                Some(Control::Table(t)) if is_para_topbottom_float(&t.common)
+            )
         });
         if row_count > 1 && preceded_by_same_para_float {
             let remaining_now =
@@ -14215,6 +14413,85 @@ mod tests {
     }
 
     #[test]
+    fn multiline_saved_vpos_tail_does_not_split_to_near_empty_page() {
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let layout = PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI);
+        let body_height_hu =
+            crate::renderer::px_to_hwpunit(layout.available_body_height(), DEFAULT_DPI);
+        let line_height = 1200;
+        let line_spacing = 720;
+        let first_vpos = body_height_hu - (line_height + line_spacing) * 3 - line_height;
+        let lead_height = first_vpos + line_height;
+
+        let paras = vec![
+            Paragraph {
+                text: "lead".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: lead_height,
+                    text_height: lead_height,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                text: "tail one\ntail two\ntail three\ntail four".to_string(),
+                line_segs: (0..4)
+                    .map(|line_idx| LineSeg {
+                        vertical_pos: first_vpos + (line_height + line_spacing) * line_idx,
+                        line_height,
+                        text_height: line_height,
+                        line_spacing,
+                        text_start: line_idx as u32 * 9,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            Paragraph {
+                text: "next page".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &[],
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        assert_eq!(result.pages.len(), 2);
+        assert!(matches!(
+            result.pages[0].column_contents[0].items.as_slice(),
+            [
+                PageItem::FullParagraph { para_index: 0 },
+                PageItem::FullParagraph { para_index: 1 }
+            ]
+        ));
+        assert!(matches!(
+            result.pages[1].column_contents[0].items.as_slice(),
+            [PageItem::FullParagraph { para_index: 2 }]
+        ));
+    }
+
+    #[test]
     fn page_bottom_empty_paragraph_before_vpos_reset_does_not_create_blank_page() {
         let engine = TypesetEngine::with_default_dpi();
         let styles = ResolvedStyleSet::default();
@@ -14287,6 +14564,98 @@ mod tests {
         assert!(matches!(
             result.pages[1].column_contents[0].items.as_slice(),
             [PageItem::FullParagraph { para_index: 2 }]
+        ));
+    }
+
+    #[test]
+    fn page_bottom_empty_run_before_vpos_reset_does_not_create_blank_page() {
+        let engine = TypesetEngine::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let layout = PageLayoutInfo::from_page_def(&page_def, &col_def, DEFAULT_DPI);
+        let body_height_hu =
+            crate::renderer::px_to_hwpunit(layout.available_body_height(), DEFAULT_DPI);
+        let line_height = 1200;
+        let line_spacing = 720;
+
+        let paras = vec![
+            Paragraph {
+                text: "lead".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height: body_height_hu - 5000,
+                    text_height: body_height_hu - 5000,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                line_segs: vec![LineSeg {
+                    vertical_pos: body_height_hu - 3800,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                line_segs: vec![LineSeg {
+                    vertical_pos: body_height_hu - 1880,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Paragraph {
+                text: "next page".to_string(),
+                line_segs: vec![LineSeg {
+                    vertical_pos: 0,
+                    line_height,
+                    text_height: line_height,
+                    line_spacing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        let composed: Vec<ComposedParagraph> = Vec::new();
+
+        let result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &[],
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        assert_eq!(result.pages.len(), 2);
+        assert!(result.hidden_empty_paras.contains(&1));
+        assert!(result.hidden_empty_paras.contains(&2));
+        let has_empty_only_page = result.pages.iter().any(|page| {
+            page.column_contents.iter().any(|col| {
+                matches!(
+                    col.items.as_slice(),
+                    [PageItem::FullParagraph { para_index: 1 }]
+                        | [PageItem::FullParagraph { para_index: 2 }]
+                        | [
+                            PageItem::FullParagraph { para_index: 1 },
+                            PageItem::FullParagraph { para_index: 2 }
+                        ]
+                )
+            })
+        });
+        assert!(!has_empty_only_page);
+        assert!(matches!(
+            result.pages[1].column_contents[0].items.as_slice(),
+            [PageItem::FullParagraph { para_index: 3 }]
         ));
     }
 
