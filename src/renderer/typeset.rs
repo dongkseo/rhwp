@@ -2004,6 +2004,14 @@ impl TypesetEngine {
             if st.prefilled_paras.contains(&para_idx) {
                 continue;
             }
+            if std::env::var("RHWP_FLOW_DBG").is_ok() {
+                eprintln!(
+                    "FLOW_DBG pi={} page={} cur_h={:.1}",
+                    para_idx,
+                    st.pages.len(),
+                    st.current_height
+                );
+            }
             // 표 컨트롤 감지
             let has_table = self.paragraph_has_table(para);
 
@@ -12260,6 +12268,44 @@ impl TypesetEngine {
             caption_base_overhead
         };
 
+        // [Task #1831] 한글 float 정합 — **같은 문단에 앵커된 선행 float(표)
+        // 아래로 밀려 내려온** 다행(多行) 자리차지 표가 현재 단 잔여 공간에
+        // 통째로 들어가지 않으면 첫 조각을 단 중간에 만들지 않고 표 전체를
+        // 다음 단/페이지 상단으로 민다. 실측(2448877 별표4 + 변형 스윕,
+        // output/poc/task1831/):
+        // - 표1(같은 문단) 뒤 잔여 197px: 한글은 표2 전체를 다음 쪽으로
+        //   (repeat_header·제목셀 유무 무관, 표가 새 페이지보다 커도 동일).
+        // - 표1을 지우고 텍스트 필러로 잔여 133~880px 스윕: 전 구간 분할 —
+        //   텍스트만 선행하면 잔여와 무관하게 기존대로 분할한다.
+        // - 다른 문단의 선행 float 는 밀기를 유발하지 않는다: 36387040 결재문서
+        //   pi=46(8×3)은 위에 pi=41/43/44 표가 있어도 한글이 p4/p5 로 분할.
+        // 즉 같은 앵커 문단의 float 스택 멤버만 통째-이월 그룹으로 다뤄진다.
+        // 단 상단 시작 표(18151945 별표7)와 텍스트 선행 표는 기존 분할 유지.
+        let total_rows_h: f64 =
+            cut_row_h.iter().sum::<f64>() + cs * row_count.saturating_sub(1) as f64;
+        let preceded_by_same_para_float = st.current_items.iter().any(|it| match it {
+            PageItem::Table { para_index, .. } | PageItem::PartialTable { para_index, .. } => {
+                *para_index == para_idx
+            }
+            _ => false,
+        });
+        if row_count > 1 && preceded_by_same_para_float {
+            let remaining_now =
+                (table_available - st.current_height - first_frag_overhead).max(0.0);
+            if total_rows_h + caption_base_overhead > remaining_now {
+                self.prefill_before_deferred_table(
+                    st,
+                    para_idx,
+                    para,
+                    table,
+                    paragraphs_all,
+                    composed_all,
+                    styles,
+                );
+                st.advance_column_or_new_page();
+            }
+        }
+
         // 행 단위 + 인트라-로우 분할 루프 (기존 Paginator split_table_rows 동일)
         let mut cursor_row: usize = 0;
         let mut is_continuation = false;
@@ -12358,7 +12404,26 @@ impl TypesetEngine {
                 } else {
                     0.0
                 };
-            let avail_for_rows = (page_avail - header_overhead).max(0.0);
+            let avail_for_rows = {
+                // [Task #1831] 단 상단에서 시작하는 첫 fragment 가 표 **전체** 기준
+                // 근소(≤2px) 오차로만 넘치면 전체 배치를 허용한다 — 행높이 측정
+                // 드리프트로 마지막 행/블록이 다음 쪽으로 밀리는 것을 방지. 실측:
+                // 2448877 표2 = 캡션 28.7 + 행합 914.2 vs 가용 941.1 (1.8px 초과)
+                // 인데 한글은 한 쪽(p2)에 통째 배치. 전체가 들어갈 때만 적용하므로
+                // 분할 경계 산정에는 영향 없음.
+                const WHOLE_TABLE_FIT_TOLERANCE_PX: f64 = 2.0;
+                let base = (page_avail - header_overhead).max(0.0);
+                if !is_continuation
+                    && cursor_row == 0
+                    && start_cut.is_empty()
+                    && total_rows_h > base
+                    && total_rows_h <= base + WHOLE_TABLE_FIT_TOLERANCE_PX
+                {
+                    total_rows_h
+                } else {
+                    base
+                }
+            };
 
             // [Task #1046 Stage 2 진단] 첫/연속 fragment 의 가용공간 분해 — 렌더러
             // y_start 점프(vert_offset)·host_before 와의 정합 확인용. 동작 불변(게이트).

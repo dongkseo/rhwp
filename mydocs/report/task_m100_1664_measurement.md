@@ -12,6 +12,10 @@ run 측정값은 #1702 draft 코드 PR 기준 관측값이다. #1702가 merge되
 2026-07-01 후속 문서 PR에서는 #1702 merge 이후 관측한 cache cleanup, trusted branch save, 후속 exact-hit
 결과를 이 문서에 추가한다. GitHub 이슈 코멘트에 남긴 최종 관측을 장기 측정 원천 문서로 이관하는 목적이다.
 
+2026-07-03 후속 문서 PR에서는 #1702 merge 이후 #1739 merge 전까지의 순수 #1664 구간 표본을 추가해
+PR run과 trusted `devel` push run의 P50/P90을 보강한다. #1739 이후 run은 #1666 profile 전환 효과가
+섞이므로 #1664 P50/P90에는 포함하지 않는다.
+
 정책/의사결정 원천 문서:
 
 - `mydocs/report/task_m100_1668_ci_pipeline_tracking.md`
@@ -81,15 +85,103 @@ PR run에서는 cache save가 skipped 되어야 한다.
 
 ## P50/P90 요약
 
-샘플 수가 충분할 때 갱신한다.
+샘플 수가 충분할 때 갱신한다. #1664 순수 구간은 #1702 merge 이후부터 #1739 merge 전까지로 잡는다.
+
+- 시작: #1702 merge, 2026-07-01 14:36:10 KST
+- 종료: #1739 merge 직전, 2026-07-01 22:58:02 KST
+- 이유: #1739 이후에는 #1666 `release-test` profile 전환 효과가 섞여 #1664 cache 정책 효과와 분리해야 한다.
 
 | 구간 | 대상 | 샘플 수 | P50 | P90 | 비고 |
 |------|------|---------|-----|-----|------|
 | before | PR checks 완료 시간 | TBD | TBD | TBD | 기존 run 수집 필요 |
-| after | PR checks 완료 시간 | 1 | 보류 | 보류 | #1702 단일 관측값 약 19m23s |
+| after | PR checks 완료 시간 | 20 | 23m25s | 26m50s | #1702 merge 후 #1739 merge 전, `Build & Test` 실행 PR success 기준. #1739/#1666 profile 변경 run 제외 |
 | before | `CI / Build & Test` job 시간 | TBD | TBD | TBD | 기존 run 수집 필요 |
-| after | `CI / Build & Test` job 시간 | 1 | 보류 | 보류 | #1702 단일 관측값 19m08s |
-| after | trusted branch `Build & Test` job 시간 | 2 | 보류 | 보류 | post-merge `devel` 22m53s / 18m02s. PR checks P50/P90 표본과 분리 |
+| after | PR `CI / Build & Test` job 시간 | 20 | 22m34s | 23m46s | #1664 PR cache 정책 구간. #1739/#1666 profile 변경 run 제외 |
+| after | PR Build step | 20 | 4m45s | 4m58s | #1664 PR cache 정책 구간 |
+| after | PR Native Skia tests step | 20 | 5m04s | 5m18s | #1664 PR cache 정책 구간 |
+| after | PR Run lib tests step | 20 | 3m51s | 4m01s | #1664 PR cache 정책 구간 |
+| after | PR Run integration tests step | 20 | 6m12s | 6m31s | #1664 PR cache 정책 구간 |
+| after | trusted branch `Build & Test` job 시간 | 12 | 18m21s | 23m22s | #1702 merge 후 #1739 merge 전 `devel` push success |
+| after | trusted branch Build step | 12 | 3m32s | 4m49s | #1702 merge 후 #1739 merge 전 |
+| after | trusted branch Native Skia tests step | 12 | 4m00s | 5m03s | #1702 merge 후 #1739 merge 전 |
+| after | trusted branch Run lib tests step | 12 | 3m45s | 4m01s | #1702 merge 후 #1739 merge 전 |
+| after | trusted branch Run integration tests step | 12 | 4m49s | 6m23s | #1702 merge 후 #1739 merge 전 |
+| after | trusted branch Clippy step | 12 | 26s | 46s | #1702 merge 후 #1739 merge 전 |
+
+## #1702 merge 후 #1739 merge 전 순수 #1664 표본
+
+이 절은 #1664 cache save 정책을 평가하기 위한 보강 표본이다. #1739 이후 run은 #1666 profile 전환으로
+step time이 달라지므로 이 표본에서 제외한다.
+
+### PR run
+
+집계 기준:
+
+- 기간: 2026-07-01 14:36:10 KST - 2026-07-01 22:58:02 KST
+- `pull_request` success run 중 `Build & Test`가 실제 실행된 run: 21개
+- 그중 #1739/#1666 profile 변경 run 1개는 step-time P50/P90에서 제외
+- step-time P50/P90 표본: 20개
+- fast-pass로 `Build & Test`가 skipped 된 success run: 10개
+
+| 항목 | n | min | P50 | P90 | max |
+|------|---|-----|-----|-----|-----|
+| PR checks 완료 시간 | 20 | 15m38s | 23m25s | 26m50s | 34m59s |
+| `CI / Build & Test` job | 20 | 15m25s | 22m34s | 23m46s | 24m32s |
+| Build | 20 | 2m44s | 4m45s | 4m58s | 5m02s |
+| Native Skia tests | 20 | 3m08s | 5m04s | 5m18s | 5m31s |
+| Run lib tests | 20 | 2m59s | 3m51s | 4m01s | 4m10s |
+| Run integration tests | 20 | 3m40s | 6m12s | 6m31s | 6m38s |
+
+cache save:
+
+| 항목 | 값 |
+|------|----|
+| `Build & Test` 실행 PR success run | 21개 |
+| PR `Save cargo registry & build cache` | 21/21 skipped |
+| fast-pass로 `Build & Test` skipped 된 PR success run | 10개 |
+| 판단 | #1664의 PR restore-only / save 차단 정책이 누적 PR 표본에서도 유지됨 |
+
+주의:
+
+- #1739/#1666 PR run은 같은 시간창에 있지만 workflow 자체가 `release-test` profile로 바뀌므로 step-time
+  P50/P90에는 포함하지 않는다.
+- PR checks 완료 시간은 queue, update branch, cancel/retry 영향을 받으므로 `Build & Test` job 시간보다
+  보조 지표로 해석한다.
+
+### trusted `devel` push run
+
+집계 기준:
+
+- 기간: 2026-07-01 14:36:10 KST - 2026-07-01 22:58:02 KST
+- `devel` push success run: 12개
+- #1739 merge 이후 run 제외
+
+| 항목 | n | min | P50 | P90 | max |
+|------|---|-----|-----|-----|-----|
+| `CI / Build & Test` job | 12 | 15m59s | 18m21s | 23m22s | 24m14s |
+| Build | 12 | 2m52s | 3m32s | 4m49s | 4m50s |
+| Native Skia tests | 12 | 3m18s | 4m00s | 5m03s | 5m10s |
+| Run lib tests | 12 | 3m19s | 3m45s | 4m01s | 4m06s |
+| Run integration tests | 12 | 3m53s | 4m49s | 6m23s | 6m40s |
+| Clippy | 12 | 20s | 26s | 46s | 48s |
+
+cache save:
+
+| 항목 | 값 |
+|------|----|
+| trusted `devel` push success run | 12개 |
+| `Save cargo registry & build cache` success | 4개 |
+| `Save cargo registry & build cache` skipped | 8개 |
+| 대표 saved/exact key | `Linux-cargo-6a1af...` |
+| 대표 cache 크기 | 1,637,296,893 B |
+| 판단 | 초기 trusted branch run에서 save가 수행되고, 이후 exact hit 상태에서는 save skipped로 안정화됨 |
+
+해석:
+
+- #1664의 핵심 정책인 PR save 차단과 trusted branch save 허용은 누적 표본에서도 유지됐다.
+- trusted branch `Build & Test` P50은 18m21s로, #1666 적용 전 기준선을 형성한다.
+- #1666 이후 `devel` push가 50분대로 증가한 현상은 #1664 cache 정책 효과가 아니라 #1666 release
+  integration 정책 효과로 분리해 해석한다.
 
 ## cache 상태 요약
 
@@ -247,7 +339,8 @@ cleanup 직후 `devel` rerun:
 - run head `5e3b1ec...` 기준 `tests/*.rs` 162개, `tests/issue_*.rs` 131개 유지.
 - CI integration test binary 관측은 전체 165개, issue binary 131개다.
 - post-merge `devel` run은 PR checks P50/P90 표본이 아니므로 PR checks 분포 산출에는 포함하지 않는다.
-- trusted branch `Build & Test` 표본은 2개뿐이므로 P50/P90은 산출하지 않는다.
+- 2026-07-03 보강에서 #1702 merge 후 #1739 merge 전 순수 #1664 구간의 trusted branch `Build & Test`
+  표본 12개를 추가 집계해 P50/P90을 산출했다.
 
 최종해석:
 
