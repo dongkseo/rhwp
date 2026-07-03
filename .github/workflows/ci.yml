@@ -218,8 +218,8 @@ jobs:
               setResult(false, 'preflight-error');
             }
 
-  build-and-test:
-    name: Build & Test
+  build-default-feature-tests:
+    name: Build default-feature tests
     runs-on: ubuntu-latest
     needs: preflight
     if: ${{ always() && needs.preflight.outputs.fast_pass != 'true' }}
@@ -290,6 +290,57 @@ jobs:
       - name: Check WASM target
         run: cargo check --target wasm32-unknown-unknown --lib
 
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Save cargo registry & build cache
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/devel' || github.ref == 'refs/heads/main') && steps.cargo_cache_restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+  native-skia-tests:
+    name: Native Skia tests
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ always() && needs.preflight.outputs.fast_pass != 'true' }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # [Task #1109 / #1192 C] ubuntu-latest runner 의 미사용 사전 설치 toolchain 제거하여
+      # 테스트 빌드 시 디스크 한도 초과를 줄인다.
+      # [#1192] 캐시 정상 작동 확인 후 "크고 빠른" 항목(android/dotnet)만 남기고 축소.
+      # 느린 docker prune --all / apt clean / ghc / CodeQL 정리는 제거. df -h 로 여유 확인.
+      - name: Free disk space (remove unused pre-installed toolchains)
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          df -h
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.1
+
+      - name: Restore cargo registry & build cache
+        id: cargo_cache_restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Install native Skia runtime packages
         run: |
           sudo apt-get update
@@ -308,18 +359,45 @@ jobs:
             cargo test --release --features native-skia skia --lib --verbose
           fi
 
-      - name: Clippy
-        run: cargo clippy -- -D warnings
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-default-feature-tests
+      - native-skia-tests
+    if: ${{ always() }}
+    permissions:
+      contents: read
 
-      - name: Save cargo registry & build cache
-        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/devel' || github.ref == 'refs/heads/main') && steps.cargo_cache_restore.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    steps:
+      - name: Check Build & Test worker results
+        run: |
+          echo "preflight=${{ needs.preflight.result }}"
+          echo "fast_pass=${{ needs.preflight.outputs.fast_pass }}"
+          echo "build_default=${{ needs['build-default-feature-tests'].result }}"
+          echo "native_skia=${{ needs['native-skia-tests'].result }}"
+
+          if [[ "${{ needs.preflight.result }}" != "success" ]]; then
+            echo "::error::CI preflight did not succeed: ${{ needs.preflight.result }}"
+            exit 1
+          fi
+
+          if [[ "${{ needs.preflight.outputs.fast_pass }}" == "true" ]]; then
+            echo "CI preflight fast-pass accepted."
+            exit 0
+          fi
+
+          failed=0
+          if [[ "${{ needs['build-default-feature-tests'].result }}" != "success" ]]; then
+            echo "::error::Build default-feature tests result: ${{ needs['build-default-feature-tests'].result }}"
+            failed=1
+          fi
+          if [[ "${{ needs['native-skia-tests'].result }}" != "success" ]]; then
+            echo "::error::Native Skia tests result: ${{ needs['native-skia-tests'].result }}"
+            failed=1
+          fi
+          exit "${failed}"
 
   wasm-build:
     name: WASM Build
