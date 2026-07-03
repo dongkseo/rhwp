@@ -432,6 +432,17 @@ fn para_is_empty_topbottom_table_anchor(para: &Paragraph) -> bool {
             .any(|ctrl| matches!(ctrl, Control::Table(t) if is_para_topbottom_float(&t.common)))
 }
 
+/// [Task #1863] 텍스트 없이 TAC 표만 담은 문단 — 시각적으로 단독 표 줄.
+/// 빈 앵커 TopAndBottom 표 뒤에 이런 문단이 오면 표-표 스택이므로 앵커의
+/// host_line_spacing 이 표 사이 시각 간격이다 (#1133 과 동일 본질).
+fn para_is_empty_tac_table_anchor(para: &Paragraph) -> bool {
+    !para_has_visible_text(para)
+        && para
+            .controls
+            .iter()
+            .any(|ctrl| matches!(ctrl, Control::Table(t) if t.common.treat_as_char))
+}
+
 fn para_has_visible_text_or_equation(para: &Paragraph) -> bool {
     para_has_visible_text(para)
         || para
@@ -10396,17 +10407,21 @@ impl TypesetEngine {
         //   가시 위치 동일)와 어긋나 라운드트립 쪽나눔이 뒤집힌다 (seoul_0776 p2→p3
         //   1줄 이월; #1763 clamp 가 누적을 razor-thin 경계로 옮겨 노출). #1809/#1841
         //   과 동일 소스 무관화. #1147 원 케이스(HWPX)는 억제 유지되어 불변.
+        // [Task #1863] 소스 무관화가 native HWP5 표-표 스택을 깨뜨리는 케이스 보정:
+        //   다음 문단이 빈 TAC-표 앵커여도 #1133 과 같은 표 스택이므로 보존한다
+        //   (rowbreak-problem-pages.hwp sec1 pi=2→pi=3, 1200HU 가 한컴 페이지 채움에
+        //   실제 계상되는 간격 — 억제 시 p12 PartialTable 42.5px overflow).
         let is_topbottom_empty_anchor = !is_tac
             && matches!(
                 table.common.text_wrap,
                 crate::model::shape::TextWrap::TopAndBottom
             )
             && para.text.is_empty();
-        let next_is_empty_topbottom_table_anchor = next_para
-            .map(para_is_empty_topbottom_table_anchor)
+        let next_is_empty_table_anchor = next_para
+            .map(|p| para_is_empty_topbottom_table_anchor(p) || para_is_empty_tac_table_anchor(p))
             .unwrap_or(false);
         let suppress_empty_anchor_spacing =
-            is_topbottom_empty_anchor && !next_is_empty_topbottom_table_anchor;
+            is_topbottom_empty_anchor && !next_is_empty_table_anchor;
 
         let host_line_spacing = if suppress_empty_anchor_spacing {
             0.0

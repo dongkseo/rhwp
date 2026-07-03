@@ -31,3 +31,26 @@ divergence. 렌더 경로(layout.rs)는 이미 소스 무관 억제이므로, ty
 
 - 트리거였던 #1763 clamp 는 정상 동작(한글 정합 개선)이라 불변 유지.
 - 계측 도구(RHWP_TABLE_DRIFT host_sp, RHWP_FLOW_DBG cur_h)로 pi=20 12px divergence 확인.
+
+## 후속 수정 (PR #1863 CI 회귀)
+
+소스 무관화가 CI `Build & Test` 의 `issue_rowbreak_chart_overlap` 2건을 깨뜨림
+(native HWP5 한컴-정합 회귀 — render-diff 는 A/B 자기정합 지표라 못 잡는 축):
+
+- `rowbreak_hwp_page12_reference_text_stays_inside_body`: p12 PartialTable(pi=11)
+  42.5px overflow
+- `rowbreak_page13_preserves_linear_empty_spacer_in_excerpt_table`: p13 첫 텍스트박스
+  y=533.72 (< 572)
+
+원인: rowbreak-problem-pages.hwp sec1 pi=2 빈 앵커(ls=1200HU)의 다음 문단 pi=3 이
+**빈 TAC-표 앵커**(텍스트 없이 TAC 표만) — 표-표 스택이라 host_line_spacing 이
+한컴 페이지 채움에 실제 계상되는 간격인데, #1133 보존 조건이 TopAndBottom 앵커만
+인식해 억제가 발동, p11 fill 이 rows 0..6→0..7 로 어긋나 p12/p13 연쇄 붕괴.
+
+수정: `para_is_empty_tac_table_anchor` 헬퍼 추가, 보존 조건을
+`next = 빈 TopAndBottom 앵커 ∨ 빈 TAC-표 앵커` 로 확장. 판정은 여전히 소스 무관
+→ 라운드트립 A==B 자기정합 불변 (seoul_0776 PASS 유지), #1147/#1133 원 케이스 불변.
+
+검증: `issue_rowbreak_chart_overlap` 20/20 (HWPX/HWP5 쌍 포함), 전체
+`cargo test --release` green (PR head + 수정 / devel merge + 수정 각각),
+rustfmt·clippy clean.
