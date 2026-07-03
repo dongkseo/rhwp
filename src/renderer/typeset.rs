@@ -156,6 +156,11 @@ struct DeferredTableControl {
     control_index: usize,
     is_first_placed: bool,
     is_last_placed: bool,
+    /// [Task #1860] 이 float 이 속한 문단의 **참 시작 흐름 높이**(선행 형제 control 이
+    /// current_height 를 전진시키기 전). 지연 배치 시점의 current_height 는 이미 선행
+    /// inline(캡션)을 반영해 out-of-flow float 예산을 과소평가하므로, 분할 예산 기준용
+    /// para_start 를 원 배치 시점 값으로 보존한다.
+    para_start_height: f64,
 }
 
 /// 호스트 문단의 spacing (표 전/후)
@@ -10837,6 +10842,11 @@ impl TypesetEngine {
                 mt,
                 styles,
                 para_start_height,
+                // [Task #1860] 예산 전용 참 para_start(원 배치 시점). 지연 배치의
+                // current_height 는 선행 캡션을 이미 반영하므로 out-of-flow float
+                // 예산이 이중차감된다. 렌더 위치(para_start_height)는 불변 유지하고
+                // 예산 계산에만 이 값을 쓴다.
+                deferred.para_start_height,
                 deferred.is_first_placed,
                 deferred.is_last_placed,
                 paragraphs,
@@ -11171,6 +11181,8 @@ impl TypesetEngine {
                             mt,
                             styles,
                             para_start_height,
+                            // [Task #1860] 비지연 경로: para_start_height 가 곧 참 para_start.
+                            para_start_height,
                             is_first_placed,
                             is_last_placed,
                             paragraphs_all,
@@ -11204,6 +11216,8 @@ impl TypesetEngine {
                                                 == Some(next_ctrl_idx),
                                             is_last_placed: last_placed_table
                                                 == Some(next_ctrl_idx),
+                                            // [Task #1860] 원 배치 시점의 참 para_start.
+                                            para_start_height,
                                         }
                                     })
                                 })
@@ -11956,6 +11970,11 @@ impl TypesetEngine {
         mt: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
         para_start_height: f64,
+        // [Task #1860] 예산 전용 참 para_start(문단의 참 시작 흐름 높이). 대부분
+        // para_start_height 와 같으나, 지연 co-anchored 배치에선 para_start_height 가
+        // 라이브 current_height(선행 캡션 반영)라 out-of-flow float 예산이 이중차감된다.
+        // 렌더 위치는 para_start_height, 빈-host float 예산만 이 값을 쓴다.
+        budget_para_start_height: f64,
         is_first_placed: bool,
         is_last_placed: bool,
         // [Task #1753] 지연 이월 직전 후속 문단 prefill 용 전체 슬라이스.
@@ -12601,8 +12620,39 @@ impl TypesetEngine {
                     0.0
                 }
             };
+            // [Task #1860] 빈 host out-of-flow para float(비-TAC, TopAndBottom,
+            // vert=Para, v_off>0, host 텍스트 없음)는 para_start + v_off 에 배치되는
+            // 개체다(#986/#1088/#157). 같은 문단의 선행 in-flow inline(예: tac 캡션 표,
+            // #1855 유사입법례 표의 "참고|유사입법례" 캡션)이 current_height 를 전진시켜도,
+            // float 은 para_start 기준에 놓여 세로로 겹치므로 아래로 쓰는 실가용은
+            // para_start 기준이다. page_avail 이 current_height 를 빼면 선행 inline 만큼
+            // 이중차감 → 분할 예산이 짧아져 RowBreak 컷이 소스 hard_break 보다 조기 발동
+            // (공공데이터법 라벨 −23pt / p45 +40.8pt). 이 클래스만 current_height 대신
+            // para_start_height 기준으로 예산을 잡는다.
+            let is_empty_host_column_float = !is_continuation
+                && !table.common.treat_as_char
+                && vert_offset_overhead > 0.0
+                && !para_has_non_whitespace_text(para);
             let page_avail = if is_continuation {
                 table_available
+            } else if is_empty_host_column_float {
+                // out-of-flow float 은 para_start + v_off 에 배치된다(#986/#1088/#157).
+                // 같은 문단의 선행 in-flow inline(예: tac 캡션 표)이 current_height 를
+                // para_start 위로 밀어도, float 은 para_start+v_off 부터 시작해 그 아래를
+                // 전부 쓴다 → 예산 기준은 current_height 가 아니라 참 para_start 다. 선행
+                // inline 이 없으면 budget_para_start==current_height 라 종전과 동일(#874 불변).
+                //
+                // 클램프: 지연(deferred) 배치가 페이지/컬럼 경계를 넘은 뒤 실행되면
+                // 저장된 para_start(원 페이지 흐름 좌표)가 새 페이지의 current_height 보다
+                // 커져 무효가 된다(pr-1674 pi=27 ci=1: 새 페이지 cur_h=0 에서 stale
+                // para_start 583.8 차감 → 예산 −584px → 조기 분할 +1쪽). 참 para_start 는
+                // 현재 흐름 높이를 초과할 수 없으므로 current_height 로 상한한다.
+                (table_available
+                    - budget_para_start_height.min(st.current_height)
+                    - caption_extra
+                    - host_before_overhead
+                    - vert_offset_overhead)
+                    .max(0.0)
             } else {
                 (table_available
                     - st.current_height

@@ -1689,6 +1689,29 @@ impl LayoutEngine {
             ));
         }
 
+        // [Task #1860] 노드-자식 포섭 불변: 분할 표 조각의 셀 내 절대위치 shape
+        // (as-char 텍스트박스/그림 등)가 유닛 기반 셀 높이를 초과해 그려지면 표 노드
+        // bbox 가 자식을 clip 한다(page17 pi=28 텍스트박스 하단 잘림). 렌더 완료 후 모든
+        // 자손의 최하단을 구해 표 노드 높이를 그만큼 확장한다(확장만, 축소 없음).
+        {
+            fn descendant_bottom(node: &RenderNode) -> f64 {
+                let mut b = node.bbox.y + node.bbox.height;
+                for c in &node.children {
+                    b = b.max(descendant_bottom(c));
+                }
+                b
+            }
+            let content_bottom = table_node
+                .children
+                .iter()
+                .map(descendant_bottom)
+                .fold(table_node.bbox.y + table_node.bbox.height, f64::max);
+            let grown = content_bottom - table_node.bbox.y;
+            if grown > table_node.bbox.height {
+                table_node.bbox.height = grown;
+            }
+        }
+
         col_node.children.push(table_node);
 
         // ── 캡션 렌더링 ──
