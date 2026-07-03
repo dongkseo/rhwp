@@ -78,7 +78,7 @@ python3 scripts/task1274_visual_sweep.py \
 
 ## Stage 6. Option 1 문서/asset 준비
 
-진행 중.
+완료.
 
 - `mydocs/pr/archives/pr_1873_review.md`
 - `mydocs/pr/archives/pr_1873_review_impl.md`
@@ -88,9 +88,20 @@ python3 scripts/task1274_visual_sweep.py \
 - `mydocs/pr/assets/pr_1873_issue1695_so_sueop_review_p029.png`
 - `mydocs/pr/assets/pr_1873_issue1695_so_sueop_review_p044.png`
 
+## Stage 7. CI 및 merge 후속 확인
+
+완료.
+
+- option 1 문서/asset/오늘할일 커밋: `3e64bbbfdc1fb3d378ae398906880ca76dc91941`
+- 최종 head 기준 GitHub Actions:
+  - `CI`: 통과
+  - `CodeQL`: 통과
+  - `Render Diff`: 통과
+- PR #1873 merge 완료: `e5ff8ab9311ff0a22c127f5a5081c4f1cacc421d`
+- #1695 auto-close 완료: `2026-07-03T16:32:57Z`
+
 ## 남은 작업
 
-- review 문서/asset 커밋
-- 같은 PR branch 에 remote push
-- 최신 head CI 모니터링
-- CI 통과 후 merge 및 #1695 close 여부 확인
+- 후속 기록 fast-pass PR 생성 및 merge
+- #1873 PR comment 작성
+- `task/m100-1695-vpos-reset`, `task/m100-1695-post-merge-docs` 브랜치 정리

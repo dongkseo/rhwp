@@ -12,7 +12,10 @@
 | 관련 이슈 | #1695 |
 | review 방식 | 옵션 1: 현재 PR 에 review 문서, visual asset, 오늘할일 포함 |
 | update branch 후 코드 head | `6fd39bb70076fc85e7d7445f357edcc7a478d147` |
-| CI 상태 | 문서 작성 시점 새 head CI queued |
+| 최종 PR head | `3e64bbbfdc1fb3d378ae398906880ca76dc91941` |
+| CI 상태 | 통과 |
+| merge commit | `e5ff8ab9311ff0a22c127f5a5081c4f1cacc421d` |
+| 관련 이슈 close | #1695 auto-close 완료 (`2026-07-03T16:32:57Z`) |
 
 ## 변경 범위
 
@@ -95,7 +98,8 @@ SO-SUEOP 전체는 폰트/래스터 차이 때문에 값이 낮지만, 자동 fl
 - 최초 PR head `e937e29ec1ce98539752cd2d73b8128e2ea3c291` 은 base 대비 `BEHIND` 상태였다.
 - `upstream/devel` 기준 rebase 후 `6fd39bb70076fc85e7d7445f357edcc7a478d147` 로 force-with-lease push 했다.
 - 이전 SHA 의 `CI`, `CodeQL`, `Render Diff` run 은 force-cancel 로 `completed/cancelled` 확인했다.
-- 최신 SHA 의 CI 는 문서 작성 시점 queued 상태다.
+- option 1 문서/asset/오늘할일 커밋 후 최종 head 는 `3e64bbbfdc1fb3d378ae398906880ca76dc91941` 이다.
+- 최종 head 기준 `CI`, `CodeQL`, `Render Diff` 모두 통과했다.
 
 ## 오늘할일 기록
 
@@ -105,4 +109,5 @@ SO-SUEOP 전체는 폰트/래스터 차이 때문에 값이 낮지만, 자동 fl
 ## 판단
 
 로컬 검증과 visual sweep 기준으로 #1695 의 핵심 문제인 HWP3 `LINE_SEG` vpos rewind 경계 반영은 의도대로
-수정됐다. 최신 head CI 가 통과하면 merge 가능한 후보로 판단한다.
+수정됐다. 최종 head CI 통과 후 PR #1873 은 `e5ff8ab9311ff0a22c127f5a5081c4f1cacc421d` 로 merge 완료됐고,
+관련 이슈 #1695 는 auto-close 완료됐다.
