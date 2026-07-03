@@ -255,6 +255,19 @@ def ensure_selected_pages_available(
         raise SystemExit(f"선택한 페이지의 산출물을 찾을 수 없습니다: {details}")
 
 
+def use_singleton_page_fallback(
+    selected_pages: list[int] | None,
+    all_groups: dict[str, list[Path]],
+    selected_groups: dict[str, list[Path]],
+) -> bool:
+    """단일 페이지 문서의 파일명 숫자가 문서번호일 때 선택 페이지 매칭을 보정한다."""
+    if not selected_pages or len(selected_pages) != 1:
+        return False
+    if all(selected_groups.values()):
+        return False
+    return all(len(paths) == 1 for paths in all_groups.values())
+
+
 def page_num(path: Path) -> int:
     matches = re.findall(r"(\d+)", path.stem)
     if not matches:
@@ -405,15 +418,40 @@ def render_target(
     pdf_pngs = filter_paths_by_pages(all_pdf_pngs, selected_pages)
     if selected_pages:
         print(f"Selected pages: {selected_pages}", flush=True)
-        ensure_selected_pages_available(
-            selected_pages,
-            {
-                "svg": svg_paths,
-                "render_tree": tree_paths,
-                "rhwp_png": rhwp_pngs,
-                "pdf_png": pdf_pngs,
-            },
-        )
+        selected_groups = {
+            "svg": svg_paths,
+            "render_tree": tree_paths,
+            "rhwp_png": rhwp_pngs,
+            "pdf_png": pdf_pngs,
+        }
+        all_groups = {
+            "svg": all_svg_paths,
+            "render_tree": all_tree_paths,
+            "rhwp_png": all_rhwp_pngs,
+            "pdf_png": all_pdf_pngs,
+        }
+        if use_singleton_page_fallback(selected_pages, all_groups, selected_groups):
+            print(
+                (
+                    "Selected page singleton fallback: 산출물 파일명 숫자가 선택 페이지와 "
+                    "다르지만 모든 비교 그룹이 단일 페이지라 1:1로 매칭합니다."
+                ),
+                flush=True,
+            )
+            svg_paths = all_svg_paths
+            tree_paths = all_tree_paths
+            rhwp_pngs = all_rhwp_pngs
+            pdf_pngs = all_pdf_pngs
+        else:
+            ensure_selected_pages_available(
+                selected_pages,
+                {
+                    "svg": svg_paths,
+                    "render_tree": tree_paths,
+                    "rhwp_png": rhwp_pngs,
+                    "pdf_png": pdf_pngs,
+                },
+            )
     compare_pages = make_compares(rhwp_pngs, pdf_pngs, compare_dir, target.key)
     overlay_result = make_overlay_compares(
         rhwp_pngs,

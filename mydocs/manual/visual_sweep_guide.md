@@ -180,6 +180,13 @@ python3 scripts/task1274_visual_sweep.py \
   --out output/visual-so-sueop-p22
 ```
 
+일부 공개문서 축약 샘플은 rhwp SVG/PNG 파일명이 문서 내부 원래 페이지 번호나 문서번호를 따라가고,
+기준 PDF는 해당 페이지만 잘라낸 단일 페이지라 `pdf-1.png`로 생성될 수 있다. 예를 들어 rhwp 쪽은
+`rhwp_177.png`인데 기준 PDF는 `pdf-1.png`인 경우다. 이때 `--page 1`처럼 사용자가 PDF viewer에서 보는
+단일 페이지를 지정했고, SVG/render tree/rhwp PNG/PDF PNG 산출물이 모두 1개뿐이면 visual sweep은 자동으로
+이 단일 산출물을 1:1 매칭한다. 출력 파일명은 rhwp 산출물의 실제 번호를 따라 `compare_177.png`,
+`overlay_177.png`, `review_177.png`처럼 남을 수 있으므로 리뷰 문서에는 이 대응 관계를 함께 적는다.
+
 현재 스크립트의 기본 output:
 
 ```text
