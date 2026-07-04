@@ -12,7 +12,17 @@
 
 이번 작업의 1차 목표는 표 입력/삭제 후 발생하는 page-local refresh에서 **변하지 않은 정적 이미지 레이어를
 반복 렌더링하지 않도록 하는 것**이다. 표 텍스트 편집 자체는 빠르며, 병목은 편집 후 같은 페이지의
-background/behind/front 계열 이미지성 레이어가 매 입력마다 다시 렌더링되는 경로에 있다.
+정적 이미지성 요소가 매 입력마다 다시 렌더링되는 경로에 있다.
+
+Stage 1 계측 결과, 문제 샘플은 두 부류로 나뉜다.
+
+- `samples/복학원서.hwp`: 같은 text edit refresh에서 `flow/background/behind/front`가 모두 반복 렌더링되는
+  overlay 재생성 병목.
+- `samples/253E164F57A1BC6934-empty.hwp`, `samples/143E433F503322BD33.hwp`: 별도 behind/front overlay는
+  없지만 flow plane 내부의 정적 이미지/OLE·RawSvg 비용이 커지는 병목.
+
+따라서 Stage 2-3은 overlay 반복 렌더링 제거에 집중하고, Stage 4에서는 이미지 decode 재렌더 안전망과 함께
+flow 내부 정적 이미지 비용을 완화하는 별도 경로를 검토한다.
 
 수정은 `rhwp-studio` 렌더 갱신 경로를 중심으로 봉인한다. Rust 렌더러의 이미지 해석이나 HWP 파서
 동작은 변경하지 않는다. 다만 이미 존재하는 경량 API인 `getPageOverlayImages`가 page layer summary를
@@ -24,7 +34,9 @@ background/behind/front 계열 이미지성 레이어가 매 입력마다 다시
 - `PageRenderer`에 정적 overlay canvas 재사용 경로를 추가한다.
 - overlay 재사용 여부는 보수적인 cache key로 판단한다.
 - flow canvas는 계속 다시 렌더링하되, background/behind/front overlay canvas는 변하지 않으면 유지한다.
+- overlay summary는 replay-plane 기준으로 계산해 부모 layer의 `TextWrap`으로 분류되는 이미지까지 포함한다.
 - 이미지 디코드 재렌더 안전망은 유지하되, 동일 이미지 count에서 overlay까지 반복 재렌더링하지 않도록 분리한다.
+- overlay가 없는 문서의 flow 내부 이미지/OLE 비용은 Stage 4에서 별도 완화 대상으로 다룬다.
 
 ## 2. 현재 코드 기준
 
@@ -84,7 +96,9 @@ background/behind/front 계열 이미지성 레이어가 매 입력마다 다시
   - `imageCount`
   - `rawSvgCount`
   - `signature`
-- `getPageOverlayImages`가 제공하는 `behind`, `front`, `imageCount`로 `hasBehind`/`hasFront`/`imageCount`를 먼저 계산한다.
+- `getPageOverlayImages`가 제공하는 `hasBehind`, `hasFront`, `imageCount`, `rawSvgCount`를 먼저 사용한다.
+- Rust 쪽 `getPageOverlayImages`는 이미지 자체의 `text_wrap`뿐 아니라 부모 `RenderLayerInfo`를 반영한
+  replay-plane 기준으로 `hasBehind`/`hasFront`를 계산한다.
 - `rawSvgCount` 또는 page background 여부가 부족하면 다음 중 보수적인 쪽을 선택한다.
   - 전체 `PageLayerTree` fallback을 유지한다.
   - Rust에 summary 전용 API를 최소 추가한다.
@@ -92,7 +106,9 @@ background/behind/front 계열 이미지성 레이어가 매 입력마다 다시
 
 가드레일:
 
-- summary API가 `BorderFill` 이미지 채움을 빠뜨리지 않는지 `samples/253E164F57A1BC6934-empty.hwp`로 확인한다.
+- summary API가 부모 layer 기반 behind/front 분류를 빠뜨리지 않는지 `samples/복학원서.hwp`로 확인한다.
+- `samples/253E164F57A1BC6934-empty.hwp`는 overlay가 아니라 flow 내부 정적 이미지 비용이 핵심일 수 있으므로,
+  Stage 2 완료 판단에서 이 샘플의 지연을 overlay 개선만으로 해결했다고 보지 않는다.
 - `Picture` 워터마크만 기준으로 분기하지 않는다.
 - RawSvg/OLE는 이미지 decode 재렌더 트리거에 계속 포함한다.
 
@@ -148,15 +164,19 @@ background/behind/front 계열 이미지성 레이어가 매 입력마다 다시
 - `cd rhwp-studio && npm test`
 - 대표 샘플 수동 입력 확인.
 
-### Stage 4 - 이미지 decode 재렌더 안전망 분리
+### Stage 4 - flow 내부 정적 이미지 비용과 decode 재렌더 안전망 분리
 
-목표: Task #1154/#1456 계열의 이미지 decode 안전망은 유지하되, text edit마다 overlay까지 반복 재렌더링하는 일을 막는다.
+목표: Task #1154/#1456 계열의 이미지 decode 안전망은 유지하되, text edit마다 overlay 또는 flow 내부 정적
+이미지/OLE까지 반복 고비용 처리되는 일을 줄인다.
 
 작업:
 
 - `scheduleReRender`와 `reRenderPageCanvases`에 render context 또는 overlay reuse policy를 전달한다.
 - text edit fast path에서 이미지 count/signature가 기존과 같으면 지연 재렌더가 flow 중심으로만 동작하도록 분리한다.
 - 최초 렌더, imageCount 변화, rawSvgCount 변화, overlay signature 변화 시에는 기존처럼 overlay까지 재렌더한다.
+- overlay가 없는 페이지는 `samples/253E164F57A1BC6934-empty.hwp`, `samples/143E433F503322BD33.hwp` 기준으로
+  flow 내부 정적 이미지/OLE가 매 입력마다 다시 decode·draw 되는지 확인하고, 가능한 경우 정적 이미지 summary/cache
+  또는 image prefetch 경로로 비용을 낮춘다.
 - `prefetchLayerImages`가 전체 `PageLayerTree` JSON을 정규식으로 훑는 비용을 유지해야 하는지 재검토한다.
   - 가능한 경우 Stage 2의 경량 overlay JSON을 사용한다.
   - rawSvg data URL 추출이 필요하면 기존 fallback을 유지한다.
@@ -263,7 +283,7 @@ frontSig={front image bbox/wrap/effect/brightness/contrast/opacity/crop/transfor
 | 1 | `Task #1918: Stage 1 - 정적 이미지 레이어 편집 지연 계측` |
 | 2 | `Task #1918: Stage 2 - overlay summary 경량화` |
 | 3 | `Task #1918: Stage 3 - text edit overlay canvas 재사용` |
-| 4 | `Task #1918: Stage 4 - 이미지 decode 재렌더 정책 분리` |
+| 4 | `Task #1918: Stage 4 - flow 정적 이미지 재렌더 정책 분리` |
 | 5 | `Task #1918: Stage 5 - 성능 검증 및 보고` |
 
 기능 변경과 문서/보고서 변경은 stage 단위 안에서만 함께 묶고, 무관한 포맷 변경은 포함하지 않는다.

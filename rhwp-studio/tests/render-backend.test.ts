@@ -140,6 +140,17 @@ test('PageRenderer uses filtered canvas layers for background, behind, and front
   assert.match(source, /collectLayerPlaneSummary\(root,\s*summary,\s*null\)/);
 });
 
+test('PageRenderer prefers lightweight overlay summary before full PageLayerTree fallback', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /getLayerPlaneSummaryFromOverlayImages\(pageIdx\)/);
+  assert.match(source, /if \(overlaySummary\) return overlaySummary/);
+  assert.match(source, /this\.wasm\.getPageOverlayImages\(pageIdx\)/);
+  assert.match(source, /getLayerPlaneSummaryFromTree\(pageIdx\)/);
+  assert.match(source, /this\.wasm\.getPageLayerTree\(pageIdx\)/);
+  assert.match(source, /typeof wrapper\?\.hasBehind !== 'boolean'/);
+  assert.match(source, /const rawSvgCount = finiteCount\(wrapper\.rawSvgCount\)/);
+});
+
 test('PageLayerTree bridge normalizes canonical build/debug option metadata', () => {
   const source = readFileSync(new URL('../src/core/wasm-bridge.ts', import.meta.url), 'utf8');
   assert.match(source, /buildOptions:\s*\{/);

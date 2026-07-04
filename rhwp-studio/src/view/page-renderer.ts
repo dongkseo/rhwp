@@ -8,6 +8,7 @@ interface LayerPlaneSummary {
   hasFront: boolean;
   imageCount: number;
   rawSvgCount: number;  // OLE/차트 rawSvg op 수 — 비동기 디코드 재렌더 트리거용(image 와 의미 분리, #1456)
+  signature: string;
 }
 
 export class PageRenderer {
@@ -96,7 +97,7 @@ export class PageRenderer {
     dpr: number,
   ): LayerPlaneSummary {
     const parent = canvas.parentElement;
-    if (!parent) return { hasBehind: false, hasFront: false, imageCount: 0, rawSvgCount: 0 };
+    if (!parent) return emptyLayerPlaneSummary();
 
     // 페이지 단위 overlay 컨테이너를 Canvas 의 sibling 으로 관리.
     // data-rhwp-overlay-page 속성으로 식별, 페이지 재렌더링 시 갱신.
@@ -225,7 +226,41 @@ export class PageRenderer {
   }
 
   private getLayerPlaneSummary(pageIdx: number): LayerPlaneSummary {
-    const summary: LayerPlaneSummary = { hasBehind: false, hasFront: false, imageCount: 0, rawSvgCount: 0 };
+    const overlaySummary = this.getLayerPlaneSummaryFromOverlayImages(pageIdx);
+    if (overlaySummary) return overlaySummary;
+    return this.getLayerPlaneSummaryFromTree(pageIdx);
+  }
+
+  private getLayerPlaneSummaryFromOverlayImages(pageIdx: number): LayerPlaneSummary | null {
+    let json: string;
+    try {
+      json = this.wasm.getPageOverlayImages(pageIdx);
+    } catch {
+      return null;
+    }
+    if (!json || json.trim()[0] !== '{') return null;
+    try {
+      const wrapper = JSON.parse(json);
+      if (typeof wrapper?.hasBehind !== 'boolean' || typeof wrapper?.hasFront !== 'boolean') {
+        return null;
+      }
+      const imageCount = finiteCount(wrapper.imageCount);
+      const rawSvgCount = finiteCount(wrapper.rawSvgCount);
+      return {
+        hasBehind: wrapper.hasBehind,
+        hasFront: wrapper.hasFront,
+        imageCount,
+        rawSvgCount,
+        signature: `overlay:${wrapper.hasBehind ? 1 : 0}:${wrapper.hasFront ? 1 : 0}:${imageCount}:${rawSvgCount}:${json.length}`,
+      };
+    } catch (e) {
+      console.warn('[PageRenderer] OverlayImageSummary JSON parse 실패:', e);
+      return null;
+    }
+  }
+
+  private getLayerPlaneSummaryFromTree(pageIdx: number): LayerPlaneSummary {
+    const summary: LayerPlaneSummary = emptyLayerPlaneSummary();
     let json: string;
     try {
       json = this.wasm.getPageLayerTree(pageIdx);
@@ -238,6 +273,7 @@ export class PageRenderer {
       const root = wrapper?.root;
       if (root) {
         collectLayerPlaneSummary(root, summary, null);
+        summary.signature = `tree:${summary.hasBehind ? 1 : 0}:${summary.hasFront ? 1 : 0}:${summary.imageCount}:${summary.rawSvgCount}:${json.length}`;
       }
     } catch (e) {
       console.warn('[PageRenderer] PageLayerTree JSON parse 실패:', e);
@@ -437,6 +473,15 @@ export class PageRenderer {
     this.canvaskitRenderer?.dispose();
     this.canvaskitRenderer = null;
   }
+}
+
+function emptyLayerPlaneSummary(): LayerPlaneSummary {
+  return { hasBehind: false, hasFront: false, imageCount: 0, rawSvgCount: 0, signature: 'empty' };
+}
+
+function finiteCount(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
 function collectLayerPlaneSummary(
