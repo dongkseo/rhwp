@@ -1280,10 +1280,18 @@ impl HeightMeasurer {
         //
         // 발동 영역 sweep 진단 (187 fixture): ≤2% 7 건 면제, ≥5% 11 건 그대로.
         const TAC_SHRINK_THRESHOLD_RATIO: f64 = 0.02;
+        // [Issue #1835] 내용이 저장 높이를 크게(>1.5×) 초과하는 TAC 표는 비례 축소하지
+        // 않는다 — 한글 2022 편집기 오라클(issue1835 fixture: common.height 를 1/1.8 로
+        // 훼손한 4×3 표를 내용 높이로 확장, 후속 문단도 그만큼 아래로 흐름) 기준.
+        // 외부 도구 생성/템플릿 값 채움으로 common.height 가 stale 한 문서에서 행이
+        // 1/1.8 로 눌려 셀 텍스트가 겹치던 결함. 경미한 초과(2%~150%)는 종전대로
+        // 속성 높이 유지(#672 한컴 정합 — 의도적 압축 존중).
+        const TAC_SHRINK_MAX_OVERFLOW_RATIO: f64 = 1.5;
         let shrink_threshold = (common_h * TAC_SHRINK_THRESHOLD_RATIO).max(1.0);
         let table_height = if table.common.treat_as_char
             && common_h > 0.0
             && raw_table_height > common_h + shrink_threshold
+            && raw_table_height <= common_h * TAC_SHRINK_MAX_OVERFLOW_RATIO
         {
             let scale = common_h / raw_table_height;
             for h in &mut row_heights {
