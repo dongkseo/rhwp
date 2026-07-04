@@ -655,9 +655,27 @@ impl LayoutEngine {
                                 .max(0),
                                 self.dpi,
                             );
+                            // [Issue #1858] valign=Bottom 하단앵커는 한컴이 **실측
+                            // 내용 높이**로 박스 하단을 anchor 하단에 밀착시킨다.
+                            // 선언높이(common.height)가 실측보다 크면(stale) 선언
+                            // 기준 top 이 위로 떠서 결재/발신명의 코퍼스 전반이
+                            // −30.5pt 상향(36389312 계열, 18건 중 13건 동일 상수).
+                            // MeasuredTable(캡션 제외 행높이 합) 사용, 부재 시 선언 유지.
+                            let effective_h = if matches!(
+                                table.common.vert_align,
+                                crate::model::shape::VertAlign::Bottom
+                                    | crate::model::shape::VertAlign::Outside
+                            ) {
+                                measured_table
+                                    .map(|mt| (mt.total_height - mt.caption_height).max(0.0))
+                                    .filter(|h| *h > 0.0)
+                                    .unwrap_or(outer_h)
+                            } else {
+                                outer_h
+                            };
                             self.compute_table_y_position(
                                 table,
-                                outer_h,
+                                effective_h,
                                 y_start,
                                 col_area,
                                 depth,
