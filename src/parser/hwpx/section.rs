@@ -911,11 +911,10 @@ fn parse_note_pr_children(
                                 b"length" => {
                                     if let Ok(s) = std::str::from_utf8(&attr.value) {
                                         if let Ok(v) = s.parse::<i32>() {
-                                            shape.separator_length = if v < 0 {
-                                                v as i16
-                                            } else {
-                                                (v as u32 as u16) as i16
-                                            };
+                                            // 한컴 미주 기본값 "14692344"(전폭 sentinel)는 i16을
+                                            // 넘으므로 절단하지 않고 그대로 보존한다. 렌더러가 col
+                                            // 폭으로 clamp → 전폭. (i16 절단 시 12280 → 짧은 구분선)
+                                            shape.separator_length = v;
                                         }
                                     }
                                 }
@@ -6076,7 +6075,7 @@ mod tests {
 
         let section = parse_hwpx_section(xml).unwrap();
 
-        assert_eq!(section.section_def.endnote_shape.separator_length, 0x2ff8);
+        assert_eq!(section.section_def.endnote_shape.separator_length, 14692344);
         assert_eq!(
             section
                 .section_def

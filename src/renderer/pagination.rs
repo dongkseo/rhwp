@@ -59,6 +59,30 @@ pub struct EndnoteRef {
     pub control_index: usize,
 }
 
+/// [미주 배치 — END_OF_DOCUMENT] 문서 끝으로 미룬, 앞선 구역의 미주 하나.
+/// Hancom 의 `EndnoteEndOfDocument` 배치를 정합: 참조 표시(위첨자 번호)는 원래
+/// 구역 본문 흐름에 남고, 본문(body)만 마지막 구역 끝(=문서 끝)에서 렌더된다.
+/// `reff` 는 원래 참조 위치(문서 순서·번호 보존), `endnote` 는 문서 끝에서 렌더할
+/// 미주 본문(앞선 구역 paragraphs 에서 복제).
+#[derive(Debug, Clone)]
+pub struct DeferredEndnote {
+    pub reff: EndnoteRef,
+    pub endnote: crate::model::footnote::Endnote,
+}
+
+/// 이 구역의 미주를 어떻게 배치할지 (Hancom: EndnoteEndOfSection vs EndnoteEndOfDocument).
+pub enum EndnoteDeferral<'a> {
+    /// 기본: 이 구역 미주를 구역 끝에 렌더 (END_OF_SECTION, 그리고 단일 구역
+    /// END_OF_DOCUMENT — 구역 끝 ≡ 문서 끝이라 결과 동일).
+    None,
+    /// END_OF_DOCUMENT, 마지막이 아닌 구역: 본문 렌더를 억제(참조 표시는 인라인
+    /// 유지)하고 미주 본문은 문서 끝으로 미룬다.
+    Suppress,
+    /// END_OF_DOCUMENT, 마지막 구역: 앞선 구역들의 미주 본문(문서 순서)에 이어
+    /// 이 구역 미주를 모두 문서 끝에 렌더한다.
+    RenderAll(&'a [DeferredEndnote]),
+}
+
 /// 렌더용으로 가상 삽입된 미주 문단의 원본 위치.
 #[derive(Debug, Clone)]
 pub struct EndnoteParaSource {
@@ -302,8 +326,8 @@ pub enum PageItem {
     },
     /// 미주 영역 시작 구분선
     EndnoteSeparator {
-        /// 구분선 길이 (HWP 단위)
-        separator_length: i16,
+        /// 구분선 길이 (HWP 단위). 한컴 전폭 sentinel(14692344)이 i16을 넘으므로 i32.
+        separator_length: i32,
         /// 구분선 위 여백 (HWP 단위)
         margin_above: i16,
         /// 구분선 아래 여백 (HWP 단위)

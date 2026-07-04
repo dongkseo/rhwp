@@ -3580,6 +3580,11 @@ impl LayoutEngine {
         let visual_col_y = col_area.y + start_shift;
         let visual_col_height = col_area.height - start_shift;
         let mut y_offset = visual_col_y;
+        // [미주 구분선 아래 여백] 구분선 직후 첫 미주 본문 y 를 구분선의 belowLine 바닥
+        // (layout_endnote_separator_item 반환 new_y)으로 floor 한다. 저장 vpos 가 구분선
+        // 위(문서끝 재배치된 미주)여도 구분선 아래로 내려 텍스트 가림을 막는다. 정상 vpos
+        // (구역끝 미주)는 이미 new_y 이상이라 max 로 불변.
+        let mut endnote_sep_body_floor: Option<f64> = None;
         // body_area 전체에 걸치는 개체: 단 시작 y_offset을 개체 하단 아래로 초기화
         for &(_, bottom_y) in body_wide_reserved {
             if bottom_y > y_offset {
@@ -3691,6 +3696,23 @@ impl LayoutEngine {
                 PageItem::PartialTable { para_index, .. } => *para_index,
                 PageItem::Shape { para_index, .. } => *para_index,
                 PageItem::EndnoteSeparator { .. } => {
+                    // [미주 구분선 위치 — 한컴 정합] 직전 본문 문단 마지막 줄의 trailing
+                    // 줄간격(line_spacing)은 한컴이 note 영역에 포함하지 않는다. rhwp 문단
+                    // advance 는 포함하므로 그만큼 note 영역(구분선+본문)을 위로 올린다.
+                    let trailing_ls_px = col_content.items[..item_ordinal]
+                        .iter()
+                        .rev()
+                        .find_map(|it| match it {
+                            PageItem::FullParagraph { para_index }
+                            | PageItem::PartialParagraph { para_index, .. } => paragraphs
+                                .get(*para_index)
+                                .and_then(|p| p.line_segs.last())
+                                .filter(|ls| ls.line_spacing > 0)
+                                .map(|ls| hwpunit_to_px(ls.line_spacing, self.dpi)),
+                            _ => None,
+                        })
+                        .unwrap_or(0.0);
+                    y_offset = (y_offset - trailing_ls_px).max(0.0);
                     let (new_y, _) = self.layout_column_item(
                         tree,
                         &mut col_node,
@@ -3716,6 +3738,7 @@ impl LayoutEngine {
                         &col_content.wrap_anchors,
                     );
                     y_offset = new_y;
+                    endnote_sep_body_floor = Some(new_y);
                     continue;
                 }
             };
@@ -4395,6 +4418,10 @@ impl LayoutEngine {
                 }
                 _ => 0.0,
             };
+            // 구분선 직후 첫 미주 본문: belowLine 바닥(new_y)으로 floor.
+            if let Some(floor) = endnote_sep_body_floor.take() {
+                y_offset = y_offset.max(floor);
+            }
             let (mut new_y, was_tac) = self.layout_column_item(
                 tree,
                 &mut col_node,
@@ -5452,7 +5479,7 @@ impl LayoutEngine {
         col_node: &mut RenderNode,
         col_area: &LayoutRect,
         mut y_offset: f64,
-        separator_length: i16,
+        separator_length: i32,
         margin_above: i16,
         margin_below: i16,
         line_type: u8,

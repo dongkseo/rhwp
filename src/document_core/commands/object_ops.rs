@@ -7300,7 +7300,7 @@ impl DocumentCore {
             shape.start_number = v.max(1);
         }
         if let Some(v) = Self::hwpunit16_from_json(props_json, "separatorLength") {
-            shape.separator_length = v.max(0);
+            shape.separator_length = i32::from(v.max(0));
         }
         if let Some(v) = Self::hwpunit16_from_json(props_json, "separatorMarginTop") {
             let above = v.max(0);
