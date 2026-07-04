@@ -129,8 +129,16 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
     } else {
         0.0
     };
-    // 좌측 Y축 라벨용 여유: 실제 라벨 길이에 맞춰 조정
-    let left_pad = estimate_axis_label_width(chart, 0);
+    // 좌측 여유: 세로 차트는 값축 숫자 라벨, **가로 막대는 카테고리 라벨**("항목 1" 등)이
+    // 좌측에 오므로 카테고리 폭 기준 — 숫자 폭(2자≈32px)으로 잡으면 라벨이 잘림.
+    let horizontal_bars = chart.chart_type == OoxmlChartType::Bar
+        && !chart.is_combo()
+        && !chart.has_secondary_axis;
+    let left_pad = if horizontal_bars {
+        estimate_category_label_width(chart, w)
+    } else {
+        estimate_axis_label_width(chart, 0)
+    };
     let right_pad = if chart.has_secondary_axis {
         estimate_axis_label_width(chart, 1)
     } else {
@@ -218,6 +226,20 @@ fn render_fallback(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> String
 
 fn series_color(s: &OoxmlSeries, idx: usize) -> String {
     color_hex(s.color.unwrap_or_else(|| palette(idx)))
+}
+
+/// 가로 막대 좌측 카테고리 라벨용 여백: 최장 카테고리 문자 수 기반 (CJK ~10px/자).
+/// 상한은 차트 폭의 35%(플롯 최소폭은 호출부 `.max(10.0)`이 방어).
+fn estimate_category_label_width(chart: &OoxmlChart, w: f64) -> f64 {
+    let max_chars = chart
+        .categories
+        .iter()
+        .map(|c| c.chars().count())
+        .max()
+        .unwrap_or(0);
+    (max_chars as f64 * 10.0 + 14.0)
+        .min((w * 0.35).max(28.0))
+        .max(28.0)
 }
 
 /// 지정한 axis_group의 최대 라벨 길이(문자 수) 기반으로 여백 추정
@@ -1484,6 +1506,34 @@ mod tests {
         let svg = render_chart_svg(&named_chart(LegendPos::Bottom), 0.0, 0.0, 400.0, 300.0);
         let ty = legend_first_text_attr(&svg, "y");
         assert!(ty > 270.0, "하단 범례 텍스트 y={ty} > 270 이어야");
+    }
+
+    #[test]
+    fn test_horizontal_bar_category_labels_not_clipped() {
+        // 가로 막대: 좌측은 숫자 값축이 아니라 카테고리 라벨("항목 1" 등) —
+        // left_pad를 값축 숫자 폭(2자≈32px)으로 잡으면 라벨이 차트 왼쪽 밖으로 잘림.
+        // 카테고리 라벨 anchor x(= plot_x - 4)가 라벨 폭 이상 확보돼야 한다.
+        let chart = OoxmlChart {
+            chart_type: OoxmlChartType::Bar,
+            series: vec![OoxmlSeries {
+                values: vec![4.3, 2.5, 3.5, 4.5],
+                series_type: OoxmlChartType::Bar,
+                ..Default::default()
+            }],
+            categories: vec!["항목 1".into(), "항목 2".into(), "항목 3".into(), "항목 4".into()],
+            ..Default::default()
+        };
+        let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
+        let chunk = svg.split(">항목 1<").next().expect("카테고리 라벨");
+        let tag_start = chunk.rfind("<text ").expect("text 태그");
+        let x = attr_f64_of(&chunk[tag_start..], "x=\"").expect("x 속성");
+        assert!(x >= 45.0, "카테고리 라벨 anchor x={x} — 라벨 폭(≈40px)만큼 왼쪽 여백 필요");
+    }
+
+    fn attr_f64_of(tag: &str, pat: &str) -> Option<f64> {
+        let s = tag.find(pat)? + pat.len();
+        let e = s + tag[s..].find('"')?;
+        tag[s..e].parse().ok()
     }
 
     #[test]
