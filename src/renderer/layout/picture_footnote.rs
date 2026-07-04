@@ -364,7 +364,8 @@ impl LayoutEngine {
         vpos_accounts_for_height: bool,
     ) -> f64 {
         // 그림 크기 (HWPUNIT → 픽셀)
-        let (pic_width_hu, pic_height_hu) = picture_display_size_hu(picture);
+        // [Issue #1230] 측면흐름 wrap 은 common(개체 틀) 프레임으로 그린다.
+        let (pic_width_hu, pic_height_hu) = super::utils::picture_flow_frame_size_hu(picture);
         let pic_width = hwpunit_to_px(pic_width_hu, self.dpi);
         let pic_height = hwpunit_to_px(pic_height_hu, self.dpi);
 
