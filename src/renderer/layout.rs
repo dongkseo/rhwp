@@ -4566,7 +4566,38 @@ impl LayoutEngine {
             } else {
                 false
             };
-            if was_tac || (is_table_or_shape && !is_para_float_table) {
+            // 예외 2 (#1898): 실제 텍스트 줄에 통합된 글자처럼(tac) 인라인 개체의
+            // Shape 항목은 흐름에 독립 높이를 만들지 않는다(호스트 LINE_SEG 는 텍스트
+            // 줄 높이, 본 항목 dy=0). 기준점을 초기화하면 다음 문단 vpos_adjust 가
+            // lazy_base 재산출에서 trailing-ls bridge 를 다시 적용해, 불릿 그림 문단
+            // 마다 렌더 y 가 줄간격 1회분씩 과대 전진한다 (36388711 p9: layout
+            // 33.1px vs 렌더 44.8px, 한컴 32.9px). 단, 텍스트 없는 tac-전용 문단
+            // (LINE_SEG lh = 개체 높이, sample16 pi=71 RFP 박스)은 종전대로 초기화 —
+            // 그 lh 는 개체 높이를 포함해 vpos 누적과 순차 y 의 drift 근거가 맞다.
+            let is_inline_tac_object = if let PageItem::Shape {
+                para_index,
+                control_index,
+            } = item
+            {
+                paragraphs
+                    .get(*para_index)
+                    .map(|p| {
+                        para_has_visible_text(p)
+                            && p.controls
+                                .get(*control_index)
+                                .map(|c| match c {
+                                    Control::Picture(pic) => pic.common.treat_as_char,
+                                    Control::Shape(shape) => shape.common().treat_as_char,
+                                    Control::Equation(eq) => eq.common.treat_as_char,
+                                    _ => false,
+                                })
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if was_tac || (is_table_or_shape && !is_para_float_table && !is_inline_tac_object) {
                 hcursor.vpos_page_base = None;
                 hcursor.vpos_lazy_base = None;
             }
