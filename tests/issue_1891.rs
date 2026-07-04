@@ -20,15 +20,15 @@ use rhwp::parser::hwpx::parse_hwpx;
 use rhwp::serializer::hwpx::serialize_hwpx;
 
 const SAMPLE: &str = "samples/issue1891_external_bindata_link.hwpx";
-const HWP5_ORIGIN_SAMPLES: &[&str] = &[
-    "samples/76076_regulatory_analysis.hwp",
-    "samples/80168_regulatory_analysis.hwp",
-    "samples/80250_regulatory_analysis.hwp",
-    "samples/86712_regulatory_analysis.hwp",
-    "samples/issue1891/76076_regulatory_analysis.hwpx",
-    "samples/issue1891/80168_regulatory_analysis.hwpx",
-    "samples/issue1891/80250_regulatory_analysis.hwpx",
-    "samples/issue1891/86712_regulatory_analysis.hwpx",
+const HWP5_ORIGIN_SAMPLES: &[(&str, u32)] = &[
+    ("samples/76076_regulatory_analysis.hwp", 82),
+    ("samples/80168_regulatory_analysis.hwp", 157),
+    ("samples/80250_regulatory_analysis.hwp", 17),
+    ("samples/86712_regulatory_analysis.hwp", 65),
+    ("samples/issue1891/76076_regulatory_analysis.hwpx", 82),
+    ("samples/issue1891/80168_regulatory_analysis.hwpx", 157),
+    ("samples/issue1891/80250_regulatory_analysis.hwpx", 17),
+    ("samples/issue1891/86712_regulatory_analysis.hwpx", 65),
 ];
 
 fn read_sample() -> Vec<u8> {
@@ -67,11 +67,15 @@ fn issue_1891_external_link_roundtrip_render_is_self_consistent() {
 /// HWP5 lineSeg 부재/pagination 시멘틱을 유지해야 한다.
 #[test]
 fn issue_1891_hwp5_origin_hwpx_export_reparse_keeps_page_count() {
-    for sample in HWP5_ORIGIN_SAMPLES {
+    for (sample, expected_page_count) in HWP5_ORIGIN_SAMPLES {
         let bytes = read_rel(sample);
         let source =
             DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {sample}: {e:?}"));
         let before = source.page_count();
+        assert_eq!(
+            before, *expected_page_count,
+            "{sample}: 공식 PDF 기준 쪽수와 불일치"
+        );
         let exported = source
             .export_hwpx_native()
             .unwrap_or_else(|e| panic!("export {sample}: {e:?}"));

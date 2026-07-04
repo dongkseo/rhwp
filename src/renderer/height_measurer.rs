@@ -49,6 +49,43 @@ pub fn is_tac_table_inline(
     false
 }
 
+fn empty_paragraph_fallback_line_metrics(
+    para: &Paragraph,
+    styles: &ResolvedStyleSet,
+    para_style: Option<&crate::renderer::style_resolver::ResolvedParaStyle>,
+) -> Option<(f64, f64)> {
+    if !para.text.is_empty()
+        || !para.controls.is_empty()
+        || !para.line_segs.is_empty()
+        || para.char_count == 0
+    {
+        return None;
+    }
+    let char_shape_id =
+        para.char_shape_id_at(0)
+            .or_else(|| para.char_shapes.first().map(|cs| cs.char_shape_id))? as usize;
+    let char_style = styles.char_styles.get(char_shape_id)?;
+    let font_size = char_style.font_size;
+    if font_size <= 0.0 {
+        return None;
+    }
+    let small_empty_para_max_font = hwpunit_to_px(1000, DEFAULT_DPI);
+    if font_size > small_empty_para_max_font + 0.1 {
+        return None;
+    }
+    let meaningful_empty_para_min_font = hwpunit_to_px(800, DEFAULT_DPI);
+    if !char_style.bold && font_size < meaningful_empty_para_min_font - 0.1 {
+        return None;
+    }
+    let ls_val = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
+    let ls_type = para_style
+        .map(|s| s.line_spacing_type)
+        .unwrap_or(crate::model::style::LineSpacingType::Percent);
+    Some(crate::renderer::corrected_line_metrics(
+        0.0, 0.0, font_size, ls_type, ls_val,
+    ))
+}
+
 /// 문단의 측정된 높이 정보
 #[derive(Debug, Clone)]
 pub struct MeasuredParagraph {
@@ -451,7 +488,8 @@ impl HeightMeasurer {
                     (cw - effective_margin_l - margin_r).max(0.0)
                 })
             };
-            comp.lines
+            let mut pairs: Vec<(f64, f64)> = comp
+                .lines
                 .iter()
                 .enumerate()
                 .map(|(line_idx, line)| {
@@ -502,7 +540,15 @@ impl HeightMeasurer {
                         line_spacing_px,
                     )
                 })
-                .unzip()
+                .collect();
+            if pairs.is_empty() {
+                if let Some(metric) =
+                    empty_paragraph_fallback_line_metrics(para, styles, para_style)
+                {
+                    pairs.push(metric);
+                }
+            }
+            pairs.into_iter().unzip()
         } else if !para.line_segs.is_empty() {
             // 누름틀(ClickHere) 안내문이 LINE_SEG에 포함되면 줄 수가 실제보다 많음
             // 안내문 텍스트가 차지하는 줄을 제외하여 실제 렌더링 높이를 계산
@@ -547,6 +593,10 @@ impl HeightMeasurer {
                     })
                     .unzip()
             }
+        } else if let Some((lh, ls)) =
+            empty_paragraph_fallback_line_metrics(para, styles, para_style)
+        {
+            (vec![lh], vec![ls])
         } else {
             // 빈 문단: 기본 높이
             (vec![hwpunit_to_px(400, self.dpi)], vec![0.0])

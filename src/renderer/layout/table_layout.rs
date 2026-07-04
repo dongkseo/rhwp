@@ -9,7 +9,10 @@ use crate::model::bin_data::BinDataContent;
 use crate::model::control::Control;
 use crate::model::paragraph::Paragraph;
 use crate::model::style::{Alignment, BorderLine, CenterLine};
-use crate::model::table::VerticalAlign;
+use crate::model::table::{TablePageBreak, VerticalAlign};
+use crate::renderer::float_placement::signed_hwpunit;
+
+const ROWBREAK_OBJECT_BOTTOM_BLEED_TOLERANCE_PX: f64 = 64.0;
 
 /// [Task #548] paragraph 의 line N 에 적용되는 effective margin_left.
 /// paragraph_layout.rs 의 line_indent 산식과 동일 (단일 룰).
@@ -2267,6 +2270,17 @@ impl LayoutEngine {
             if matches!(vert_rel_to, crate::model::shape::VertRelTo::Para) {
                 let body_top = col_area.y;
                 let body_bottom = col_area.y + col_area.height - table_height;
+                let declared_height = hwpunit_to_px(table.common.height as i32, self.dpi).max(0.0);
+                let allow_rowbreak_object_bottom_bleed =
+                    matches!(table.page_break, TablePageBreak::RowBreak)
+                        && !table.common.treat_as_char
+                        && table.row_count == 1
+                        && table.col_count == 1
+                        && table.cells.len() == 1
+                        && signed_hwpunit(table.common.vertical_offset) <= 0
+                        && declared_height > 0.0
+                        && table_height
+                            > declared_height + ROWBREAK_OBJECT_BOTTOM_BLEED_TOLERANCE_PX;
                 let pushed =
                     if matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom) {
                         raw_y.max(y_start)
@@ -2278,7 +2292,11 @@ impl LayoutEngine {
                 } else {
                     body_top
                 };
-                pushed.clamp(min_y, body_bottom.max(min_y))
+                if allow_rowbreak_object_bottom_bleed {
+                    pushed.max(min_y)
+                } else {
+                    pushed.clamp(min_y, body_bottom.max(min_y))
+                }
             } else {
                 raw_y
             }

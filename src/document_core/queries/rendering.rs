@@ -2460,6 +2460,7 @@ impl DocumentCore {
                     force_breaks.get(idx).unwrap_or(&empty_breaks),
                     matches!(self.source_format, crate::parser::FileFormat::Hwp3),
                     is_hwpx_source,
+                    is_hwp5_origin_hwpx,
                     endnote_deferral,
                 )
             };
