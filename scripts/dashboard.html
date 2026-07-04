@@ -306,7 +306,18 @@ function renderDeltaCards(data, history) {
 }
 
 function renderTrendChart(history) {
-  if (history.length < 2) return '';
+  // 측정 1회 이하: 조용히 숨기지 않고 안내를 표시한다 (혼동 방지).
+  if (history.length < 2) {
+    const n = history.length;
+    return `
+    <div class="chart-box full">
+      <h3>품질 지표 추이</h3>
+      <div class="chart-desc">
+        누적 측정 ${n}회 — 추이 차트와 직전 대비 델타는 <b>측정 2회부터</b> 표시됩니다.
+        (이력은 scripts/metrics.sh 실행마다 output/metrics_history/ 에 쌓입니다)
+      </div>
+    </div>`;
+  }
   return `
     <div class="chart-box full">
       <h3>품질 지표 추이</h3>
