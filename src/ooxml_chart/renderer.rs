@@ -7,8 +7,19 @@
 use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
 
 /// 기본 시리즈 색상 팔레트 (시리즈 색상 미지정 시 순환 사용)
+///
+/// 한컴 2022 기본 팔레트(`hncChartStyle colorIndex="0"`) — 앞 4색은 `pdf/chart/` 정답지
+/// PDF 픽셀 실측(막대 3시리즈 + 원형 4슬라이스), 5번째 이후는 코퍼스에 4시리즈 초과
+/// 샘플이 없어 미실측(Office 유사색 순서로 유추 배치).
 const DEFAULT_PALETTE: &[u32] = &[
-    0xFF70AD47, 0xFF4472C4, 0xFFED7D31, 0xFFFFC000, 0xFF5B9BD5, 0xFFA5A5A5, 0xFF9013FE, 0xFF50E3C2,
+    0xFF6183D7, // 파랑 (실측)
+    0xFFFE813B, // 주황 (실측)
+    0xFFB0B0B0, // 회색 (실측)
+    0xFFFCD801, // 노랑 (실측)
+    0xFF5B9BD5, // 하늘 (유추)
+    0xFF70AD47, // 초록 (유추)
+    0xFF9013FE,
+    0xFF50E3C2,
 ];
 
 fn palette(i: usize) -> u32 {
@@ -1050,6 +1061,31 @@ mod tests {
     #[test]
     fn test_color_hex() {
         assert_eq!(color_hex(0xFFFF00FF), "#ff00ff");
+    }
+
+    // --- C1c (#1882) 갭②: 한컴 2022 기본 팔레트 ---
+
+    #[test]
+    fn test_default_palette_hancom_order() {
+        // 색 미지정 3시리즈 → 팔레트 순환: 파랑 → 주황 → 회색 (한컴 2022 실측)
+        let chart = OoxmlChart {
+            chart_type: OoxmlChartType::Column,
+            series: (0..3)
+                .map(|i| OoxmlSeries {
+                    values: vec![1.0 + i as f64, 2.0],
+                    series_type: OoxmlChartType::Column,
+                    ..Default::default()
+                })
+                .collect(),
+            categories: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
+        let i_blue = svg.find("#6183d7").expect("시리즈1 파랑");
+        let i_orange = svg.find("#fe813b").expect("시리즈2 주황");
+        let i_gray = svg.find("#b0b0b0").expect("시리즈3 회색");
+        assert!(i_blue < i_orange && i_orange < i_gray, "팔레트 순서: 파랑→주황→회색");
+        assert!(!svg.contains("#70ad47"), "구 녹색-우선 팔레트 미사용");
     }
 
     // --- C1a Part B (#1453): 막대 누적 기하 ---
