@@ -109,7 +109,10 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
     let legend_visible = chart.series.iter().any(|s| !s.name.is_empty());
     // C1c #1882 갭③: legendPos=r(한컴 코퍼스 전 샘플)은 우측 세로 스택 — 하단 슬롯
     // 대신 우측 폭(legend_w)을 확보. 그 외 위치는 현행 하단 가로 유지.
-    let legend_right = legend_visible && chart.legend_pos == LegendPos::Right;
+    // `w * 0.30 >= 50.0` 가드: 폭이 좁으면(<167px) 하단 폴백 — 아래 clamp의
+    // min(50)>max(w*0.30) 패닉 방지 (w는 문서 데이터가 결정). NaN도 false → 폴백.
+    let legend_right =
+        legend_visible && chart.legend_pos == LegendPos::Right && w * 0.30 >= 50.0;
     let legend_h = if legend_visible && !legend_right {
         22.0
     } else {
@@ -1481,6 +1484,15 @@ mod tests {
         let svg = render_chart_svg(&named_chart(LegendPos::Bottom), 0.0, 0.0, 400.0, 300.0);
         let ty = legend_first_text_attr(&svg, "y");
         assert!(ty > 270.0, "하단 범례 텍스트 y={ty} > 270 이어야");
+    }
+
+    #[test]
+    fn test_render_legend_right_narrow_chart_no_panic() {
+        // 폭이 좁으면(w*0.30 < 50) clamp(50, w*0.30)이 min>max로 패닉하던 결함 가드 —
+        // 하단 폴백으로 렌더되고 패닉하지 않아야 한다. NaN 폭도 패닉 금지.
+        let svg = render_chart_svg(&named_chart(LegendPos::Right), 0.0, 0.0, 100.0, 80.0);
+        assert!(svg.contains("hwp-chart-legend"), "좁은 차트는 하단 폴백 범례");
+        let _ = render_chart_svg(&named_chart(LegendPos::Right), 0.0, 0.0, f64::NAN, 80.0);
     }
 
     // --- C1c (#1882) 갭④: Y축 headroom + step 기반 눈금 (한컴 실측 앵커 3점) ---
