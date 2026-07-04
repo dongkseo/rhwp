@@ -3,7 +3,7 @@ import { EventBus } from '@/core/event-bus';
 import type { PageInfo } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
 import { CanvasPool } from './canvas-pool';
-import { PageRenderer } from './page-renderer';
+import { PageRenderer, type PageRenderContext } from './page-renderer';
 import { ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitLayerRenderer } from './canvaskit-renderer';
@@ -153,7 +153,11 @@ export class CanvasView {
   }
 
   /** 기존 canvas를 유지한 채 페이지 내용을 다시 그린다. */
-  private renderCanvas(pageIdx: number, canvas: HTMLCanvasElement): boolean {
+  private renderCanvas(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    renderContext: PageRenderContext = {},
+  ): boolean {
     const zoom = this.viewportManager.getZoom();
     const rawDpr = window.devicePixelRatio || 1;
 
@@ -181,7 +185,7 @@ export class CanvasView {
 
     // WASM이 Canvas 크기를 자동 설정한다 (물리 픽셀 = 페이지크기 × zoom × DPR)
     try {
-      this.pageRenderer.renderPage(pageIdx, canvas, renderScale, zoom, dpr);
+      this.pageRenderer.renderPage(pageIdx, canvas, renderScale, zoom, dpr, renderContext);
     } catch (e) {
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
@@ -278,6 +282,14 @@ export class CanvasView {
       typeof payload === 'object' && payload !== null && 'pageIndex' in payload
         ? Number((payload as { pageIndex?: unknown }).pageIndex)
         : Number(payload);
+    const reason =
+      typeof payload === 'object' && payload !== null && 'reason' in payload
+        ? (payload as { reason?: unknown }).reason
+        : undefined;
+    const renderContext: PageRenderContext =
+      reason === 'text-edit'
+        ? { reason: 'text-edit', allowStaticOverlayReuse: true }
+        : { reason: 'unknown', allowStaticOverlayReuse: false };
 
     if (!Number.isInteger(pageIndex) || pageIndex < 0) {
       this.refreshPages();
@@ -296,7 +308,7 @@ export class CanvasView {
       return;
     }
 
-    if (!this.renderCanvas(pageIndex, canvas)) {
+    if (!this.renderCanvas(pageIndex, canvas, renderContext)) {
       this.canvasPool.release(pageIndex);
       this.updateVisiblePages();
     }

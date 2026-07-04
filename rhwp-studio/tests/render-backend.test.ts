@@ -133,9 +133,10 @@ test('CanvasKit renderer source replays the root once per replay plane', () => {
 
 test('PageRenderer uses filtered canvas layers for background, behind, and front planes', () => {
   const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'background'\)/);
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'behind'\)/);
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'front'\)/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'background'/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'behind'/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'front'/);
+  assert.match(source, /createFilteredCanvasLayer\(\s*pageIdx,\s*sourceCanvas,\s*renderScale,\s*layerKind\)/);
   assert.match(source, /layer\.style\.background\s*=\s*'transparent'/);
   assert.match(source, /collectLayerPlaneSummary\(root,\s*summary,\s*null\)/);
 });
@@ -149,6 +150,31 @@ test('PageRenderer prefers lightweight overlay summary before full PageLayerTree
   assert.match(source, /this\.wasm\.getPageLayerTree\(pageIdx\)/);
   assert.match(source, /typeof wrapper\?\.hasBehind !== 'boolean'/);
   assert.match(source, /const rawSvgCount = finiteCount\(wrapper\.rawSvgCount\)/);
+});
+
+test('CanvasView forwards text-edit invalidation as static overlay reuse context', () => {
+  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
+  assert.match(source, /type PageRenderContext/);
+  assert.match(source, /reason === 'text-edit'/);
+  assert.match(source, /allowStaticOverlayReuse:\s*true/);
+  assert.match(source, /allowStaticOverlayReuse:\s*false/);
+  assert.match(source, /renderCanvas\(pageIndex,\s*canvas,\s*renderContext\)/);
+  assert.match(source, /renderPage\(pageIdx,\s*canvas,\s*renderScale,\s*zoom,\s*dpr,\s*renderContext\)/);
+});
+
+test('PageRenderer reuses static overlay canvases only when the overlay key matches', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /export interface PageRenderContext/);
+  assert.match(source, /context\.reason === 'text-edit' && context\.allowStaticOverlayReuse === true/);
+  assert.match(source, /if \(!allowReuse\) \{/);
+  assert.match(source, /this\.removePageLayers\(parent,\s*pageIdx\);/);
+  assert.match(source, /reusableLayer\?\.dataset\.rhwpStaticOverlayKey === key/);
+  assert.match(source, /reusableLayer\.width === sourceCanvas\.width/);
+  assert.match(source, /reusableLayer\.height === sourceCanvas\.height/);
+  assert.match(source, /layer\.dataset\.rhwpStaticOverlayKey = key/);
+  assert.match(source, /summary=\$\{summary\.signature\}/);
+  assert.match(source, /profile=\$\{this\.renderProfile\}/);
+  assert.match(source, /backend=\$\{this\.backend\}/);
 });
 
 test('PageLayerTree bridge normalizes canonical build/debug option metadata', () => {

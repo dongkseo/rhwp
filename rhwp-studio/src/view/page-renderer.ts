@@ -11,6 +11,13 @@ interface LayerPlaneSummary {
   signature: string;
 }
 
+export interface PageRenderContext {
+  reason?: 'text-edit' | 'unknown';
+  allowStaticOverlayReuse?: boolean;
+}
+
+type OverlayLayerKind = 'background' | 'behind' | 'front';
+
 export class PageRenderer {
   private reRenderTimers = new Map<number, ReturnType<typeof setTimeout>[]>();
   private imageRetryCounts = new Map<number, number>();
@@ -29,6 +36,7 @@ export class PageRenderer {
     renderScale: number,
     _displayScale: number,
     dpr: number,
+    context: PageRenderContext = {},
   ): void {
     if (this.backend === 'canvaskit') {
       this.renderPageCanvasKit(pageIdx, canvas, renderScale);
@@ -40,7 +48,7 @@ export class PageRenderer {
     // 2) behind/front plane 은 같은 부모 컨테이너에 별도 canvas layer 로 합성
     this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow');
     this.drawMarginGuides(pageIdx, canvas, renderScale);
-    const overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr);
+    const overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context);
     // rawSvg(차트/OLE)도 web_canvas draw_image 비동기 디코드 경로를 타므로
     // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456).
     this.scheduleReRender(pageIdx, canvas, renderScale, overlays.imageCount + overlays.rawSvgCount);
@@ -95,16 +103,23 @@ export class PageRenderer {
     canvas: HTMLCanvasElement,
     renderScale: number,
     dpr: number,
+    context: PageRenderContext,
   ): LayerPlaneSummary {
     const parent = canvas.parentElement;
     if (!parent) return emptyLayerPlaneSummary();
 
-    // 페이지 단위 overlay 컨테이너를 Canvas 의 sibling 으로 관리.
-    // data-rhwp-overlay-page 속성으로 식별, 페이지 재렌더링 시 갱신.
-    this.removePageLayers(parent, pageIdx);
-
     const layers = this.getLayerPlaneSummary(pageIdx);
+    const allowReuse =
+      context.reason === 'text-edit' && context.allowStaticOverlayReuse === true;
+
+    if (!allowReuse) {
+      // 페이지 단위 overlay 컨테이너를 Canvas 의 sibling 으로 관리.
+      // data-rhwp-overlay-page 속성으로 식별, 페이지 재렌더링 시 갱신.
+      this.removePageLayers(parent, pageIdx);
+    }
+
     if (!layers.hasBehind && !layers.hasFront) {
+      this.removePageLayers(parent, pageIdx);
       canvas.style.background = '';
       canvas.style.zIndex = '';
       return layers;
@@ -126,22 +141,34 @@ export class PageRenderer {
       canvas.style.background = 'transparent';
       canvas.style.zIndex = '2';
 
-      const background = this.createFilteredCanvasLayer(pageIdx, canvas, renderScale, 'background');
-      background.dataset.rhwpOverlay = `background-${pageIdx}`;
-      background.dataset.rhwpOverlayPage = String(pageIdx);
+      const background = this.createOrReuseFilteredCanvasLayer(
+        pageIdx,
+        canvas,
+        renderScale,
+        'background',
+        layers,
+        allowReuse,
+      );
       this.applyPageLayerBox(background, top, left, transform, cssWidth, cssHeight);
       background.style.zIndex = '0';
       parent.insertBefore(background, canvas);
     } else {
+      this.removeOverlayLayer(parent, pageIdx, 'background');
+      this.removeOverlayLayer(parent, pageIdx, 'behind');
       canvas.style.background = '';
       canvas.style.zIndex = layers.hasFront ? '1' : '';
     }
 
     // BehindText overlay (Canvas 뒤). 이미지뿐 아니라 표/도형 PaintOp도 포함한다.
     if (layers.hasBehind) {
-      const layer = this.createFilteredCanvasLayer(pageIdx, canvas, renderScale, 'behind');
-      layer.dataset.rhwpOverlay = `behind-${pageIdx}`;
-      layer.dataset.rhwpOverlayPage = String(pageIdx);
+      const layer = this.createOrReuseFilteredCanvasLayer(
+        pageIdx,
+        canvas,
+        renderScale,
+        'behind',
+        layers,
+        allowReuse,
+      );
       this.applyPageLayerBox(layer, top, left, transform, cssWidth, cssHeight);
       layer.style.zIndex = '1';
       // Canvas 보다 먼저 들어가도록 prepend
@@ -150,21 +177,55 @@ export class PageRenderer {
 
     // InFrontOfText overlay (Canvas 앞). 이미지뿐 아니라 글상자/도형 PaintOp도 포함한다.
     if (layers.hasFront) {
-      const layer = this.createFilteredCanvasLayer(pageIdx, canvas, renderScale, 'front');
-      layer.dataset.rhwpOverlay = `front-${pageIdx}`;
-      layer.dataset.rhwpOverlayPage = String(pageIdx);
+      const layer = this.createOrReuseFilteredCanvasLayer(
+        pageIdx,
+        canvas,
+        renderScale,
+        'front',
+        layers,
+        allowReuse,
+      );
       this.applyPageLayerBox(layer, top, left, transform, cssWidth, cssHeight);
       layer.style.zIndex = layers.hasBehind ? '3' : '2';  // Canvas 보다 앞
       parent.appendChild(layer);
+    } else {
+      this.removeOverlayLayer(parent, pageIdx, 'front');
     }
     return layers;
+  }
+
+  private createOrReuseFilteredCanvasLayer(
+    pageIdx: number,
+    sourceCanvas: HTMLCanvasElement,
+    renderScale: number,
+    layerKind: OverlayLayerKind,
+    summary: LayerPlaneSummary,
+    allowReuse: boolean,
+  ): HTMLCanvasElement {
+    const key = this.buildStaticOverlayKey(pageIdx, sourceCanvas, renderScale, layerKind, summary);
+    const reusableLayer = this.findOverlayLayer(sourceCanvas.parentElement, pageIdx, layerKind);
+    if (
+      allowReuse &&
+      reusableLayer?.dataset.rhwpStaticOverlayKey === key &&
+      reusableLayer.width === sourceCanvas.width &&
+      reusableLayer.height === sourceCanvas.height
+    ) {
+      return reusableLayer;
+    }
+
+    reusableLayer?.remove();
+    const layer = this.createFilteredCanvasLayer(pageIdx, sourceCanvas, renderScale, layerKind);
+    layer.dataset.rhwpOverlay = `${layerKind}-${pageIdx}`;
+    layer.dataset.rhwpOverlayPage = String(pageIdx);
+    layer.dataset.rhwpStaticOverlayKey = key;
+    return layer;
   }
 
   private createFilteredCanvasLayer(
     pageIdx: number,
     sourceCanvas: HTMLCanvasElement,
     renderScale: number,
-    layerKind: 'background' | 'behind' | 'front',
+    layerKind: OverlayLayerKind,
   ): HTMLCanvasElement {
     const layer = document.createElement('canvas');
     layer.width = sourceCanvas.width;
@@ -204,6 +265,39 @@ export class PageRenderer {
       `[data-rhwp-overlay="behind-${pageIdx}"],` +
       `[data-rhwp-overlay="front-${pageIdx}"]`,
     ).forEach((el) => el.remove());
+  }
+
+  private findOverlayLayer(
+    parent: HTMLElement | null,
+    pageIdx: number,
+    layerKind: OverlayLayerKind,
+  ): HTMLCanvasElement | null {
+    return parent?.querySelector<HTMLCanvasElement>(
+      `[data-rhwp-overlay-page="${pageIdx}"][data-rhwp-layer-kind="${layerKind}"]`,
+    ) ?? null;
+  }
+
+  private removeOverlayLayer(parent: HTMLElement, pageIdx: number, layerKind: OverlayLayerKind): void {
+    this.findOverlayLayer(parent, pageIdx, layerKind)?.remove();
+  }
+
+  private buildStaticOverlayKey(
+    pageIdx: number,
+    sourceCanvas: HTMLCanvasElement,
+    renderScale: number,
+    layerKind: OverlayLayerKind,
+    summary: LayerPlaneSummary,
+  ): string {
+    return [
+      `page=${pageIdx}`,
+      `scale=${renderScale}`,
+      `width=${sourceCanvas.width}`,
+      `height=${sourceCanvas.height}`,
+      `layer=${layerKind}`,
+      `profile=${this.renderProfile}`,
+      `backend=${this.backend}`,
+      `summary=${summary.signature}`,
+    ].join('|');
   }
 
   removeAllPageLayers(parent: HTMLElement): void {
@@ -273,7 +367,7 @@ export class PageRenderer {
       const root = wrapper?.root;
       if (root) {
         collectLayerPlaneSummary(root, summary, null);
-        summary.signature = `tree:${summary.hasBehind ? 1 : 0}:${summary.hasFront ? 1 : 0}:${summary.imageCount}:${summary.rawSvgCount}:${json.length}`;
+        summary.signature = `tree:${summary.hasBehind ? 1 : 0}:${summary.hasFront ? 1 : 0}:${summary.imageCount}:${summary.rawSvgCount}`;
       }
     } catch (e) {
       console.warn('[PageRenderer] PageLayerTree JSON parse 실패:', e);
