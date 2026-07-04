@@ -1854,6 +1854,10 @@ fn render_lineseg_array_from_ir(segs: &[LineSeg]) -> String {
 
 /// IR 기반 다음 문단의 vert_start 계산 — 마지막 lineseg 의 vpos + lh 사용.
 fn next_vert_cursor_from_ir(segs: &[LineSeg], vert_start: u32) -> u32 {
+    if segs.len() == 1 && segs[0].is_missing_lineseg_placeholder() {
+        return vert_start;
+    }
+
     if let Some(last) = segs.last() {
         // vertical_pos 는 섹션 시작 기준 절대값일 수도, 문단 기준 상대값일 수도 있음.
         // 현재 rhwp 는 섹션 절대값이므로 그대로 + lh 로 다음 커서 산출.

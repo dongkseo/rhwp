@@ -13,15 +13,32 @@ use std::fs;
 use std::path::Path;
 
 use rhwp::diagnostics::render_geom_diff::{roundtrip_geom, Via};
+use rhwp::document_core::DocumentCore;
 use rhwp::model::bin_data::BinDataType;
+use rhwp::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH;
 use rhwp::parser::hwpx::parse_hwpx;
 use rhwp::serializer::hwpx::serialize_hwpx;
 
 const SAMPLE: &str = "samples/issue1891_external_bindata_link.hwpx";
+const HWP5_ORIGIN_SAMPLES: &[&str] = &[
+    "samples/76076_regulatory_analysis.hwp",
+    "samples/80168_regulatory_analysis.hwp",
+    "samples/80250_regulatory_analysis.hwp",
+    "samples/86712_regulatory_analysis.hwp",
+    "samples/issue1891/76076_regulatory_analysis.hwpx",
+    "samples/issue1891/80168_regulatory_analysis.hwpx",
+    "samples/issue1891/80250_regulatory_analysis.hwpx",
+    "samples/issue1891/86712_regulatory_analysis.hwpx",
+];
 
 fn read_sample() -> Vec<u8> {
     let repo_root = env!("CARGO_MANIFEST_DIR");
     fs::read(Path::new(repo_root).join(SAMPLE)).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"))
+}
+
+fn read_rel(path: &str) -> Vec<u8> {
+    let repo_root = env!("CARGO_MANIFEST_DIR");
+    fs::read(Path::new(repo_root).join(path)).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
 /// 렌더 자기정합: pic 드롭 없이 왕복해야 한다 (종전 STRUCT 167px).
@@ -42,6 +59,38 @@ fn issue_1891_external_link_roundtrip_render_is_self_consistent() {
             !pg.structure_mismatch,
             "{SAMPLE} page {} 구조 불일치 (node {} vs {}) — 그림 컨트롤 드롭 회귀",
             pg.page, pg.node_count_a, pg.node_count_b
+        );
+    }
+}
+
+/// HWP5 원본을 HWPX로 저장한 산출물은 HWPX 컨테이너라도 HWP5-origin marker를 통해
+/// HWP5 lineSeg 부재/pagination 시멘틱을 유지해야 한다.
+#[test]
+fn issue_1891_hwp5_origin_hwpx_export_reparse_keeps_page_count() {
+    for sample in HWP5_ORIGIN_SAMPLES {
+        let bytes = read_rel(sample);
+        let source =
+            DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {sample}: {e:?}"));
+        let before = source.page_count();
+        let exported = source
+            .export_hwpx_native()
+            .unwrap_or_else(|e| panic!("export {sample}: {e:?}"));
+        let reparsed = DocumentCore::from_bytes(&exported)
+            .unwrap_or_else(|e| panic!("reparse exported {sample}: {e:?}"));
+
+        assert_eq!(
+            reparsed.page_count(),
+            before,
+            "{sample}: HWP5-origin HWPX export 재파스 쪽수 불일치"
+        );
+
+        let parsed =
+            parse_hwpx(&exported).unwrap_or_else(|e| panic!("parse exported hwpx {sample}: {e:?}"));
+        assert!(
+            parsed
+                .hwpx_aux_entry(HWP5_ORIGIN_HWPX_MARKER_PATH)
+                .is_some(),
+            "{sample}: HWP5-origin HWPX marker 누락"
         );
     }
 }

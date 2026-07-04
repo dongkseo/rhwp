@@ -29,7 +29,7 @@ pub mod writer;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
-use crate::model::document::Document;
+use crate::model::document::{Document, HWP5_ORIGIN_HWPX_MARKER_PATH};
 
 use super::SerializeError;
 use content::BinDataEntry as ContentBinDataEntry;
@@ -166,6 +166,12 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
 
     // 11. META-INF/manifest.xml
     z.write_deflated("META-INF/manifest.xml", META_INF_MANIFEST_XML.as_bytes())?;
+
+    // HWP5-origin HWPX marker — HWP5에서 HWPX로 export한 산출물은 HWPX 컨테이너라도
+    // lineSeg 부재/pagination 시멘틱을 HWP5 원본처럼 해석해야 자기정합한다.
+    if let Some(marker) = doc.hwpx_aux_entry(HWP5_ORIGIN_HWPX_MARKER_PATH) {
+        z.write_deflated(HWP5_ORIGIN_HWPX_MARKER_PATH, marker)?;
+    }
 
     // 참조 정합성 단언 (Stage 1+)
     ctx.assert_all_refs_resolved()?;

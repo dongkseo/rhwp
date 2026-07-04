@@ -8,6 +8,7 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::document::Document;
 use crate::model::paragraph::{LineSeg, Paragraph};
+use crate::model::shape::{Caption, DrawingObjAttr, ShapeObject};
 use crate::renderer::composer::{compose_section, reflow_line_segs};
 use crate::renderer::layout::LayoutEngine;
 use crate::renderer::page_layout::PageLayoutInfo;
@@ -63,11 +64,18 @@ impl DocumentCore {
             document.is_hwp3_variant,
         );
 
+        let hwp5_origin_hwpx = matches!(source_format, crate::parser::FileFormat::Hwpx)
+            && document
+                .hwpx_aux_entry(crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+                .is_some();
+        let use_hwpx_lineseg_semantics =
+            matches!(source_format, crate::parser::FileFormat::Hwpx) && !hwp5_origin_hwpx;
+
         // 비표준 lineseg 감지 — reflow 이전 시점에 IR을 그대로 검증.
         // 경고는 사용자에게 고지되며, 자동 reflow 는 `needs_line_seg_reflow` 조건에만 한정.
         // 사용자 명시 reflow 는 `reflow_linesegs_on_demand()` 를 통해서만 수행 (#177).
         // LinesegTextRunReflow는 HWPX 전용 비표준 패턴. HWP3/HWP5는 1 line_info = 1 lineseg가 정상.
-        let check_textrun_reflow = matches!(source_format, crate::parser::FileFormat::Hwpx);
+        let check_textrun_reflow = use_hwpx_lineseg_semantics;
         let validation_report = Self::validate_linesegs(&document, check_textrun_reflow);
 
         // lineSegArray가 없는 문단에 대해 합성 LineSeg 생성.
@@ -75,14 +83,15 @@ impl DocumentCore {
         // HWPX 에서만 빈 line_segs 를 합성 대상에 포함한다 — compose 전에 올바른
         // line_height/line_spacing 을 계산해야 줄바꿈·높이가 정상 동작한다.
         // HWP5/HWP3 의 빈 line_segs 는 종전대로 reflow 하지 않는다 (페이지 수 보존).
-        let include_empty = matches!(source_format, crate::parser::FileFormat::Hwpx);
+        let include_empty = use_hwpx_lineseg_semantics;
         Self::reflow_zero_height_paragraphs(&mut document, &styles, DEFAULT_DPI, include_empty);
+        Self::clear_missing_lineseg_placeholders(&mut document);
 
         // HWPX → HWP 라운드트립 일관성 normalize (#314):
         // HWPX 파서가 채우지 않는 paragraph 필드를 HWP 직렬화/파싱 라운드트립 결과와 일치시킨다.
         // 1) char_shapes 빈 paragraph 에 default [(0,0)] 추가 (HWP 스펙상 최소 1개 요구)
         // 2) control_mask 를 controls 기반으로 재계산
-        if matches!(source_format, crate::parser::FileFormat::Hwpx) {
+        if use_hwpx_lineseg_semantics {
             Self::normalize_hwpx_paragraphs(&mut document);
         }
 
@@ -443,8 +452,152 @@ impl DocumentCore {
         para: &crate::model::paragraph::Paragraph,
         include_empty: bool,
     ) -> bool {
+        if para.line_segs.len() == 1 && para.line_segs[0].is_missing_lineseg_placeholder() {
+            return false;
+        }
         (include_empty && para.line_segs.is_empty())
             || (para.line_segs.len() == 1 && para.line_segs[0].line_height == 0)
+    }
+
+    /// HWP5 -> HWPX export가 넣은 LineSeg 부재 marker는 reflow gate에서만 사용한다.
+    /// 레이아웃은 HWP5 원본과 같은 `line_segs.is_empty()` 경로를 타야 하므로 로드 직후 제거한다.
+    fn clear_missing_lineseg_placeholders(document: &mut Document) {
+        for section in &mut document.sections {
+            for para in &mut section.paragraphs {
+                Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+            }
+            for master_page in &mut section.section_def.master_pages {
+                for para in &mut master_page.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+        }
+    }
+
+    fn clear_missing_lineseg_placeholder_in_paragraph(para: &mut Paragraph) {
+        for ctrl in &mut para.controls {
+            Self::clear_missing_lineseg_placeholders_in_control(ctrl);
+        }
+        if para.line_segs.len() == 1 && para.line_segs[0].is_missing_lineseg_placeholder() {
+            para.line_segs.clear();
+        }
+    }
+
+    fn clear_missing_lineseg_placeholders_in_control(ctrl: &mut Control) {
+        match ctrl {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    for para in &mut cell.paragraphs {
+                        Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                    }
+                }
+                if let Some(caption) = &mut table.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+            Control::Shape(shape) => Self::clear_missing_lineseg_placeholders_in_shape(shape),
+            Control::Picture(picture) => {
+                if let Some(caption) = &mut picture.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+            Control::Header(header) => {
+                for para in &mut header.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            Control::Footer(footer) => {
+                for para in &mut footer.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            Control::Footnote(footnote) => {
+                for para in &mut footnote.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            Control::Endnote(endnote) => {
+                for para in &mut endnote.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            Control::HiddenComment(comment) => {
+                for para in &mut comment.paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            Control::Field(field) => {
+                for para in &mut field.memo_paragraphs {
+                    Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn clear_missing_lineseg_placeholders_in_shape(shape: &mut ShapeObject) {
+        match shape {
+            ShapeObject::Line(line) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut line.drawing)
+            }
+            ShapeObject::Rectangle(rect) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut rect.drawing)
+            }
+            ShapeObject::Ellipse(ellipse) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut ellipse.drawing)
+            }
+            ShapeObject::Arc(arc) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut arc.drawing)
+            }
+            ShapeObject::Polygon(polygon) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut polygon.drawing)
+            }
+            ShapeObject::Curve(curve) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut curve.drawing)
+            }
+            ShapeObject::Group(group) => {
+                for child in &mut group.children {
+                    Self::clear_missing_lineseg_placeholders_in_shape(child);
+                }
+                if let Some(caption) = &mut group.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+            ShapeObject::Picture(picture) => {
+                if let Some(caption) = &mut picture.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+            ShapeObject::Chart(chart) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut chart.drawing);
+                if let Some(caption) = &mut chart.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+            ShapeObject::Ole(ole) => {
+                Self::clear_missing_lineseg_placeholders_in_drawing(&mut ole.drawing);
+                if let Some(caption) = &mut ole.caption {
+                    Self::clear_missing_lineseg_placeholders_in_caption(caption);
+                }
+            }
+        }
+    }
+
+    fn clear_missing_lineseg_placeholders_in_drawing(drawing: &mut DrawingObjAttr) {
+        if let Some(text_box) = &mut drawing.text_box {
+            for para in &mut text_box.paragraphs {
+                Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+            }
+        }
+        if let Some(caption) = &mut drawing.caption {
+            Self::clear_missing_lineseg_placeholders_in_caption(caption);
+        }
+    }
+
+    fn clear_missing_lineseg_placeholders_in_caption(caption: &mut Caption) {
+        for para in &mut caption.paragraphs {
+            Self::clear_missing_lineseg_placeholder_in_paragraph(para);
+        }
     }
 
     /// HWPX RowBreak 표 셀의 합성 lineSeg를 셀에 저장된 세로 정보와 맞춘다.
@@ -795,8 +948,168 @@ impl DocumentCore {
 
     /// Document IR을 HWPX(ZIP+XML)로 직렬화 (네이티브 에러 타입)
     pub fn export_hwpx_native(&self) -> Result<Vec<u8>, HwpError> {
-        crate::serializer::serialize_hwpx(&self.document)
-            .map_err(|e| HwpError::RenderError(e.to_string()))
+        let serialized = if matches!(self.source_format, crate::parser::FileFormat::Hwp) {
+            let mut doc = self.document.clone();
+            if !doc
+                .hwpx_aux_entries
+                .iter()
+                .any(|(path, _)| path == crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH)
+            {
+                doc.hwpx_aux_entries.push((
+                    crate::model::document::HWP5_ORIGIN_HWPX_MARKER_PATH.to_string(),
+                    b"1".to_vec(),
+                ));
+            }
+            Self::materialize_hwp5_missing_linesegs_for_hwpx_export(&mut doc);
+            crate::serializer::serialize_hwpx(&doc)
+        } else {
+            crate::serializer::serialize_hwpx(&self.document)
+        };
+        serialized.map_err(|e| HwpError::RenderError(e.to_string()))
+    }
+
+    /// HWP5 원본에서 LineSeg가 없던 문단을 HWPX 재파스에서도 일반 HWPX 누락 문단으로
+    /// reflow하지 않도록 명시 LineSeg marker로 materialize한다.
+    fn materialize_hwp5_missing_linesegs_for_hwpx_export(document: &mut Document) {
+        for section in &mut document.sections {
+            for para in &mut section.paragraphs {
+                Self::materialize_missing_lineseg_paragraph(para);
+            }
+            for master_page in &mut section.section_def.master_pages {
+                for para in &mut master_page.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+        }
+    }
+
+    fn materialize_missing_lineseg_paragraph(para: &mut Paragraph) {
+        for ctrl in &mut para.controls {
+            Self::materialize_missing_lineseg_paragraphs_in_control(ctrl);
+        }
+
+        if para.line_segs.is_empty() {
+            para.line_segs.push(LineSeg::missing_lineseg_placeholder());
+        }
+    }
+
+    fn materialize_missing_lineseg_paragraphs_in_control(ctrl: &mut Control) {
+        match ctrl {
+            Control::Table(table) => {
+                for cell in &mut table.cells {
+                    for para in &mut cell.paragraphs {
+                        Self::materialize_missing_lineseg_paragraph(para);
+                    }
+                }
+                if let Some(caption) = &mut table.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+            Control::Shape(shape) => {
+                Self::materialize_missing_lineseg_paragraphs_in_shape(shape);
+            }
+            Control::Picture(picture) => {
+                if let Some(caption) = &mut picture.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+            Control::Header(header) => {
+                for para in &mut header.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            Control::Footer(footer) => {
+                for para in &mut footer.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            Control::Footnote(footnote) => {
+                for para in &mut footnote.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            Control::Endnote(endnote) => {
+                for para in &mut endnote.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            Control::HiddenComment(comment) => {
+                for para in &mut comment.paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            Control::Field(field) => {
+                for para in &mut field.memo_paragraphs {
+                    Self::materialize_missing_lineseg_paragraph(para);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn materialize_missing_lineseg_paragraphs_in_shape(shape: &mut ShapeObject) {
+        match shape {
+            ShapeObject::Line(line) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut line.drawing)
+            }
+            ShapeObject::Rectangle(rect) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut rect.drawing)
+            }
+            ShapeObject::Ellipse(ellipse) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut ellipse.drawing)
+            }
+            ShapeObject::Arc(arc) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut arc.drawing)
+            }
+            ShapeObject::Polygon(polygon) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut polygon.drawing)
+            }
+            ShapeObject::Curve(curve) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut curve.drawing)
+            }
+            ShapeObject::Group(group) => {
+                for child in &mut group.children {
+                    Self::materialize_missing_lineseg_paragraphs_in_shape(child);
+                }
+                if let Some(caption) = &mut group.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+            ShapeObject::Picture(picture) => {
+                if let Some(caption) = &mut picture.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+            ShapeObject::Chart(chart) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut chart.drawing);
+                if let Some(caption) = &mut chart.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+            ShapeObject::Ole(ole) => {
+                Self::materialize_missing_lineseg_paragraphs_in_drawing(&mut ole.drawing);
+                if let Some(caption) = &mut ole.caption {
+                    Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+                }
+            }
+        }
+    }
+
+    fn materialize_missing_lineseg_paragraphs_in_drawing(drawing: &mut DrawingObjAttr) {
+        if let Some(text_box) = &mut drawing.text_box {
+            for para in &mut text_box.paragraphs {
+                Self::materialize_missing_lineseg_paragraph(para);
+            }
+        }
+        if let Some(caption) = &mut drawing.caption {
+            Self::materialize_missing_lineseg_paragraphs_in_caption(caption);
+        }
+    }
+
+    fn materialize_missing_lineseg_paragraphs_in_caption(caption: &mut Caption) {
+        for para in &mut caption.paragraphs {
+            Self::materialize_missing_lineseg_paragraph(para);
+        }
     }
 
     /// 배포용(읽기전용) 문서를 편집 가능한 일반 문서로 변환한다 (네이티브 에러 타입).

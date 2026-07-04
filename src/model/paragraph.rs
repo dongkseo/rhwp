@@ -182,6 +182,27 @@ impl LineSeg {
 
     /// 한 줄이 하나의 세그먼트로만 구성될 때 사용하는 HWP5 tag 조합.
     pub const TAG_SINGLE_SEGMENT_LINE: u32 = Self::TAG_FIRST_SEGMENT | Self::TAG_LAST_SEGMENT;
+    /// HWP5 출처 문단의 원본 LineSeg 부재 의미를 HWPX 재파스에서도 보존하기 위한 tag 조합.
+    pub const TAG_MISSING_LINESEG_PLACEHOLDER: u32 =
+        Self::TAG_SINGLE_SEGMENT_LINE | Self::TAG_EMPTY_SEGMENT | Self::TAG_IMPLEMENTATION_PROPERTY;
+
+    /// HWP5 원본에서 LineSeg가 없던 문단을 HWPX 산출물에 명시할 때 쓰는 LineSeg.
+    pub fn missing_lineseg_placeholder() -> Self {
+        Self {
+            tag: Self::TAG_MISSING_LINESEG_PLACEHOLDER,
+            ..Self::default()
+        }
+    }
+
+    /// rhwp가 HWP5 -> HWPX export 중 생성한 원본 LineSeg 부재 보존용 LineSeg인지 여부.
+    pub fn is_missing_lineseg_placeholder(&self) -> bool {
+        self.line_height == 0
+            && self.text_height == 0
+            && self.baseline_distance == 0
+            && self.line_spacing == 0
+            && self.tag & Self::TAG_MISSING_LINESEG_PLACEHOLDER
+                == Self::TAG_MISSING_LINESEG_PLACEHOLDER
+    }
 
     /// 페이지의 첫 줄인지 여부
     pub fn is_first_line_of_page(&self) -> bool {

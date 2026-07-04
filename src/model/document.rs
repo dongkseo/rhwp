@@ -8,6 +8,13 @@ use super::paragraph::Paragraph;
 use super::style::{BorderFill, Bullet, CharShape, Font, Numbering, ParaShape, Style, TabDef};
 use super::*;
 
+/// rhwp가 HWP5 원본에서 생성한 HWPX임을 표시하는 ZIP 보조 엔트리 경로.
+///
+/// 이 마커가 있는 HWPX는 XML 컨테이너 형식이지만 pagination/lineSeg 부재 시멘틱은
+/// HWP5 원본을 따라야 한다. 한컴은 미지의 ZIP 엔트리를 무시하며, 한컴에서 다시 저장하면
+/// 마커가 사라져 native HWPX로 취급된다.
+pub const HWP5_ORIGIN_HWPX_MARKER_PATH: &str = "META-INF/rhwp-hwp5-origin";
+
 /// 파서가 모델링하지 않는 원시 레코드 (라운드트립 보존용)
 #[derive(Debug, Clone, Default)]
 pub struct RawRecord {
