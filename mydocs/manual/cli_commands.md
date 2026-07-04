@@ -158,14 +158,20 @@ ingest JSON(시험문제 등) → HWPX 생성. (rhwp-exam-ingest 파이프라인
 - `--media-dir <dir>` 는 `ingest.json` 의 `media[].id` 와 이미지 `stem_blocks[].ref` 를
   해석할 기준 디렉터리다. 이미지가 없으면 생략한다.
 - 최소 입력 필드: `version`, `page_size`, `default_font`, `questions[]`.
-  각 문제는 `number`, `stem`, `stem_blocks`, `choices`, `media`, `auto_number` 를 사용할 수 있다.
+  각 문제는 `number`, `stem`, `passage_ref`, `stem_blocks`, `choices`, `media`, `auto_number` 를 사용할 수 있다.
+  top-level optional 필드로 `passages`, `header_text`, `footer_text`, `form_label` 을 사용할 수 있다.
+  `stem_blocks` 는 `text`, `image`, `boxed` 블록을 지원한다.
   자세한 스키마 모델은 `src/parser/ingest/schema.rs`, 예시는
-  `tools/rhwp-ingest/schema/sample_minimal.json` 을 기준으로 확인한다.
+  `tools/rhwp-ingest/schema/sample_minimal.json` 과
+  `tools/rhwp-ingest/schema/sample_structured.json` 을 기준으로 확인한다.
 - 시험지 e2e 검증은 생성만으로 끝내지 않고, 산출 HWPX를 다시 CLI로 확인한다.
 
 ```bash
 rhwp build-from-ingest tools/rhwp-ingest/schema/sample_minimal.json \
   -o output/poc/ingest/sample_minimal.hwpx
+
+rhwp build-from-ingest tools/rhwp-ingest/schema/sample_structured.json \
+  -o output/poc/ingest/sample_structured.hwpx
 
 rhwp export-text output/poc/ingest/sample_minimal.hwpx \
   -o output/poc/ingest/text
