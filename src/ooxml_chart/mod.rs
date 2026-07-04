@@ -26,7 +26,15 @@ pub mod renderer;
 pub struct OoxmlChart {
     /// 주 차트 타입 (콤보인 경우 첫 번째 plotType이 들어감; 렌더러는 시리즈별 타입 우선)
     pub chart_type: OoxmlChartType,
+    /// 명시 제목 텍스트 (`c:title > … > a:t`). 자동 제목 판단은 아래 플래그로 별도
+    /// 수행 — 이 필드는 명시 텍스트 전용을 유지해 파서의 빈 차트 조기 반환 가드
+    /// (`series.is_empty() && title.is_none()`)에 영향을 주지 않는다. (C1c #1882 갭①)
     pub title: Option<String>,
+    /// `c:title` 요소 존재 여부. 한컴은 제목 텍스트가 없어도 이 요소가 있고
+    /// `autoTitleDeleted=0`이면 자동 제목 "차트 제목"을 렌더한다. (C1c #1882 갭①)
+    pub has_title_elem: bool,
+    /// `c:autoTitleDeleted val="1"` — 자동 제목 억제 플래그. (C1c #1882 갭①)
+    pub auto_title_deleted: bool,
     pub series: Vec<OoxmlSeries>,
     pub categories: Vec<String>,
     /// 시리즈 중 하나라도 보조축을 쓰면 true

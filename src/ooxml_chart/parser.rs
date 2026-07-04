@@ -260,7 +260,17 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
         b"val" => st.in_val = true,
         b"xVal" => st.in_x_val = true,
         b"yVal" => st.in_y_val = true,
-        b"title" => st.in_chart_title = true,
+        b"title" => {
+            st.in_chart_title = true;
+            // C1c #1882 갭①: 요소 존재만 기록 (텍스트 유무는 chart.title이 담당 —
+            // 한컴은 텍스트 없어도 autoTitleDeleted=0이면 자동 제목을 그림)
+            chart.has_title_elem = true;
+        }
+        b"autoTitleDeleted" => {
+            if let Some(val) = attr_val(e, "val") {
+                chart.auto_title_deleted = matches!(val.as_str(), "1" | "true");
+            }
+        }
         b"v" => {
             st.in_v = true;
             st.cur_text_buf.clear();
@@ -483,10 +493,41 @@ mod tests {
         let c = parse_chart_xml(BAR_XML.as_bytes()).expect("parse OK");
         assert_eq!(c.chart_type, OoxmlChartType::Column);
         assert_eq!(c.title.as_deref(), Some("Title A"));
+        assert!(c.has_title_elem, "명시 제목도 c:title 요소 존재로 기록");
         assert_eq!(c.series.len(), 1);
         assert_eq!(c.series[0].series_type, OoxmlChartType::Column);
         assert_eq!(c.series[0].values, vec![100.0, 80.0]);
         assert_eq!(c.categories, vec!["Seoul", "Busan"]);
+    }
+
+    // --- C1c (#1882) 갭①: 자동 제목 플래그 ---
+
+    /// 한컴 코퍼스 실태 미러: c:title 요소는 있으나 텍스트(a:t) 없음 + autoTitleDeleted.
+    fn titleless_bar_xml(auto_title_deleted: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart>
+<c:title><c:layout/><c:overlay val="0"/></c:title>
+<c:autoTitleDeleted val="{auto_title_deleted}"/>
+<c:plotArea><c:barChart><c:barDir val="col"/><c:ser>
+  <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#
+        )
+    }
+
+    #[test]
+    fn test_parse_title_elem_without_text() {
+        // 텍스트 없는 c:title → title=None 유지(빈 차트 가드 불변) + 요소 존재 플래그.
+        let c = parse_chart_xml(titleless_bar_xml("0").as_bytes()).expect("parse OK");
+        assert_eq!(c.title, None, "명시 텍스트 없으면 title은 None 유지");
+        assert!(c.has_title_elem);
+        assert!(!c.auto_title_deleted);
+    }
+
+    #[test]
+    fn test_parse_auto_title_deleted() {
+        let c = parse_chart_xml(titleless_bar_xml("1").as_bytes()).expect("parse OK");
+        assert!(c.has_title_elem);
+        assert!(c.auto_title_deleted, "val=1 → 자동 제목 억제");
     }
 
     #[test]

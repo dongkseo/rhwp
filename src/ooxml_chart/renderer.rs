@@ -98,8 +98,14 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
         x, y, w, h
     ));
 
+    // C1c #1882 갭①: 명시 제목이 없어도 c:title 요소가 있고 autoTitleDeleted=0이면
+    // 한컴처럼 자동 제목 placeholder "차트 제목"을 그린다 (정답지 PDF 실측).
+    let effective_title: Option<String> = chart.title.clone().or_else(|| {
+        (chart.has_title_elem && !chart.auto_title_deleted).then(|| "차트 제목".to_string())
+    });
+
     // 영역 분할
-    let title_h = if chart.title.is_some() { 22.0 } else { 4.0 };
+    let title_h = if effective_title.is_some() { 22.0 } else { 4.0 };
     let legend_h = if chart.series.iter().any(|s| !s.name.is_empty()) {
         22.0
     } else {
@@ -118,9 +124,10 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
     let plot_w = (w - left_pad - right_pad).max(10.0);
     let plot_h = (h - title_h - legend_h - bottom_pad).max(10.0);
 
-    if let Some(ref title) = chart.title {
+    if let Some(ref title) = effective_title {
+        // 한컴 제목은 regular weight (정답지 PDF 실측 — C1c #1882 갭①)
         svg.push_str(&format!(
-            "<text x=\"{:.2}\" y=\"{:.2}\" font-family=\"sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#222\" text-anchor=\"middle\">{}</text>\n",
+            "<text x=\"{:.2}\" y=\"{:.2}\" font-family=\"sans-serif\" font-size=\"13\" font-weight=\"400\" fill=\"#222\" text-anchor=\"middle\">{}</text>\n",
             x + w / 2.0,
             y + title_h - 4.0,
             xml_escape(title)
@@ -1315,6 +1322,54 @@ mod tests {
         // 양수 데이터 → 축이 0부터 (한컴 분산형 PDF 정합). 0 라벨이 X·Y에 존재.
         let svg = render_chart_svg(&scatter_chart(ScatterStyle::Marker), 0.0, 0.0, 400.0, 300.0);
         assert!(svg.contains(">0<"), "분산형 축은 0 기준선이어야");
+    }
+
+    // --- C1c (#1882) 갭①: 자동 제목 ---
+
+    #[test]
+    fn test_render_auto_title_placeholder() {
+        // c:title 요소 존재 + autoTitleDeleted=0 + 명시 텍스트 없음 →
+        // 한컴처럼 자동 제목 "차트 제목" 렌더 (regular weight).
+        let chart = OoxmlChart {
+            chart_type: OoxmlChartType::Column,
+            has_title_elem: true,
+            series: vec![OoxmlSeries {
+                values: vec![1.0, 2.0],
+                series_type: OoxmlChartType::Column,
+                ..Default::default()
+            }],
+            categories: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
+        assert!(svg.contains("차트 제목"), "자동 제목 placeholder 렌더");
+        assert!(
+            !svg.contains("font-weight=\"600\""),
+            "한컴 제목은 regular weight (600 아님)"
+        );
+    }
+
+    #[test]
+    fn test_render_no_auto_title_when_deleted_or_absent() {
+        // autoTitleDeleted=1 또는 c:title 요소 자체가 없으면 자동 제목 없음.
+        let base = OoxmlChart {
+            chart_type: OoxmlChartType::Column,
+            series: vec![OoxmlSeries {
+                values: vec![1.0, 2.0],
+                series_type: OoxmlChartType::Column,
+                ..Default::default()
+            }],
+            categories: vec!["a".into(), "b".into()],
+            ..Default::default()
+        };
+        let deleted = OoxmlChart {
+            has_title_elem: true,
+            auto_title_deleted: true,
+            ..base.clone()
+        };
+        assert!(!render_chart_svg(&deleted, 0.0, 0.0, 400.0, 300.0).contains("차트 제목"));
+        // has_title_elem=false (기본값) → 자동 제목 없음
+        assert!(!render_chart_svg(&base, 0.0, 0.0, 400.0, 300.0).contains("차트 제목"));
     }
 
     // --- C1c (#1882) 갭④: Y축 headroom + step 기반 눈금 (한컴 실측 앵커 3점) ---
