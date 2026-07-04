@@ -26,7 +26,15 @@ pub mod renderer;
 pub struct OoxmlChart {
     /// 주 차트 타입 (콤보인 경우 첫 번째 plotType이 들어감; 렌더러는 시리즈별 타입 우선)
     pub chart_type: OoxmlChartType,
+    /// 명시 제목 텍스트 (`c:title > … > a:t`). 자동 제목 판단은 아래 플래그로 별도
+    /// 수행 — 이 필드는 명시 텍스트 전용을 유지해 파서의 빈 차트 조기 반환 가드
+    /// (`series.is_empty() && title.is_none()`)에 영향을 주지 않는다. (C1c #1882 갭①)
     pub title: Option<String>,
+    /// `c:title` 요소 존재 여부. 한컴은 제목 텍스트가 없어도 이 요소가 있고
+    /// `autoTitleDeleted=0`이면 자동 제목 "차트 제목"을 렌더한다. (C1c #1882 갭①)
+    pub has_title_elem: bool,
+    /// `c:autoTitleDeleted val="1"` — 자동 제목 억제 플래그. (C1c #1882 갭①)
+    pub auto_title_deleted: bool,
     pub series: Vec<OoxmlSeries>,
     pub categories: Vec<String>,
     /// 시리즈 중 하나라도 보조축을 쓰면 true
@@ -36,6 +44,26 @@ pub struct OoxmlChart {
     pub grouping: BarGrouping,
     /// 분산형 `c:scatterStyle` (표식/직선/곡선). scatter 렌더러만 사용. (C1b #1660)
     pub scatter_style: ScatterStyle,
+    /// 범례 위치 (`c:legendPos`). 한컴 코퍼스는 전 샘플 `val="r"`. (C1c #1882 갭③)
+    pub legend_pos: LegendPos,
+    /// 3D plot(`bar3DChart`/`pie3DChart`) 여부. 렌더는 2D 근사(C1a)지만 한컴 3D
+    /// 엔진의 축 정책이 2D와 달라(묶은 0~5 무헤드룸/누적세로 과헤드룸) 축 계산에
+    /// 사용. 입체감 렌더는 후속(C2). (C1c #1882 시각판정 반영)
+    pub is_3d: bool,
+}
+
+/// 범례 위치 (`c:legendPos`). C1c #1882 갭③.
+///
+/// 기본값 Bottom — `c:legend`/`legendPos` 미존재 시 현행 하단 배치를 유지한다
+/// (모델을 직접 구성하는 기존 테스트·XML 보호). Right만 우측 세로 스택으로
+/// 렌더하며 Left/Top은 하단 폴백(코퍼스 전 샘플이 r — 확장은 후속).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LegendPos {
+    #[default]
+    Bottom,
+    Right,
+    Left,
+    Top,
 }
 
 /// 막대 차트 그룹화 방식 (`c:grouping`). line 누적은 미지원(C1d).

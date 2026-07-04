@@ -136,8 +136,23 @@ fn print_help() {
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
     println!();
-    println!("  export-pdf <파일.hwp> [-o 출력.pdf] [-p 페이지]");
+    println!("  export-pdf <파일.hwp> [옵션]");
     println!("      HWP 파일을 PDF로 내보내기 (svg2pdf + pdf-writer)");
+    println!();
+    println!("      -o, --output <파일>      출력 PDF 파일 (기본: output/<입력명>.pdf)");
+    println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!("      --font-path <경로>      폰트 파일 탐색 경로 (여러 번 지정 가능)");
+    println!("      --fallback-serif <명>   PDF serif generic fallback family");
+    println!("      --fallback-sans <명>    PDF sans-serif generic fallback family");
+    println!("      --fallback-mono <명>    PDF monospace generic fallback family");
+    println!("      --equation-font <명>    PDF 수식 SVG 우선 font-family");
+    println!(
+        "                              <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않음"
+    );
+    println!(
+        "                              경로/폰트명에 공백이 있으면 큰따옴표 권장: --font-path \"./My Fonts\""
+    );
+    println!("                              예: --fallback-sans \"Apple SD Gothic Neo\"");
     println!();
     println!("  export-hwpx <입력.hwp|입력.hwpx> [출력.hwpx]");
     println!("      HWP 문서를 HWPX(ZIP+XML)로 변환 저장. 출력 생략 시 <입력 stem>.hwpx");
@@ -1106,7 +1121,11 @@ fn export_png(args: &[String]) {
 fn export_pdf(args: &[String]) {
     if args.is_empty() {
         eprintln!("오류: HWP 파일 경로를 지정해주세요.");
-        eprintln!("사용법: rhwp export-pdf <파일.hwp> [-o 출력.pdf] [-p 페이지]");
+        print_export_pdf_usage();
+        return;
+    }
+    if args[0] == "--help" || args[0] == "-h" {
+        print_export_pdf_usage();
         return;
     }
 
@@ -1121,6 +1140,7 @@ fn export_pdf(args: &[String]) {
         let file_path = &args[0];
         let mut output_file = String::new();
         let mut target_page: Option<u32> = None;
+        let mut pdf_options = rhwp::renderer::pdf::PdfExportOptions::default();
 
         let mut i = 1;
         while i < args.len() {
@@ -1149,8 +1169,93 @@ fn export_pdf(args: &[String]) {
                         return;
                     }
                 }
-                _ => {
+                "--font-path" => {
+                    if i + 1 < args.len() {
+                        pdf_options
+                            .font_paths
+                            .push(std::path::PathBuf::from(&args[i + 1]));
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --font-path 뒤에 경로가 필요합니다.");
+                        return;
+                    }
+                }
+                "--fallback-serif" => {
+                    if i + 1 < args.len() {
+                        pdf_options.fallback_serif = args[i + 1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --fallback-serif 뒤에 폰트 family가 필요합니다.");
+                        return;
+                    }
+                }
+                arg if arg.starts_with("--fallback-serif=") => {
+                    pdf_options.fallback_serif =
+                        arg.trim_start_matches("--fallback-serif=").to_string();
                     i += 1;
+                }
+                "--fallback-sans" | "--fallback-sans-serif" => {
+                    if i + 1 < args.len() {
+                        pdf_options.fallback_sans = args[i + 1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --fallback-sans 뒤에 폰트 family가 필요합니다.");
+                        return;
+                    }
+                }
+                arg if arg.starts_with("--fallback-sans=")
+                    || arg.starts_with("--fallback-sans-serif=") =>
+                {
+                    pdf_options.fallback_sans = arg
+                        .strip_prefix("--fallback-sans=")
+                        .or_else(|| arg.strip_prefix("--fallback-sans-serif="))
+                        .unwrap_or_default()
+                        .to_string();
+                    i += 1;
+                }
+                "--fallback-mono" | "--fallback-monospace" => {
+                    if i + 1 < args.len() {
+                        pdf_options.fallback_mono = args[i + 1].clone();
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --fallback-mono 뒤에 폰트 family가 필요합니다.");
+                        return;
+                    }
+                }
+                arg if arg.starts_with("--fallback-mono=")
+                    || arg.starts_with("--fallback-monospace=") =>
+                {
+                    pdf_options.fallback_mono = arg
+                        .strip_prefix("--fallback-mono=")
+                        .or_else(|| arg.strip_prefix("--fallback-monospace="))
+                        .unwrap_or_default()
+                        .to_string();
+                    i += 1;
+                }
+                "--equation-font" | "--equation-font-family" => {
+                    if i + 1 < args.len() {
+                        pdf_options.equation_font = Some(args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --equation-font 뒤에 폰트 family가 필요합니다.");
+                        return;
+                    }
+                }
+                arg if arg.starts_with("--equation-font=")
+                    || arg.starts_with("--equation-font-family=") =>
+                {
+                    pdf_options.equation_font = Some(
+                        arg.strip_prefix("--equation-font=")
+                            .or_else(|| arg.strip_prefix("--equation-font-family="))
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    i += 1;
+                }
+                _ => {
+                    eprintln!("알 수 없는 옵션: {}", args[i]);
+                    print_export_pdf_usage();
+                    return;
                 }
             }
         }
@@ -1208,7 +1313,7 @@ fn export_pdf(args: &[String]) {
             None => (0..page_count).collect(),
         };
 
-        let pdf_bytes = match doc.render_pages_pdf_native(&pages) {
+        let pdf_bytes = match doc.render_pages_pdf_native_with_options(&pages, &pdf_options) {
             Ok(bytes) => bytes,
             Err(e) => {
                 eprintln!("오류: PDF 변환 실패 - {}", e);
@@ -1227,6 +1332,23 @@ fn export_pdf(args: &[String]) {
         );
         println!("PDF 내보내기 완료");
     }
+}
+
+fn print_export_pdf_usage() {
+    eprintln!("사용법: rhwp export-pdf <파일.hwp|파일.hwpx> [옵션]");
+    eprintln!("  -o, --output <파일>       출력 PDF 파일");
+    eprintln!("  -p, --page <번호>        특정 페이지만 내보내기 (0부터 시작)");
+    eprintln!("      --font-path <경로>   폰트 파일 탐색 경로 (여러 번 지정 가능)");
+    eprintln!("      --fallback-serif <명>");
+    eprintln!("      --fallback-sans <명>");
+    eprintln!("      --fallback-mono <명>");
+    eprintln!("      --equation-font <명>");
+    eprintln!("  참고: <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않습니다.");
+    eprintln!("        공백 없는 값: --font-path ./ttfs");
+    eprintln!(
+        "        공백 포함 값은 큰따옴표 권장: --font-path \"./My Fonts\", --fallback-sans \"Apple SD Gothic Neo\""
+    );
+    eprintln!("        작은따옴표는 zsh/bash/PowerShell에서 literal 값이 필요할 때만 사용합니다.");
 }
 
 fn export_text(args: &[String]) {

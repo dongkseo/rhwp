@@ -9,7 +9,7 @@
 //! - `<c:valAx>`에서 `<c:axId>`와 `<c:axPos>` 수집 → axId→primary/secondary 매핑 생성
 //! - 파싱 완료 시 시리즈의 axis_ids를 primary/secondary 집합과 비교해 axis_group 지정
 
-use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
+use super::{BarGrouping, LegendPos, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -193,15 +193,24 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
         }
         b"bar3DChart" => {
             // 3D 막대 — 2D 근사(C1a #1453). barDir 핸들러가 col/bar를 그대로 채워
-            // 파싱 종료 후처리가 Column↔Bar를 확정한다.
+            // 파싱 종료 후처리가 Column↔Bar를 확정한다. is_3d는 축 정책용(C1c).
             chart.chart_type = OoxmlChartType::Column;
+            chart.is_3d = true;
             st.cur_plot_type = Some(OoxmlChartType::Column);
             st.cur_plot_ax_ids.clear();
             st.cur_plot_series_start = chart.series.len();
         }
-        b"pie3DChart" | b"ofPieChart" => {
-            // 3D 원형 / ofPie — 단일 원형으로 2D 근사(C1a #1453).
-            // 입체감·보조플롯(원형대원형의 2차 원, 원형대막대의 막대)은 후속(C2).
+        b"pie3DChart" => {
+            // 3D 원형 — 단일 원형으로 2D 근사(C1a #1453). 입체감은 후속(C2).
+            chart.chart_type = OoxmlChartType::Pie;
+            chart.is_3d = true;
+            st.cur_plot_type = Some(OoxmlChartType::Pie);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
+        b"ofPieChart" => {
+            // ofPie — 단일 원형으로 2D 근사(C1a #1453).
+            // 보조플롯(원형대원형의 2차 원, 원형대막대의 막대)은 후속(C2).
             chart.chart_type = OoxmlChartType::Pie;
             st.cur_plot_type = Some(OoxmlChartType::Pie);
             st.cur_plot_ax_ids.clear();
@@ -260,7 +269,29 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
         b"val" => st.in_val = true,
         b"xVal" => st.in_x_val = true,
         b"yVal" => st.in_y_val = true,
-        b"title" => st.in_chart_title = true,
+        b"title" => {
+            st.in_chart_title = true;
+            // C1c #1882 갭①: 요소 존재만 기록 (텍스트 유무는 chart.title이 담당 —
+            // 한컴은 텍스트 없어도 autoTitleDeleted=0이면 자동 제목을 그림)
+            chart.has_title_elem = true;
+        }
+        b"autoTitleDeleted" => {
+            if let Some(val) = attr_val(e, "val") {
+                chart.auto_title_deleted = matches!(val.as_str(), "1" | "true");
+            }
+        }
+        b"legendPos" => {
+            // C1c #1882 갭③: 한컴 코퍼스는 전 샘플 r(우측). legendPos는 c:legend
+            // 안에서만 등장하므로 상태 플래그 불요.
+            if let Some(val) = attr_val(e, "val") {
+                chart.legend_pos = match val.as_str() {
+                    "r" => LegendPos::Right,
+                    "l" => LegendPos::Left,
+                    "t" => LegendPos::Top,
+                    _ => LegendPos::Bottom,
+                };
+            }
+        }
         b"v" => {
             st.in_v = true;
             st.cur_text_buf.clear();
@@ -483,10 +514,71 @@ mod tests {
         let c = parse_chart_xml(BAR_XML.as_bytes()).expect("parse OK");
         assert_eq!(c.chart_type, OoxmlChartType::Column);
         assert_eq!(c.title.as_deref(), Some("Title A"));
+        assert!(c.has_title_elem, "명시 제목도 c:title 요소 존재로 기록");
         assert_eq!(c.series.len(), 1);
         assert_eq!(c.series[0].series_type, OoxmlChartType::Column);
         assert_eq!(c.series[0].values, vec![100.0, 80.0]);
         assert_eq!(c.categories, vec!["Seoul", "Busan"]);
+    }
+
+    // --- C1c (#1882) 갭①: 자동 제목 플래그 ---
+
+    /// 한컴 코퍼스 실태 미러: c:title 요소는 있으나 텍스트(a:t) 없음 + autoTitleDeleted.
+    fn titleless_bar_xml(auto_title_deleted: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart>
+<c:title><c:layout/><c:overlay val="0"/></c:title>
+<c:autoTitleDeleted val="{auto_title_deleted}"/>
+<c:plotArea><c:barChart><c:barDir val="col"/><c:ser>
+  <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#
+        )
+    }
+
+    #[test]
+    fn test_parse_title_elem_without_text() {
+        // 텍스트 없는 c:title → title=None 유지(빈 차트 가드 불변) + 요소 존재 플래그.
+        let c = parse_chart_xml(titleless_bar_xml("0").as_bytes()).expect("parse OK");
+        assert_eq!(c.title, None, "명시 텍스트 없으면 title은 None 유지");
+        assert!(c.has_title_elem);
+        assert!(!c.auto_title_deleted);
+    }
+
+    #[test]
+    fn test_parse_auto_title_deleted() {
+        let c = parse_chart_xml(titleless_bar_xml("1").as_bytes()).expect("parse OK");
+        assert!(c.has_title_elem);
+        assert!(c.auto_title_deleted, "val=1 → 자동 제목 억제");
+    }
+
+    // --- C1c (#1882) 갭③: 범례 위치 ---
+
+    #[test]
+    fn test_parse_legend_pos_right() {
+        // 한컴 코퍼스 실태: <c:legend><c:legendPos val="r"/></c:legend> (plotArea 뒤)
+        let xml = r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart>
+<c:plotArea><c:barChart><c:barDir val="col"/><c:ser>
+  <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:numRef></c:val>
+</c:ser></c:barChart></c:plotArea>
+<c:legend><c:legendPos val="r"/><c:overlay val="0"/></c:legend>
+</c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml.as_bytes()).expect("parse OK");
+        assert_eq!(c.legend_pos, LegendPos::Right);
+    }
+
+    #[test]
+    fn test_parse_is_3d_flag() {
+        // bar3DChart → is_3d (축 정책용). 2D barChart는 false.
+        let xml3d = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:bar3DChart><c:barDir val="col"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:val></c:ser></c:bar3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        assert!(parse_chart_xml(xml3d).expect("parse OK").is_3d);
+        assert!(!parse_chart_xml(BAR_XML.as_bytes()).expect("parse OK").is_3d);
+    }
+
+    #[test]
+    fn test_parse_legend_pos_default_bottom() {
+        // legend/legendPos 미존재 → 기본 Bottom (현행 하단 배치 유지)
+        let c = parse_chart_xml(titleless_bar_xml("0").as_bytes()).expect("parse OK");
+        assert_eq!(c.legend_pos, LegendPos::Bottom);
     }
 
     #[test]
