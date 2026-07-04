@@ -49,6 +49,21 @@ HWP/HWPX → PDF (svg2pdf + pdf-writer).
 - `--fallback-sans <family>` — PDF sans-serif generic fallback family
 - `--fallback-mono <family>` — PDF monospace generic fallback family
 - `--equation-font <family>` — PDF 수식 SVG의 우선 font-family
+- `<파일>`, `<경로>`, `<family>`는 자리표시자이며 실제 입력에는 꺾쇠괄호를 쓰지 않는다.
+- 공백이 없는 값은 그대로 입력한다. 예: `--font-path ./ttfs`
+- 공백이 있는 경로/폰트명은 큰따옴표를 권장한다. 예:
+
+```bash
+rhwp export-pdf input.hwp -o out.pdf \
+  --font-path "./My Fonts" \
+  --fallback-serif "Noto Serif CJK KR" \
+  --fallback-sans "Noto Sans CJK KR" \
+  --fallback-mono "Noto Sans Mono CJK KR" \
+  --equation-font "STIX Two Math"
+```
+
+- 작은따옴표(`'...'`)는 zsh/bash/PowerShell에서 변수 확장 없이 literal 값을 넘길 때만 사용한다.
+  Windows `cmd.exe` 호환 예시는 큰따옴표(`"..."`)를 사용한다.
 - `DocumentCore::render_page_pdf_native`, `render_pages_pdf_native`, `render_document_pdf_native`
   native API와 같은 SVG-derived PDF export 경로를 사용한다.
 - fallback family 옵션 미지정 시 OS별 기본값을 사용한다.

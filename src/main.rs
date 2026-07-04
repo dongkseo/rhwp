@@ -146,6 +146,13 @@ fn print_help() {
     println!("      --fallback-sans <명>    PDF sans-serif generic fallback family");
     println!("      --fallback-mono <명>    PDF monospace generic fallback family");
     println!("      --equation-font <명>    PDF 수식 SVG 우선 font-family");
+    println!(
+        "                              <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않음"
+    );
+    println!(
+        "                              경로/폰트명에 공백이 있으면 큰따옴표 권장: --font-path \"./My Fonts\""
+    );
+    println!("                              예: --fallback-sans \"Apple SD Gothic Neo\"");
     println!();
     println!("  export-hwpx <입력.hwp|입력.hwpx> [출력.hwpx]");
     println!("      HWP 문서를 HWPX(ZIP+XML)로 변환 저장. 출력 생략 시 <입력 stem>.hwpx");
@@ -1336,6 +1343,12 @@ fn print_export_pdf_usage() {
     eprintln!("      --fallback-sans <명>");
     eprintln!("      --fallback-mono <명>");
     eprintln!("      --equation-font <명>");
+    eprintln!("  참고: <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않습니다.");
+    eprintln!("        공백 없는 값: --font-path ./ttfs");
+    eprintln!(
+        "        공백 포함 값은 큰따옴표 권장: --font-path \"./My Fonts\", --fallback-sans \"Apple SD Gothic Neo\""
+    );
+    eprintln!("        작은따옴표는 zsh/bash/PowerShell에서 literal 값이 필요할 때만 사용합니다.");
 }
 
 fn export_text(args: &[String]) {
