@@ -285,6 +285,13 @@ fn parse_hwp_with_cfb(
     // 다양한 스타일 사용 안하므로 작은 비율).
     let summary_hwp3_era = cfb.detect_hwp3_variant();
 
+    // [Issue #1770] rhwp HWPX→HWP 변환본 식별 — 마커 스트림 감지 (결정론).
+    // 변환본 IR 은 HWPX LINE_SEG 시멘틱 그대로이므로 pagination/렌더의
+    // is_hwpx_source 분기를 HWPX 로 해석해야 roundtrip 쪽수가 자기정합한다.
+    let is_hwpx_variant = extra_streams
+        .iter()
+        .any(|(p, _)| p == crate::document_core::converters::hwpx_to_hwp::HWPX_ORIGIN_STREAM_PATH);
+
     let mut doc = Document {
         header: model_header,
         doc_properties,
@@ -295,6 +302,7 @@ fn parse_hwp_with_cfb(
         extra_streams,
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
+        is_hwpx_variant,
     };
 
     // 자동 번호 할당 (문서 전체에서 순차적으로)
@@ -570,6 +578,7 @@ fn parse_hwp_with_lenient(
         preview: None,
         bin_data_content,
         extra_streams: Vec::new(),
+        is_hwpx_variant: false,
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
     };

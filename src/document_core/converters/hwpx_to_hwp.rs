@@ -1577,12 +1577,33 @@ fn adapt_cell_list_attr(cell: &mut Cell, report: &mut AdapterReport) {
     }
 }
 
+/// [Issue #1770] HWPX-origin 마커 스트림 경로.
+///
+/// rhwp 의 HWPX→HWP 변환은 LINE_SEG 를 verbatim 직렬화하므로 산출 HWP5 의 IR 은
+/// HWPX 시멘틱 그대로다. 재파스 시 이 마커로 `Document::is_hwpx_variant` 를 세워
+/// pagination/렌더의 `is_hwpx_source` 분기(RowBreak 분할 tolerance 등)를 HWPX 로
+/// 해석한다 — 같은 IR 이 같은 쪽수(roundtrip 자기정합, 2953495 4→5쪽 divergence 해소).
+/// 한컴은 미지의 루트 스트림을 무시하고(열림 계약 게이트로 검증), 한컴에서 재저장하면
+/// 마커가 사라지며 그 문서는 진짜 native HWP5 가 되므로 시멘틱이 자기일관적이다.
+pub const HWPX_ORIGIN_STREAM_PATH: &str = "/RhwpHwpxOrigin";
+
 /// `source_format` 검사 후 어댑터를 호출하는 보조 함수.
 ///
 /// 호출자: `DocumentCore::export_hwp_with_adapter()` (Stage 5 에서 추가).
 pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> AdapterReport {
     if !matches!(source_format, FileFormat::Hwpx | FileFormat::Hwp3) {
         return AdapterReport::new().no_op("source_format != Hwpx/Hwp3");
+    }
+    // [Issue #1770] HWPX 출처만 마커 부여 (HWP3 은 자체 variant 시멘틱 유지).
+    // idempotent — 이미 있으면 추가하지 않는다.
+    if matches!(source_format, FileFormat::Hwpx)
+        && !doc
+            .extra_streams
+            .iter()
+            .any(|(p, _)| p == HWPX_ORIGIN_STREAM_PATH)
+    {
+        doc.extra_streams
+            .push((HWPX_ORIGIN_STREAM_PATH.to_string(), b"1".to_vec()));
     }
     convert_hwpx_to_hwp_ir(doc)
 }

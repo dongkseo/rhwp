@@ -2149,7 +2149,11 @@ impl DocumentCore {
         self.invalidate_page_tree_cache();
         let paginator = Paginator::new(self.dpi);
         let hwp3_origin_flow_spacing_before = uses_hwp3_origin_flow_spacing_before(&self.document);
-        let is_hwpx_source = matches!(self.source_format, crate::parser::FileFormat::Hwpx);
+        // [Issue #1770] rhwp HWPX→HWP 변환본(is_hwpx_variant, 마커 감지)은 IR 이
+        // HWPX 시멘틱 그대로이므로 pagination 분기도 HWPX 로 해석한다 (roundtrip
+        // 자기정합). native HWP5 는 마커가 없어 불변.
+        let is_hwpx_source = matches!(self.source_format, crate::parser::FileFormat::Hwpx)
+            || self.document.is_hwpx_variant;
         let measurer = HeightMeasurer::new(self.dpi)
             .with_hwp3_variant(self.document.is_hwp3_variant)
             .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before);
@@ -3346,10 +3350,11 @@ impl DocumentCore {
         self.layout_engine.set_hwp3_origin_flow_spacing_before(
             uses_hwp3_origin_flow_spacing_before(&self.document),
         );
-        self.layout_engine.set_hwpx_source(matches!(
-            self.source_format,
-            crate::parser::FileFormat::Hwpx
-        ));
+        // [Issue #1770] HWPX→HWP 변환본도 HWPX 시멘틱 (paginate_pass 와 동일 규칙).
+        self.layout_engine.set_hwpx_source(
+            matches!(self.source_format, crate::parser::FileFormat::Hwpx)
+                || self.document.is_hwpx_variant,
+        );
         self.layout_engine.set_hwpx_page_preview(
             self.document
                 .hwpx_aux_entry("Preview/PrvImage.png")
