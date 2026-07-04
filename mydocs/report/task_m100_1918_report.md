@@ -52,6 +52,13 @@ Stage 1 계측으로 두 병목을 분리했다.
 - compact overlay summary 테스트를 새 flow count 필드 포함 계약에 맞게 보정했다.
 - Docker daemon 부재로 새 WASM runtime 성능 probe는 완료하지 못했고, 제한 사항으로 남겼다.
 
+### Stage 6 - Docker WASM runtime 검증
+
+- Colima Docker daemon을 6GiB/4CPU로 구동해 Docker 전용 WASM 빌드를 완료했다.
+- 새 `pkg/` 기준으로 Studio build, renderer contract, 브라우저 probe, #1456 RawSvg/OLE E2E를 통과시켰다.
+- `253E-empty`, `143E`가 실제 runtime에서 `flow-dynamic` + `flow-static` 경로를 타고,
+  반복 입력 2회차부터 `flow-dynamic`만 다시 렌더링함을 확인했다.
+
 ## 3. 주요 변경 파일
 
 | 파일 | 내용 |
@@ -96,38 +103,60 @@ target/debug/rhwp bench \
   -n 5
 ```
 
+```bash
+docker-compose --env-file .env.docker run --rm wasm
+```
+
+```bash
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+VITE_URL="http://127.0.0.1:7700" \
+node /private/tmp/rhwp_stage1_probe.mjs --mode=headless
+```
+
+```bash
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+VITE_URL="http://127.0.0.1:7700" \
+node /private/tmp/rhwp_stage6_probe_twice.mjs --mode=headless
+```
+
 Native bench 결과는 Stage 1과 같은 범위였고, 일반 표 샘플 `table-001.hwp`는 여전히 render 3.4ms 수준이다.
 
 ## 5. 성능 관찰
 
 브라우저 probe 기준:
 
-| 샘플 | Stage 1 filtered render | Stage 5 filtered render |
+| 샘플 | Stage 1 filtered render | Stage 6 새 WASM filtered render |
 |------|-------------------------|-------------------------|
 | `복학원서.hwp` | `flow/background/behind/front` 4회 | `flow` 1회 |
-| `253E164F57A1BC6934-empty.hwp` | `flow` 1회 | `flow-dynamic` 시도 후 기존 `flow` fallback |
-| `143E433F503322BD33.hwp` | `flow` 1회 | `flow` 1회 |
+| `253E164F57A1BC6934-empty.hwp` | `flow` 1회 | 1회차 `flow-dynamic + flow-static`, 2회차 `flow-dynamic`만 |
+| `143E433F503322BD33.hwp` | `flow` 1회 | 1회차 `flow-dynamic + flow-static`, 2회차 `flow-dynamic`만 |
 | `table-001.hwp` | `flow` 1회 | `flow` 1회 |
 
-현재 로컬 `pkg/`가 새 Rust WASM 변경을 포함하지 않으므로 `flow-dynamic`/`flow-static`의 실제 runtime 성능은
-아직 측정하지 못했다. 다만 fallback 동작은 확인됐다.
+반복 입력 probe 결과:
 
-## 6. 남은 확인
+| 샘플 | 1회차 layer kind | 2회차 layer kind | 2회차 filtered render 시간 |
+|------|------------------|------------------|----------------------------|
+| `253E-empty` | `flow-dynamic` 1, `flow-static` 1 | `flow-dynamic` 1 | 5.5ms |
+| `143E` | `flow-dynamic` 1, `flow-static` 1 | `flow-dynamic` 1 | 10.3ms |
 
-Docker daemon이 실행되는 환경에서 다음을 수행해야 한다.
+## 6. Docker WASM 검증
 
-```bash
-docker-compose --env-file .env.docker run --rm wasm
-```
+Docker Desktop 앱은 없었지만 Colima가 설치되어 있었다.
 
-그 후 같은 브라우저 probe로 다음을 확인한다.
+- 초기 Colima: 2CPU, 1.913GiB memory
+- 1차 WASM 빌드: `rustc`가 `SIGKILL`로 종료
+- 보정: `colima start --memory 6 --cpu 4`
+- 보정 후 Docker info: 4CPU, 5.772GiB memory
+- 2차 WASM 빌드: 성공
 
-- `253E164F57A1BC6934-empty.hwp`가 text-edit refresh에서 `flow-dynamic` + 재사용 `flow-static` 경로를 타는지
-- `143E433F503322BD33.hwp` OLE/RawSvg 문서가 image decode 재렌더 회귀 없이 동작하는지
-- zoom 변경 후 static layer box가 어긋나지 않는지
+`pkg/`와 `rhwp-studio/dist/`는 git ignored 산출물이므로 PR 커밋에는 포함하지 않는다.
 
 ## 7. 판단
 
-이슈의 핵심 병목 중 overlay 반복 렌더는 해결했다.
-flow 내부 정적 이미지/OLE 분리도 소스와 테스트 계약은 구현됐지만, 새 WASM 산출물 성능 검증은 Docker daemon 부재로
-완료하지 못했다. PR에는 이 제한을 명시하고, WASM 빌드 가능한 환경에서 최종 runtime probe를 추가 확인해야 한다.
+이슈의 두 병목을 모두 처리했다.
+
+- `복학원서.hwp` 계열: background/behind/front overlay 반복 렌더 제거
+- `253E-empty`, `143E` 계열: flow 내부 정적 이미지/OLE를 `flow-static`으로 분리하고 반복 입력에서 재사용
+
+#1456 RawSvg/OLE 첫 로드 재렌더 E2E도 새 WASM runtime에서 통과했다.
+PR 전 runtime 성능 검증까지 완료된 상태다.
