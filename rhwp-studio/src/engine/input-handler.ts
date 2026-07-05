@@ -444,6 +444,7 @@ export class InputHandler {
   // iOS 폴백: composition 이벤트 없이 input만으로 한글 조합 처리
   private _iosComposing = false;
   private _iosAnchor: DocumentPosition | null = null;
+  private _iosBeforePageIndex: number | undefined = undefined;
   private _iosLength = 0;
   private _iosPrevText = '';
   private _iosInputTimer: any = null;
@@ -2250,8 +2251,12 @@ export class InputHandler {
   }
 
   /** raw IME/iOS 텍스트 입력처럼 command를 거치지 않는 경로의 갱신 라우터. */
-  private afterTextInputEdit(beforePos: DocumentPosition, afterPos: DocumentPosition): void {
-    if (this.shouldUsePageLocalRefresh('insertText', beforePos, afterPos)) {
+  private afterTextInputEdit(
+    beforePos: DocumentPosition,
+    afterPos: DocumentPosition,
+    pageLocalOptions: PageLocalTextEditOptions = {},
+  ): void {
+    if (this.shouldUsePageLocalRefresh('insertText', beforePos, afterPos, pageLocalOptions)) {
       this.afterPageLocalEdit();
     } else {
       this.afterEdit();

@@ -422,6 +422,7 @@ export function onInput(this: any, e?: InputEvent): void {
   // Undo 스택에는 기록하지 않음 (compositionend에서 한 번에 기록)
   if (this.isComposing && this.compositionAnchor) {
     const anchor = this.compositionAnchor;
+    const beforePageIndex = this.cursor.getRect()?.pageIndex;
     if (!this.canInsertTextInFormMode?.(anchor)) {
       this.textarea.value = '';
       return;
@@ -455,7 +456,13 @@ export function onInput(this: any, e?: InputEvent): void {
       }
     }
 
-    this.afterTextInputEdit(anchor, this.cursor.getPosition());
+    const afterPos = this.cursor.getPosition();
+    const afterPageIndex = this.cursor.getRect()?.pageIndex;
+    this.afterTextInputEdit(anchor, afterPos, {
+      insertedText: text,
+      beforePageIndex,
+      afterPageIndex,
+    });
     return;
   }
 
@@ -471,6 +478,7 @@ export function onInput(this: any, e?: InputEvent): void {
   if (this._isIOS && !this.isComposing) {
     // 앵커 설정 (첫 입력 시)
     if (!this._iosAnchor) {
+      this._iosBeforePageIndex = this.cursor.getRect()?.pageIndex;
       if (this.cursor.isInHeaderFooter()) {
         this._iosAnchor = { ...this.cursor.getPosition(), charOffset: this.cursor.hfCharOffset };
       } else if (this.cursor.isInFootnote()) {
@@ -512,8 +520,15 @@ export function onInput(this: any, e?: InputEvent): void {
     // 마지막 입력 후 100ms 뒤에 한 번만 렌더링
     clearTimeout(this._iosInputTimer);
     const iosAnchor = this._iosAnchor;
+    const iosAfterPos = this.cursor.getPosition();
+    const beforePageIndex = this._iosBeforePageIndex;
+    const afterPageIndex = this.cursor.getRect()?.pageIndex;
     this._iosInputTimer = setTimeout(() => {
-      this.afterTextInputEdit(iosAnchor, this.cursor.getPosition());
+      this.afterTextInputEdit(iosAnchor, iosAfterPos, {
+        insertedText: text,
+        beforePageIndex,
+        afterPageIndex,
+      });
       // 렌더링 후 div 포커스 복원 (afterEdit가 포커스를 뺏을 수 있음)
       this.textarea.focus();
     }, 100);
