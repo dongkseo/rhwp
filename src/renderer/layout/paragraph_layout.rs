@@ -1962,9 +1962,18 @@ impl LayoutEngine {
                 (font_lh, ensure_min_baseline(font_bl, max_fs))
             } else if has_tac_shape
                 && !empty_tac_guide_has_explicit_shape_height
+                && (cell_ctx.is_none() || max_fs > 0.0)
                 && raw_lh > max_fs * 1.5
             {
                 // Shape와 텍스트가 같은 줄에 있으면 Shape 높이가 line_height에 포함된다.
+                // [#1842] 셀 내부에서 max_fs=0(텍스트 없는 tac-전용 줄)이면 이 보정의
+                // 전제("Shape 와 텍스트의 baseline 정렬")가 성립하지 않는다 — 종전에는
+                // raw_lh > 0*1.5 가 항상 참이라 font_lh=0 으로 퇴화해, 셀 내부
+                // tac 묶음 전용 문단의 저장 lh(예: 3401HU)가 소실되고 후속 블록이
+                // 통째로 당겨졌다 (3114781 p2 −33pt, 한글 2022 오라클 정합 확인).
+                // 본문(cell_ctx 없음)은 reserved/skip-advance 보상 기계가 이 축소값을
+                // 전제로 한컴 정합을 이미 이루고 있어(sample16 issue_1116 한컴 핀)
+                // 종전 동작을 유지한다.
                 let font_lh = max_fs * 1.2; // 폰트 크기의 120%
                 let font_bl = max_fs * 0.85;
                 (font_lh, ensure_min_baseline(font_bl, max_fs))
