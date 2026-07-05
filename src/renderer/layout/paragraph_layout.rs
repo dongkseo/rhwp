@@ -5055,9 +5055,12 @@ impl LayoutEngine {
             let skip_advance_empty_line = skip_advance_empty_wrap
                 || skip_advance_empty_tac_picture
                 || skip_advance_empty_tac_lead;
-            if std::env::var("RHWP_DEBUG_PARA_TAC").is_ok()
-                && (para_index == 651 || para_index == 652)
-            {
+            // RHWP_DEBUG_PARA_TAC="95,96,97" — 대상 pi 를 콤마 목록으로 지정 (빈 값/all=전체).
+            if std::env::var("RHWP_DEBUG_PARA_TAC").is_ok_and(|v| {
+                v.is_empty()
+                    || v == "all"
+                    || v.split(',').any(|t| t.trim().parse() == Ok(para_index))
+            }) {
                 eprintln!(
                     "  TAC_ADV pi={} line_idx={} y={:.1} raw_lh={:.1} lh={:.1} ls={:.1} label_extra={:.1} whitespace={} cur_pic={:?} prev_pic={:?} skip_wrap={} skip_pic={} skip={}",
                     para_index,
