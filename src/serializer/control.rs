@@ -1077,8 +1077,15 @@ fn serialize_picture_data(pic: &Picture) -> Vec<u8> {
         w.write_u32(pic.instance_id).unwrap();
         w.write_u32(0).unwrap(); // image_effect_extra
                                  // 원본 이미지 크기(HWPUNIT) + 플래그(1): 한컴 호환 추가 9바이트
-        w.write_u32(pic.crop.right as u32).unwrap(); // original width in HWPUNIT
-        w.write_u32(pic.crop.bottom as u32).unwrap(); // original height in HWPUNIT
+                                 // [#1929] IR img_dim(HWPX hp:imgDim 대응)이 있으면 우선 기록 —
+                                 // 종전 crop 폴백만으로는 HWPX→HWP5 왕복에서 imgDim 소실.
+        let (dim_w, dim_h) = if pic.img_dim != (0, 0) {
+            pic.img_dim
+        } else {
+            (pic.crop.right as u32, pic.crop.bottom as u32)
+        };
+        w.write_u32(dim_w).unwrap(); // original width
+        w.write_u32(dim_h).unwrap(); // original height
         w.write_u8(pic.image_attr.transparency_alpha_byte())
             .unwrap();
     }

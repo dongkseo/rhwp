@@ -943,6 +943,17 @@ fn parse_picture(common: CommonObjAttr, shape_attr: ShapeComponentAttr, data: &[
                     crate::model::image::alpha_byte_to_transparency_percent(alpha);
             }
         }
+        // [#1929] extra 꼬리의 원본 이미지 크기(offset 9..17: w4+h4)를 img_dim 으로
+        // 적재 — HWPX `hp:imgDim` 대응 필드. 종전에는 HWP5 파스가 이를 읽지 않아
+        // HWPX→HWP5 왕복에서 imgDim 이 (0,0) 으로 소실됐다 (직렬화기 non-raw
+        // 경로가 기록해도 재파스가 버림).
+        if pic.raw_picture_extra.len() >= 17 {
+            let e = &pic.raw_picture_extra;
+            pic.img_dim = (
+                u32::from_le_bytes([e[9], e[10], e[11], e[12]]),
+                u32::from_le_bytes([e[13], e[14], e[15], e[16]]),
+            );
+        }
     }
 
     pic
