@@ -38,6 +38,32 @@ test('텍스트 command는 page-local 판정용 payload hint를 노출한다', (
   assert.match(source, /getPageLocalTextEditOptions\(\): \{ deleteCount: number \} \{\s*return \{ deleteCount: this\.count \};\s*\}/);
 });
 
+test('raw IME/iOS 입력도 command 경로와 같은 page-local hint를 전달한다', () => {
+  const inputHandlerSource = readFileSync(new URL('../src/engine/input-handler.ts', import.meta.url), 'utf8');
+  const textSource = readFileSync(new URL('../src/engine/input-handler-text.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    inputHandlerSource,
+    /private afterTextInputEdit\(\s*beforePos: DocumentPosition,\s*afterPos: DocumentPosition,\s*pageLocalOptions: PageLocalTextEditOptions = \{\},\s*\): void \{\s*if \(this\.shouldUsePageLocalRefresh\('insertText', beforePos, afterPos, pageLocalOptions\)\)/,
+  );
+  assert.match(
+    textSource,
+    /this\.afterTextInputEdit\(anchor, afterPos, \{\s*insertedText: text,\s*beforePageIndex,\s*afterPageIndex,\s*\}\);/,
+  );
+  assert.match(
+    textSource,
+    /this\._iosBeforePageIndex = this\.cursor\.getRect\(\)\?\.pageIndex;/,
+  );
+  assert.match(
+    textSource,
+    /const beforePageIndex = this\._iosBeforePageIndex;/,
+  );
+  assert.match(
+    textSource,
+    /this\.afterTextInputEdit\(iosAnchor, iosAfterPos, \{\s*insertedText: text,\s*beforePageIndex,\s*afterPageIndex,\s*\}\);/,
+  );
+});
+
 test('isPageLocalTextEditCommand는 본문 텍스트와 구조 변경 명령을 full refresh로 남긴다', () => {
   const bodyPos: DocumentPosition = {
     sectionIndex: 0,
