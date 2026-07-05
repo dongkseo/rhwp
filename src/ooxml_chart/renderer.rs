@@ -99,8 +99,14 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
 
     // C1c #1882 갭①: 명시 제목이 없어도 c:title 요소가 있고 autoTitleDeleted=0이면
     // 한컴처럼 자동 제목 placeholder "차트 제목"을 그린다 (정답지 PDF 실측).
+    // 자동 제목 우선순위(#1882 v2): 명시 텍스트 → 단일 시리즈면 그 이름 → "차트 제목".
+    // 한컴 실측: 원형 5종("판매")·단일 시리즈 가로막대("계열 1") 정답지가 시리즈
+    // 이름을 제목으로 렌더 — 차트 종류가 아니라 시리즈 수 기준 (Excel 동작과 동일).
     let effective_title: Option<String> = chart.title.clone().or_else(|| {
-        (chart.has_title_elem && !chart.auto_title_deleted).then(|| "차트 제목".to_string())
+        (chart.has_title_elem && !chart.auto_title_deleted).then(|| match &chart.series[..] {
+            [only] if !only.name.is_empty() => only.name.clone(),
+            _ => "차트 제목".to_string(),
+        })
     });
 
     // 영역 분할
@@ -1482,6 +1488,86 @@ mod tests {
         assert!(!render_chart_svg(&deleted, 0.0, 0.0, 400.0, 300.0).contains("차트 제목"));
         // has_title_elem=false (기본값) → 자동 제목 없음
         assert!(!render_chart_svg(&base, 0.0, 0.0, 400.0, 300.0).contains("차트 제목"));
+    }
+
+    // --- #1882 v2: 단일 시리즈 이름 자동 제목 fallback ---
+
+    /// 제목 텍스트(font-size 13 — 범례/축 라벨(10px)과 구분)만 추출
+    fn title_text(svg: &str) -> Option<String> {
+        let chunk = svg.split("font-size=\"13\"").nth(1)?;
+        let s = chunk.find('>')? + 1;
+        let e = s + chunk[s..].find('<')?;
+        Some(chunk[s..e].to_string())
+    }
+
+    fn single_series_chart(name: &str, chart_type: OoxmlChartType) -> OoxmlChart {
+        OoxmlChart {
+            chart_type,
+            has_title_elem: true,
+            series: vec![OoxmlSeries {
+                name: name.into(),
+                values: vec![4.3, 2.5],
+                series_type: chart_type,
+                ..Default::default()
+            }],
+            categories: vec!["a".into(), "b".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_render_auto_title_single_series_uses_name() {
+        // 한컴 실측: 단일 시리즈면 자동 제목 = 시리즈 이름 (원형 5종 "판매",
+        // 단일 시리즈 가로막대 "계열 1" — 차트 종류 불문 시리즈 수 기준 규칙).
+        for chart_type in [
+            OoxmlChartType::Pie,
+            OoxmlChartType::Bar,
+            OoxmlChartType::Column,
+        ] {
+            let svg = render_chart_svg(
+                &single_series_chart("판매", chart_type),
+                0.0,
+                0.0,
+                400.0,
+                300.0,
+            );
+            assert_eq!(
+                title_text(&svg).as_deref(),
+                Some("판매"),
+                "{chart_type:?}: 단일 시리즈 이름이 제목이어야"
+            );
+        }
+    }
+
+    #[test]
+    fn test_render_auto_title_single_series_fallbacks() {
+        // 단일 시리즈여도 이름이 비면 placeholder 유지.
+        let unnamed = single_series_chart("", OoxmlChartType::Column);
+        let svg = render_chart_svg(&unnamed, 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(title_text(&svg).as_deref(), Some("차트 제목"));
+
+        // 명시 제목이 있으면 시리즈 이름보다 우선.
+        let mut explicit = single_series_chart("판매", OoxmlChartType::Column);
+        explicit.title = Some("명시 제목".into());
+        let svg = render_chart_svg(&explicit, 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(title_text(&svg).as_deref(), Some("명시 제목"));
+
+        // autoTitleDeleted=1이면 시리즈 이름 fallback도 억제 (제목 요소 없음).
+        let mut suppressed = single_series_chart("판매", OoxmlChartType::Column);
+        suppressed.auto_title_deleted = true;
+        let svg = render_chart_svg(&suppressed, 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(title_text(&svg), None);
+
+        // 다계열이면 종전대로 placeholder (이름 있는 2계열).
+        let mut multi = single_series_chart("판매", OoxmlChartType::Column);
+        multi.series.push(OoxmlSeries {
+            name: "재고".into(),
+            values: vec![1.0, 2.0],
+            series_type: OoxmlChartType::Column,
+            ..Default::default()
+        });
+        let svg = render_chart_svg(&multi, 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(title_text(&svg).as_deref(), Some("차트 제목"));
     }
 
     // --- C1c (#1882) 갭③: 범례 우측 배치 ---
