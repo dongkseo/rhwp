@@ -352,13 +352,15 @@ export class WasmBridge {
    *
    * @param layerKind 'all' = 모든 PaintOp, 'background' = page background layer,
    *                  'flow' = 본문 layer (BehindText/InFrontOfText 제외),
+   *                  'flow-dynamic' = 본문 layer 중 Image/RawSvg 제외,
+   *                  'flow-static' = page background + 본문 Image/RawSvg layer,
    *                  'behind' = BehindText overlay, 'front' = InFrontOfText overlay
    */
   renderPageToCanvasFiltered(
     pageNum: number,
     canvas: HTMLCanvasElement,
     scale: number,
-    layerKind: 'all' | 'background' | 'flow' | 'behind' | 'front',
+    layerKind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front',
   ): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {

@@ -385,6 +385,15 @@ struct TypesetState {
     /// 비-TAC Picture/Shape Square wrap: any_seg_matches만으로 후속 문단 판정 허용.
     /// 그림의 lineseg는 첫 seg cs=0일 수 있어 전체 seg 중 하나라도 일치하면 흡수.
     wrap_around_any_seg: bool,
+    /// [#1955] 글뒤로/글앞으로(BehindText/InFrontOfText) 비-TAC 표 anchor 문단.
+    /// 이 wrap 은 본문 플로우를 소비하지 않으므로(한글: 후속 문단이 anchor 쪽에
+    /// 남음), 직후의 빈 후행 문단들을 anchor 첫 fragment 단에 소급 흡수한다.
+    /// 비어있지 않은 문단/새 표/쪽나누기를 만나면 해제.
+    behind_float_table_para: Option<usize>,
+    /// [#1955] 글뒤로 표 후행 빈 문단의 보류 흡수 목록. 표 fragment 는 지연 flush
+    /// 되므로 흡수 시점에는 anchor 첫 fragment 단을 찾을 수 없다 — 페이지 확정 후
+    /// (최종 flush 뒤) 첫 fragment 단에 일괄 부착한다.
+    behind_pending_absorbs: Vec<crate::renderer::pagination::WrapAroundPara>,
     /// [Task #362] 현재 단에서 표 옆에 배치되는 wrap-around paragraphs.
     /// flush_column 에서 ColumnContent 로 전달.
     current_column_wrap_around_paras: Vec<crate::renderer::pagination::WrapAroundPara>,
@@ -1432,6 +1441,8 @@ impl TypesetState {
             wrap_around_sw: -1,
             wrap_around_table_para: 0,
             wrap_around_any_seg: false,
+            behind_float_table_para: None,
+            behind_pending_absorbs: Vec::new(),
             current_column_wrap_around_paras: Vec::new(),
             current_column_wrap_anchors: std::collections::HashMap::new(),
             current_zone_column_type: column_type,
@@ -2432,6 +2443,20 @@ impl TypesetEngine {
                 }
             }
 
+            // [#1956] 명시적 쪽나누기 문단부터는 wrap 밴드 무효 — 새 쪽에는 anchor
+            // 개체가 없으므로 후속 문단을 옆에 흡수하면 안 된다. current_items 가 비어
+            // 있어 force_new_page 를 생략하는 경우에도 사용자 의도(새 쪽)는 동일하므로
+            // 밴드는 해제한다. (법령안 신구조문대비표: 쪽나누기 표제가 흡수되어 pi 6쪽 이탈)
+            if (force_page_break || para_style_break) && st.wrap_around_cs >= 0 {
+                st.wrap_around_cs = -1;
+                st.wrap_around_sw = -1;
+                st.wrap_around_any_seg = false;
+            }
+            // [#1955] 명시적 쪽나누기부터는 글뒤로 표 후행 흡수도 해제 (사용자 의도 새 쪽).
+            if force_page_break || para_style_break {
+                st.behind_float_table_para = None;
+            }
+
             if (force_page_break || para_style_break || variant_vpos_reset_break)
                 && !st.current_items.is_empty()
             {
@@ -2523,6 +2548,22 @@ impl TypesetEngine {
                     let para_sb_hu_for_reset = para_style
                         .map(|s| (s.spacing_before * 7200.0 / 96.0) as i32)
                         .unwrap_or(0);
+                    // [#1921 d=-1] 네이티브 HWP5/HWPX 의 비영 near-top reset:
+                    // 한글은 새 쪽 첫 줄의 stored vpos 를 0 이 아니라 해당 문단의
+                    // spacing_before 로 기록하기도 한다 (조문별/규제영향분석서 클래스,
+                    // 예: 86034 pi24 vpos=500 = sb 6.7px). cv==0 전용 트리거가 이를
+                    // 놓쳐 한 쪽을 과적한다. cv≈sb(±150HU) + 쪽 하단(prev_vpos_end
+                    // > 60_000) + 텍스트 전용 문단으로 한정해 partial-table 잔재
+                    // (#418)·표 host(#1086 주석) 케이스와 구분한다.
+                    let native_near_top_reset = !hwp3_origin_page_tolerance
+                        && cv > 0
+                        && cv <= 2000
+                        && para_sb_hu_for_reset > 0
+                        && (cv - para_sb_hu_for_reset).abs() <= 150
+                        && !shape_only_para
+                        && !has_table_control
+                        && para_has_visible_text(para)
+                        && prev_vpos_end > 60_000;
                     let next_heading_after_top_content_reset =
                         paragraphs.get(para_idx + 1).is_some_and(|next_para| {
                             let next_sb_hu = styles
@@ -2559,6 +2600,7 @@ impl TypesetEngine {
                     } else {
                         (cv == 0 && pv > 5000 && !hwp3_content_vpos_zero_reset)
                             || near_page_top_reset
+                            || native_near_top_reset
                     };
                     if trigger {
                         // [Task #724] wrap_around active 시 강제 종료 — anchor cs=0
@@ -2904,6 +2946,36 @@ impl TypesetEngine {
                 let avail = st.available_height() - st.current_height;
                 if empty_h_px > avail {
                     continue;
+                }
+            }
+
+            // [#1955] 글뒤로/글앞으로 표 직후의 빈 후행 문단 흡수.
+            // 이 wrap 은 본문 플로우를 소비하지 않아야 하나(한글 시멘틱) 현재
+            // 페이지네이션은 fragment 로 플로우를 소비하므로, 최소한 빈 후행 문단은
+            // anchor 첫 fragment 단에 소급 기록하여 pi-page 정합을 복원한다.
+            // (조례 [별표] 서식: 표 끝 쪽으로 밀리던 후행 빈 문단 — pi 9쪽 이탈)
+            if let Some(anchor_pi) = st.behind_float_table_para {
+                if !has_table {
+                    let is_empty_para = para
+                        .text
+                        .chars()
+                        .all(|ch| ch.is_whitespace() || ch == '\r' || ch == '\n')
+                        && para.controls.is_empty();
+                    if is_empty_para {
+                        // 표 fragment 가 지연 flush 라 지금은 anchor 단을 특정할 수
+                        // 없다 — 보류 목록에 넣고 페이지 확정 후 일괄 부착.
+                        st.behind_pending_absorbs.push(
+                            crate::renderer::pagination::WrapAroundPara {
+                                para_index: para_idx,
+                                table_para_index: anchor_pi,
+                                has_text: false,
+                            },
+                        );
+                        continue;
+                    }
+                    st.behind_float_table_para = None;
+                } else {
+                    st.behind_float_table_para = None;
                 }
             }
 
@@ -3287,17 +3359,29 @@ impl TypesetEngine {
                         {
                             st.wrap_around_cs = strip_cs;
                             st.wrap_around_sw = strip_sw;
+                            st.wrap_around_table_para = para_idx;
+                            st.wrap_around_any_seg = false;
                         } else {
-                            st.wrap_around_cs =
+                            let anchor_cs =
                                 para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
-                            st.wrap_around_sw = para
+                            let anchor_sw = para
                                 .line_segs
                                 .first()
                                 .map(|s| s.segment_width as i32)
                                 .unwrap_or(0);
+                            // [#1956] anchor LINE_SEG 가 단 전체 폭이면(표가 본문 폭
+                            // 이상 = 옆 공간 없음) 후속 전체 폭 문단들이 전부 오매칭
+                            // 되므로 arming 하지 않는다. sw=0 은 기존 sw0_match 담당.
+                            let col_w_hu = st.layout.column_width_hu();
+                            let band_full_width =
+                                anchor_sw > 0 && (anchor_sw - col_w_hu).abs() < 3000;
+                            if !band_full_width {
+                                st.wrap_around_cs = anchor_cs;
+                                st.wrap_around_sw = anchor_sw;
+                                st.wrap_around_table_para = para_idx;
+                                st.wrap_around_any_seg = false;
+                            }
                         }
-                        st.wrap_around_table_para = para_idx;
-                        st.wrap_around_any_seg = false;
                     }
                 }
             }
@@ -3310,6 +3394,17 @@ impl TypesetEngine {
                     measured_tables,
                     Some(para_idx),
                 );
+                // [#1955] 글뒤로/글앞으로 비-TAC 표 anchor: 후행 빈 문단 흡수 arming.
+                let has_behind_float_table = para.controls.iter().any(|c| {
+                    matches!(c, Control::Table(t)
+                        if !t.common.treat_as_char
+                            && matches!(t.common.text_wrap,
+                                crate::model::shape::TextWrap::BehindText
+                                    | crate::model::shape::TextWrap::InFrontOfText))
+                });
+                if has_behind_float_table {
+                    st.behind_float_table_para = Some(para_idx);
+                }
             }
             // 비-TAC Picture/Shape Square wrap: engine.rs:380-397 동일 시멘틱.
             // 그림의 첫 lineseg cs가 0일 수 있어 any_seg_matches 허용 플래그 활성화.
@@ -3339,7 +3434,10 @@ impl TypesetEngine {
                         .first()
                         .map(|s| s.segment_width as i32)
                         .unwrap_or(0);
-                    if anchor_cs > 0 || anchor_sw > 0 {
+                    // [#1956] 전체 폭 밴드 가드 — 옆 공간이 없으면 arming 하지 않는다.
+                    let col_w_hu = st.layout.column_width_hu();
+                    let band_full_width = anchor_sw > 0 && (anchor_sw - col_w_hu).abs() < 3000;
+                    if (anchor_cs > 0 || anchor_sw > 0) && !band_full_width {
                         st.wrap_around_cs = anchor_cs;
                         st.wrap_around_sw = anchor_sw;
                         st.wrap_around_table_para = para_idx;
@@ -3622,6 +3720,42 @@ impl TypesetEngine {
             st.flush_column_always();
         }
         st.ensure_page();
+
+        // [#1955] 글뒤로 표 후행 빈 문단 보류 흡수 부착 — 페이지 확정 후
+        // anchor 표의 첫 fragment 가 있는 단에 소급 기록 (한글: 글뒤로 표는
+        // 플로우를 소비하지 않으므로 후행 문단이 anchor 쪽에 남음).
+        for wrap_para in std::mem::take(&mut st.behind_pending_absorbs) {
+            let anchor = wrap_para.table_para_index;
+            let is_first_fragment = |it: &PageItem| match it {
+                PageItem::Table { para_index, .. } => *para_index == anchor,
+                PageItem::PartialTable {
+                    para_index,
+                    is_continuation,
+                    ..
+                } => *para_index == anchor && !*is_continuation,
+                _ => false,
+            };
+            let mut attached = false;
+            'outer: for page in st.pages.iter_mut() {
+                for col in page.column_contents.iter_mut() {
+                    if col.items.iter().any(is_first_fragment) {
+                        col.wrap_around_paras.push(wrap_para.clone());
+                        attached = true;
+                        break 'outer;
+                    }
+                }
+            }
+            if !attached {
+                // anchor 미발견(예: 표가 배치 제외) — 마지막 단에 부착해 문단 누락 방지
+                if let Some(col) = st
+                    .pages
+                    .last_mut()
+                    .and_then(|p| p.column_contents.last_mut())
+                {
+                    col.wrap_around_paras.push(wrap_para);
+                }
+            }
+        }
 
         // 페이지 번호 + 머리말/꼬리말 할당
         Self::finalize_pages(
@@ -12239,9 +12373,10 @@ impl TypesetEngine {
                 None => (f64::NAN, 0, 0.0),
             };
             eprintln!(
-                "TABLE_DRIFT: pi={} sec={} eff_h={:.1} host_sp={:.1} table_total={:.1} mt_sum={:.1} mt_rows={} cs={:.1} cur_h={:.1} tac={} rows={}",
+                "TABLE_DRIFT: pi={} sec={} eff_h={:.1} host_sp={:.1} table_total={:.1} mt_sum={:.1} mt_rows={} cs={:.1} cur_h={:.1} tac={} rows={} avail={:.1} base={:.1} fn={:.1} zone={:.1}",
                 para_idx, st.section_index, ft.effective_height, host_spacing_total, table_total,
                 mt_sum, mt_rows, mt_cs, st.current_height, table.common.treat_as_char, table.row_count,
+                available, st.base_available_height(), total_footnote, st.current_zone_y_offset,
             );
         }
         // [Task #1027 Stage E1] treat_as_char 인라인 표 advance 정합.

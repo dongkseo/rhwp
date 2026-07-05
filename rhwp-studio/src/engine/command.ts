@@ -13,6 +13,8 @@ export interface EditCommand {
   mergeWith(other: EditCommand): EditCommand | null;
   /** 리소스 해제 (스냅샷 명령의 메모리 반환 등). 스택에서 제거될 때 호출. */
   discard?(wasm: WasmBridge): void;
+  /** page-local refresh 판정을 위한 가벼운 텍스트 편집 payload. */
+  getPageLocalTextEditOptions?(): { insertedText?: string; deleteCount?: number };
 }
 
 // ─── 편집 작업 서술자 (라우팅 통합) ────────────────────
@@ -138,6 +140,10 @@ export class InsertTextCommand implements EditCommand {
     return { ...this.position, charOffset: this.position.charOffset + this.text.length };
   }
 
+  getPageLocalTextEditOptions(): { insertedText: string } {
+    return { insertedText: this.text };
+  }
+
   undo(wasm: WasmBridge): DocumentPosition {
     doDeleteText(wasm, this.position, this.text.length);
     return { ...this.position };
@@ -194,6 +200,10 @@ export class DeleteTextCommand implements EditCommand {
     }
     doDeleteText(wasm, this.position, this.count);
     return { ...this.position };
+  }
+
+  getPageLocalTextEditOptions(): { deleteCount: number } {
+    return { deleteCount: this.count };
   }
 
   undo(wasm: WasmBridge): DocumentPosition {

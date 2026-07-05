@@ -762,17 +762,20 @@ impl DocumentCore {
         Ok(self.build_page_layer_tree(page_num)?.to_json())
     }
 
-    /// 페이지 overlay 이미지 정보만 작은 JSON으로 반환한다.
+    /// 페이지 overlay 이미지와 replay-plane summary만 작은 JSON으로 반환한다.
     ///
     /// Studio는 BehindText/InFrontOfText 그림 overlay 계산을 위해 전체 PageLayerTree JSON을
     /// 파싱할 필요가 없다. 특히 그림이 본문 layer에만 있는 페이지에서는 빈 overlay 배열과
-    /// imageCount만 반환하여 입력 중 대용량 JSON 직렬화/파싱을 피한다.
+    /// imageCount/rawSvgCount/flowImageCount/flowRawSvgCount/hasBehind/hasFront만
+    /// 반환하여 입력 중 대용량 JSON 직렬화/파싱을 피한다.
     pub fn get_page_overlay_images_native(&self, page_num: u32) -> Result<String, HwpError> {
         use crate::model::image::ImageEffect;
         use crate::model::shape::TextWrap;
         use crate::paint::{
-            LayerNode, LayerNodeKind, PaintOp, ResolvedImageKind, ResolvedImagePayload,
+            paint_op_replay_plane_with_layer, LayerNode, LayerNodeKind, PaintOp, PaintReplayPlane,
+            ResolvedImageKind, ResolvedImagePayload,
         };
+        use crate::renderer::render_tree::RenderLayerInfo;
         use crate::renderer::render_tree::{BoundingBox, ImageNode};
         use base64::Engine;
 
@@ -900,16 +903,51 @@ impl DocumentCore {
             behind: &mut String,
             front: &mut String,
             image_count: &mut usize,
+            raw_svg_count: &mut usize,
+            flow_image_count: &mut usize,
+            flow_raw_svg_count: &mut usize,
+            has_behind: &mut bool,
+            has_front: &mut bool,
+            inherited_layer: Option<RenderLayerInfo>,
         ) {
+            let active_layer = node.layer.or(inherited_layer);
             match &node.kind {
                 LayerNodeKind::Group { children, .. } => {
                     for child in children {
-                        collect(child, behind, front, image_count);
+                        collect(
+                            child,
+                            behind,
+                            front,
+                            image_count,
+                            raw_svg_count,
+                            flow_image_count,
+                            flow_raw_svg_count,
+                            has_behind,
+                            has_front,
+                            active_layer,
+                        );
                     }
                 }
-                LayerNodeKind::ClipRect { child, .. } => collect(child, behind, front, image_count),
+                LayerNodeKind::ClipRect { child, .. } => collect(
+                    child,
+                    behind,
+                    front,
+                    image_count,
+                    raw_svg_count,
+                    flow_image_count,
+                    flow_raw_svg_count,
+                    has_behind,
+                    has_front,
+                    active_layer,
+                ),
                 LayerNodeKind::Leaf { ops } => {
                     for op in ops {
+                        let plane = paint_op_replay_plane_with_layer(op, active_layer);
+                        match plane {
+                            PaintReplayPlane::BehindText => *has_behind = true,
+                            PaintReplayPlane::InFrontOfText => *has_front = true,
+                            _ => {}
+                        }
                         match op {
                             PaintOp::Image {
                                 bbox,
@@ -917,8 +955,8 @@ impl DocumentCore {
                                 resolved,
                             } => {
                                 *image_count += 1;
-                                match image.text_wrap {
-                                    Some(TextWrap::BehindText) => {
+                                match plane {
+                                    PaintReplayPlane::BehindText => {
                                         write_overlay_image(
                                             behind,
                                             *bbox,
@@ -927,7 +965,7 @@ impl DocumentCore {
                                             TextWrap::BehindText,
                                         );
                                     }
-                                    Some(TextWrap::InFrontOfText) => {
+                                    PaintReplayPlane::InFrontOfText => {
                                         write_overlay_image(
                                             front,
                                             *bbox,
@@ -936,14 +974,19 @@ impl DocumentCore {
                                             TextWrap::InFrontOfText,
                                         );
                                     }
-                                    _ => {}
+                                    PaintReplayPlane::Flow | PaintReplayPlane::Background => {
+                                        *flow_image_count += 1;
+                                    }
                                 }
                             }
                             // OLE/차트 미리보기 등은 RawSvg 로 emit 되며 web_canvas 의 draw_image
                             // 경로(IMAGE_CACHE 비동기 디코드)를 그대로 탄다. scheduleReRender 재시도
-                            // 발화를 위해 image_count 에 포함한다.
+                            // 발화를 위해 별도 rawSvgCount 로 노출한다.
                             PaintOp::RawSvg { .. } => {
-                                *image_count += 1;
+                                *raw_svg_count += 1;
+                                if plane == PaintReplayPlane::Flow {
+                                    *flow_raw_svg_count += 1;
+                                }
                             }
                             _ => {}
                         }
@@ -956,11 +999,34 @@ impl DocumentCore {
         let mut behind = String::new();
         let mut front = String::new();
         let mut image_count = 0usize;
-        collect(&tree.root, &mut behind, &mut front, &mut image_count);
+        let mut raw_svg_count = 0usize;
+        let mut flow_image_count = 0usize;
+        let mut flow_raw_svg_count = 0usize;
+        let mut has_behind = false;
+        let mut has_front = false;
+        collect(
+            &tree.root,
+            &mut behind,
+            &mut front,
+            &mut image_count,
+            &mut raw_svg_count,
+            &mut flow_image_count,
+            &mut flow_raw_svg_count,
+            &mut has_behind,
+            &mut has_front,
+            None,
+        );
 
         Ok(format!(
-            "{{\"behind\":[{}],\"front\":[{}],\"imageCount\":{}}}",
-            behind, front, image_count
+            "{{\"behind\":[{}],\"front\":[{}],\"imageCount\":{},\"rawSvgCount\":{},\"flowImageCount\":{},\"flowRawSvgCount\":{},\"hasBehind\":{},\"hasFront\":{}}}",
+            behind,
+            front,
+            image_count,
+            raw_svg_count,
+            flow_image_count,
+            flow_raw_svg_count,
+            has_behind,
+            has_front
         ))
     }
 
@@ -3030,7 +3096,22 @@ impl DocumentCore {
                             .unwrap_or(0.0);
                         let body_w = page.layout.body_area.width;
                         let is_wrap_zone = sw_px > 0.0 && sw_px < body_w * 0.9;
-                        let disp = if is_wrap_zone {
+                        // [#1955] 글뒤로/글앞으로 anchor 표는 플로우를 소비하지 않으므로
+                        // 후행 문단은 폭과 무관하게 **앵커 페이지** 귀속 (한글: stored
+                        // LINE_SEG vpos 가 앵커 쪽 위치를 가리킴).
+                        let anchor_behind = paragraphs
+                            .get(wp.table_para_index)
+                            .map(|p| {
+                                p.controls.iter().any(|c| {
+                                    matches!(c, Control::Table(t)
+                                        if !t.common.treat_as_char
+                                            && matches!(t.common.text_wrap,
+                                                crate::model::shape::TextWrap::BehindText
+                                                    | crate::model::shape::TextWrap::InFrontOfText))
+                                })
+                            })
+                            .unwrap_or(false);
+                        let disp = if is_wrap_zone || anchor_behind {
                             item_first_page.get(&wp.table_para_index)
                         } else {
                             item_disp_page.get(&wp.table_para_index)

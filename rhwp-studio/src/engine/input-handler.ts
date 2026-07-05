@@ -36,7 +36,7 @@ import * as _keyboard from './input-handler-keyboard';
 import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
-import { isPageLocalTextEditCommand } from './input-edit-invalidation';
+import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -2136,6 +2136,7 @@ export class InputHandler {
     switch (desc.kind) {
       case 'command': {
         const beforePos = this.cursor.getPosition();
+        const beforePageIndex = this.cursor.getRect()?.pageIndex;
         const keepFieldStartOutside = (desc.command.type === 'insertText' || desc.command.type === 'deleteText')
           && this.isExitedFieldStartPosition(beforePos);
         if (keepFieldStartOutside) {
@@ -2150,7 +2151,11 @@ export class InputHandler {
         if (keepFieldStartOutside) {
           this.markCurrentFieldStartOutside();
         }
-        this.refreshAfterOperation(desc.meta?.refresh, 'auto', desc.command.type, beforePos, newPos);
+        this.refreshAfterOperation(desc.meta?.refresh, 'auto', desc.command.type, beforePos, newPos, {
+          ...desc.command.getPageLocalTextEditOptions?.(),
+          beforePageIndex,
+          afterPageIndex: this.cursor.getRect()?.pageIndex,
+        });
         break;
       }
       case 'snapshot': {
@@ -2259,6 +2264,7 @@ export class InputHandler {
     commandType: string,
     beforePos: DocumentPosition,
     afterPos: DocumentPosition,
+    pageLocalOptions: PageLocalTextEditOptions = {},
   ): void {
     const policy = requested ?? fallback;
     switch (policy) {
@@ -2275,7 +2281,7 @@ export class InputHandler {
         return;
       case 'auto':
       default:
-        if (this.shouldUsePageLocalRefresh(commandType, beforePos, afterPos)) {
+        if (this.shouldUsePageLocalRefresh(commandType, beforePos, afterPos, pageLocalOptions)) {
           this.afterPageLocalEdit();
         } else {
           this.afterEdit();
@@ -2283,9 +2289,14 @@ export class InputHandler {
     }
   }
 
-  private shouldUsePageLocalRefresh(commandType: string, beforePos: DocumentPosition, afterPos: DocumentPosition): boolean {
+  private shouldUsePageLocalRefresh(
+    commandType: string,
+    beforePos: DocumentPosition,
+    afterPos: DocumentPosition,
+    pageLocalOptions: PageLocalTextEditOptions = {},
+  ): boolean {
     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return false;
-    return isPageLocalTextEditCommand(commandType, beforePos, afterPos);
+    return isPageLocalTextEditCommand(commandType, beforePos, afterPos, pageLocalOptions);
   }
 
   /**

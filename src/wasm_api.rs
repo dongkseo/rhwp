@@ -418,6 +418,8 @@ impl HwpDocument {
     /// - `"all"` → 모든 PaintOp 렌더 (기본 `renderPageToCanvas` 와 동일)
     /// - `"background"` → page background layer
     /// - `"flow"` → 본문 layer (BehindText / InFrontOfText plane 제외)
+    /// - `"flow-dynamic"` → 본문 layer 중 Image/RawSvg 제외
+    /// - `"flow-static"` → page background + 본문 Image/RawSvg layer
     /// - `"behind"` → BehindText overlay layer
     /// - `"front"` → InFrontOfText overlay layer
     ///
@@ -439,11 +441,13 @@ impl HwpDocument {
             "all" => LayerFilter::All,
             "background" => LayerFilter::BackgroundOnly,
             "flow" => LayerFilter::FlowOnly,
+            "flow-dynamic" => LayerFilter::FlowDynamic,
+            "flow-static" => LayerFilter::FlowStatic,
             "behind" => LayerFilter::WrapOnly(TextWrap::BehindText),
             "front" => LayerFilter::WrapOnly(TextWrap::InFrontOfText),
             _ => {
                 return Err(JsValue::from_str(
-                    "invalid layer_kind: 'all' | 'background' | 'flow' | 'behind' | 'front'",
+                    "invalid layer_kind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front'",
                 ))
             }
         };

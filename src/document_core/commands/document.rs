@@ -302,7 +302,12 @@ impl DocumentCore {
                             }
                         }
                     }
-                    if max_tac_h > 0 {
+                    if max_tac_h > 0
+                        && !matches!(
+                            para.line_segs.as_slice(),
+                            [seg] if seg.is_missing_lineseg_placeholder()
+                        )
+                    {
                         // [Task #1068] 이미 표 높이를 담은 LINE_SEG 가 있으면(한컴이
                         // 저장한 실제 linesegarray 보유 — 표 줄 seg 의 vertsize 가 표
                         // 높이) 보정 불필요. 무조건 first_mut() 을 확대하면 표가 두 번째
@@ -312,6 +317,10 @@ impl DocumentCore {
                         // para 567: 제목줄 vertsize=2200 → 63234 오염, 839px overflow).
                         // linesegarray 가 없어 기본 lh=100 단일 seg 만 있는 경우에만
                         // 첫 seg 를 표 높이로 확대한다.
+                        // HWP5-origin HWPX export marker 는 "원본 LineSeg 부재"를 보존하기
+                        // 위한 임시 표식이므로 여기서 표 높이로 오염시키면 안 된다.
+                        // 이 marker 는 reflow gate 후 clear_missing_lineseg_placeholders 에서
+                        // 제거되어 HWP5 원본과 같은 line_segs.is_empty() 경로를 타야 한다.
                         let already_covered =
                             para.line_segs.iter().any(|s| s.line_height >= max_tac_h);
                         if !already_covered {

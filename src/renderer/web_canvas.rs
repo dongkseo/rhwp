@@ -279,6 +279,10 @@ pub enum LayerFilter {
     BackgroundOnly,
     /// 본문 layer — BehindText / InFrontOfText plane 제외
     FlowOnly,
+    /// 본문 동적 layer — flow plane 중 Image/RawSvg 를 제외
+    FlowDynamic,
+    /// 본문 정적 layer — page background + flow plane Image/RawSvg 만
+    FlowStatic,
     /// Overlay layer — 특정 wrap plane 만 (BehindText 또는 InFrontOfText)
     WrapOnly(crate::model::shape::TextWrap),
 }
@@ -362,10 +366,13 @@ impl WebCanvasRenderer {
     /// - `LayerFilter::All`: 모든 op 렌더 (기본)
     /// - `LayerFilter::BackgroundOnly`: page background plane 만
     /// - `LayerFilter::FlowOnly`: BehindText / InFrontOfText plane 제외 (본문 layer)
+    /// - `LayerFilter::FlowDynamic`: flow plane 중 Image/RawSvg 제외
+    /// - `LayerFilter::FlowStatic`: page background + flow plane Image/RawSvg 만
     /// - `LayerFilter::WrapOnly(w)`: 해당 wrap plane 만 (overlay layer)
     fn should_render_op(&self, op: &PaintOp, layer: Option<RenderLayerInfo>) -> bool {
         use crate::model::shape::TextWrap;
         let replay_plane = paint_op_replay_plane_with_layer(op, layer);
+        let is_flow_static = matches!(op, PaintOp::Image { .. } | PaintOp::RawSvg { .. });
         if let Some(active) = self.active_replay_plane {
             return replay_plane == active;
         }
@@ -376,6 +383,11 @@ impl WebCanvasRenderer {
                 replay_plane,
                 PaintReplayPlane::BehindText | PaintReplayPlane::InFrontOfText
             ),
+            LayerFilter::FlowDynamic => replay_plane == PaintReplayPlane::Flow && !is_flow_static,
+            LayerFilter::FlowStatic => {
+                replay_plane == PaintReplayPlane::Background
+                    || (replay_plane == PaintReplayPlane::Flow && is_flow_static)
+            }
             LayerFilter::WrapOnly(TextWrap::BehindText) => {
                 replay_plane == PaintReplayPlane::BehindText
             }
@@ -406,6 +418,8 @@ impl WebCanvasRenderer {
         self.transparent_page_background = match self.layer_filter {
             LayerFilter::All => false,
             LayerFilter::BackgroundOnly => false,
+            LayerFilter::FlowDynamic => true,
+            LayerFilter::FlowStatic => false,
             LayerFilter::FlowOnly => {
                 layer_node_has_replay_plane(&tree.root, PaintReplayPlane::BehindText)
             }
