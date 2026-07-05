@@ -462,6 +462,18 @@ GitHub auto-close 가 **자주 실패**한다. 후속 문서/asset PR 이 필요
 gh issue view N --repo edwardkim/rhwp --json state,closedAt
 ```
 
+단, merge 직후에는 closing keyword 처리와 GitHub Actions auto-close 코멘트 반영이 몇 초에서 수십 초 늦게
+보일 수 있다. 원 PR 이 `Closes #N` 또는 closing keyword 를 포함했다면 한 번의 즉시 조회 결과만 보고
+`OPEN` 으로 단정하지 않는다. 다음처럼 시간을 두고 2~3회 재조회한 뒤에도 `OPEN` 일 때만 수동 close 대상으로
+판단한다.
+
+```bash
+for i in 1 2 3; do
+  gh issue view N --repo edwardkim/rhwp --json state,closedAt,comments
+  sleep 10
+done
+```
+
 `state: OPEN` 이면 수동 close + 후속 코멘트:
 
 ```bash
