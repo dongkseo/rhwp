@@ -10614,7 +10614,19 @@ impl TypesetEngine {
         let mt = fitted_visible_mt.as_ref().or(mt);
 
         let is_tac = table.attr & 0x01 != 0;
-        let table_text_wrap = (table.attr >> 21) & 0x07;
+        // [#1880] 자리차지(TopAndBottom) 판정: 종전 원시 attr 비트((attr>>21)&7==1)는
+        // HWPX 파스가 table.attr 를 미채움(bit0 만 미러, section.rs:1831)이라 항상
+        // false, HWP5 재파스는 원시 attr 전체(control.rs:153)라 true — 같은 IR 의
+        // convert-HWP(is_hwpx_variant) 재파스에서 host_spacing.before 가 sb 를 잃어
+        // defer 가드가 플립됐다(2780073 pi=2/4/6 host_before 6.7↔0.0px, 3075729
+        // oracle p13→p12). 의미 필드 + 소스 게이트로 교체: native 는 비트⇔열거형
+        // 전단사(shape.rs:394)로 불변, 순수 HWPX 는 종전에도 미진입으로 불변,
+        // convert-HWP 만 HWPX 렌더 경로로 정합된다(#1886 origin 전달의 연장).
+        let table_wrap_take_place = !self.is_hwpx_source.get()
+            && matches!(
+                table.common.text_wrap,
+                crate::model::shape::TextWrap::TopAndBottom
+            );
 
         // host_spacing 계산 — layout과 동일한 규칙
         let para_style_id = composed
@@ -10708,7 +10720,7 @@ impl TypesetEngine {
         // - 단 상단: spacing_before 제외
         // - [Task #1147] HWPX 빈 앵커 TopAndBottom 비-TAC 표: 다음 항목이 일반 문단이면
         //   spacing_before 제외 (위 주석). 다음 항목도 표 앵커이면 HWP처럼 보존한다.
-        let before = if !is_tac && table_text_wrap == 1 {
+        let before = if !is_tac && table_wrap_take_place {
             outer_top
         } else if suppress_empty_anchor_spacing && !is_column_top {
             outer_top

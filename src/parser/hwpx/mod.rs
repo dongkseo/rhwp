@@ -288,7 +288,19 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
                 });
             }
             Err(e) => {
-                eprintln!("경고: BinData '{}' 로드 실패: {}", item.href, e);
+                // [#1917] 로드 실패(상한 초과·엔트리 손상 등) 시에도 빈 데이터
+                // placeholder를 등록해 manifest·binaryItemIDRef를 보존한다.
+                // 미등록 시 직렬화기가 <hp:pic>를 통째로 드롭해 왕복 구조
+                // 손실(IR_DIFF 하드 실패)이 발생한다. 이미지 데이터만 손실.
+                eprintln!(
+                    "경고: BinData '{}' 로드 실패: {} — placeholder 등록(이미지 데이터 소실)",
+                    item.href, e
+                );
+                bin_data_content.push(BinDataContent {
+                    id: (i + 1) as u16,
+                    data: Vec::new(),
+                    extension: hwpx_bin_data_extension(item),
+                });
             }
         }
     }

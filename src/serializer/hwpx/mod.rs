@@ -1337,6 +1337,105 @@ mod tests {
     }
 
     #[test]
+    fn issue1917_bindata_load_failure_preserves_pic_control() {
+        // [#1917] BinData 엔트리 로드 실패(압축 해제 상한 초과·엔트리 손상 등)
+        // 시에도 pic 컨트롤과 binaryItemIDRef 가 보존되어야 한다. 종전에는
+        // bin_data_content 미등록 → resolve_bin_id 실패 → <hp:pic> 드롭으로
+        // 왕복 구조 손실(IR_DIFF 하드 실패)이 발생했다.
+        use crate::model::bin_data::BinDataContent;
+        use crate::model::control::Control;
+        use crate::model::image::{ImageAttr, Picture};
+        use crate::model::shape::CommonObjAttr;
+
+        fn count_pics(doc: &Document) -> usize {
+            doc.sections
+                .iter()
+                .flat_map(|s| s.paragraphs.iter())
+                .flat_map(|p| p.controls.iter())
+                .filter(|c| matches!(c, Control::Picture(_)))
+                .count()
+        }
+
+        let mut doc = Document::default();
+        // 재직렬화 시 charPrIDRef=0 해소용 기본 글자모양 (parse_hwpx 산출 IR 동형)
+        doc.doc_info
+            .char_shapes
+            .push(crate::model::style::CharShape::default());
+        doc.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: b"BMfake_bmp_data".to_vec(),
+            extension: "bmp".to_string(),
+        });
+        let mut section = crate::model::document::Section::default();
+        let mut para = crate::model::paragraph::Paragraph::default();
+        para.text = "A".to_string();
+        para.char_offsets = vec![8];
+        para.char_count = 10;
+        para.controls.push(Control::Picture(Box::new(Picture {
+            common: CommonObjAttr {
+                width: 5000,
+                height: 3000,
+                treat_as_char: true,
+                ..Default::default()
+            },
+            image_attr: ImageAttr {
+                bin_data_id: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        })));
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        let bytes = serialize_hwpx(&doc).expect("serialize picture");
+
+        // BinData 엔트리만 제거한 ZIP 재작성 — read_file_bytes 실패(Err 분기)를
+        // 유발한다. 상한 초과와 동일 분기를 실 512MB 페이로드 없이 재현.
+        let stripped = {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip open");
+            let mut out = std::io::Cursor::new(Vec::<u8>::new());
+            let mut zw = zip::ZipWriter::new(&mut out);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for i in 0..archive.len() {
+                let mut f = archive.by_index(i).expect("entry");
+                let name = f.name().to_string();
+                if name.starts_with("BinData/") {
+                    continue;
+                }
+                let mut data = Vec::new();
+                f.read_to_end(&mut data).expect("read entry");
+                zw.start_file(name, opts).expect("start_file");
+                std::io::Write::write_all(&mut zw, &data).expect("write entry");
+            }
+            zw.finish().expect("finish");
+            out.into_inner()
+        };
+
+        // 재파싱: placeholder 등록 + pic 컨트롤 보존
+        let doc2 = parse_hwpx(&stripped).expect("parse stripped");
+        assert_eq!(
+            doc2.bin_data_content.len(),
+            1,
+            "로드 실패한 BinData 도 placeholder 로 등록되어야 한다"
+        );
+        assert!(
+            doc2.bin_data_content[0].data.is_empty(),
+            "placeholder 데이터는 빈 값이어야 한다"
+        );
+        assert_eq!(
+            doc2.bin_data_content[0].extension, "bmp",
+            "placeholder 확장자는 manifest 기준으로 보존"
+        );
+        assert_eq!(count_pics(&doc2), 1, "pic 컨트롤이 보존되어야 한다");
+
+        // 재직렬화 성공(binaryItemIDRef 미등록 에러 없음) + pic 재보존
+        let bytes2 = serialize_hwpx(&doc2).expect("re-serialize with placeholder");
+        let doc3 = parse_hwpx(&bytes2).expect("parse re-serialized");
+        assert_eq!(count_pics(&doc3), 1, "재직렬화 왕복 후에도 pic 보존");
+    }
+
+    #[test]
     fn issue1452_hwpx_preserves_alpha_png_bindata_bytes() {
         use crate::model::bin_data::BinDataContent;
         use crate::model::control::Control;
