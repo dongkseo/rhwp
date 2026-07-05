@@ -10720,7 +10720,16 @@ impl TypesetEngine {
         // - 단 상단: spacing_before 제외
         // - [Task #1147] HWPX 빈 앵커 TopAndBottom 비-TAC 표: 다음 항목이 일반 문단이면
         //   spacing_before 제외 (위 주석). 다음 항목도 표 앵커이면 HWP처럼 보존한다.
-        let before = if !is_tac && table_wrap_take_place {
+        // - [#1880] 빈 앵커 스택(다음도 표 앵커)은 자리차지 제외 분기에서도 sb 를
+        //   보존한다 — 아래 #1863 보존 규칙과 동일 근거(스택 사이 간격은 한컴이
+        //   실제 계상, 한글 2022 오라클 3075729 p13 = sb 보존). 판정은 #1927 에서
+        //   의미 필드+소스 게이트(table_wrap_take_place)로 교체되었고, 본 예외는
+        //   그 판정이 발동하는 경로(HWP5-native 파스)에 적용된다 (메인테이너 통합:
+        //   PR #1927 × #1928 동일 라인 충돌 해소).
+        let before = if !is_tac
+            && table_wrap_take_place
+            && !(is_topbottom_empty_anchor && next_is_empty_table_anchor)
+        {
             outer_top
         } else if suppress_empty_anchor_spacing && !is_column_top {
             outer_top
