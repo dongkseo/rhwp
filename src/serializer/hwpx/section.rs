@@ -163,7 +163,11 @@ pub fn write_section(
 
     if let Some(p) = first_para {
         // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
-        let new_p_tag = render_hp_p_open(p, ctx.next_para_id());
+        // (#1933) 본문 경로는 종전에 style_id 를 reference 하지 않았다 — emit 만
+        // 강등해 미등록 ID 방출을 막고, 참조 집합/assert 동작은 종전 유지한다.
+        let pid = ctx.next_para_id();
+        let sid = ctx.effective_style_id(p.style_id);
+        let new_p_tag = render_hp_p_open(p, pid, sid);
         out = out.replacen(TEMPLATE_FIRST_P_TAG, &new_p_tag, 1);
 
         // 섹션 첫 run(secPr/colPr 전용)의 charPrIDRef 를 첫 텍스트 run id 와 일치시킨다.
@@ -185,7 +189,9 @@ pub fn write_section(
         for p in section.paragraphs.iter().skip(1) {
             let (runs, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
             vert_cursor = advance;
-            extra.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+            let pid = ctx.next_para_id();
+            let sid = ctx.effective_style_id(p.style_id);
+            extra.push_str(&render_hp_p_open(p, pid, sid));
             extra.push_str(&runs);
             extra.push_str(&linesegs);
             extra.push_str("</hp:p>");
@@ -200,7 +206,11 @@ pub fn write_section(
 ///
 /// `id` 는 문단 순서 기반(0, 1, 2, ...)로 할당한다. 한컴 샘플은 랜덤 해시도 쓰지만
 /// 파서는 id 를 무시하므로 순차값으로 충분.
-pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
+///
+/// `style_id_ref` 는 호출자가 `ctx.effective_style_id(p.style_id)` 로 강등한 값
+/// (미등록 스타일 → 0, #1933). 전 문단 경로가 이 함수를 거치므로 여기가 단일
+/// 방출 지점이다.
+pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32, style_id_ref: u8) -> String {
     let page_break = if matches!(p.column_type, ColumnBreakType::Page) {
         1
     } else {
@@ -213,7 +223,7 @@ pub(crate) fn render_hp_p_open(p: &Paragraph, id: u32) -> String {
     };
     format!(
         r#"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"#,
-        id, p.para_shape_id, p.style_id, page_break, column_break,
+        id, p.para_shape_id, style_id_ref, page_break, column_break,
     )
 }
 
@@ -1046,11 +1056,13 @@ fn render_control_slot(out: &mut String, control: &Control, ctx: &mut SerializeC
                     let mut vert_cursor: u32 = 0;
                     for para in &f.memo_paragraphs {
                         ctx.para_shape_ids.reference(para.para_shape_id);
-                        ctx.style_ids.reference(para.style_id as u16);
+                        let sid = ctx.effective_style_id(para.style_id);
+                        ctx.style_ids.reference(sid as u16);
                         let (runs, linesegs, advance) =
                             render_paragraph_parts(para, vert_cursor, ctx);
                         vert_cursor = advance;
-                        out.push_str(&render_hp_p_open(para, ctx.next_para_id()));
+                        let pid = ctx.next_para_id();
+                        out.push_str(&render_hp_p_open(para, pid, sid));
                         out.push_str(&runs);
                         out.push_str(&linesegs);
                         out.push_str("</hp:p>");
@@ -1295,7 +1307,9 @@ fn render_header_footer(
     for p in h.paragraphs.iter() {
         let (runs, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+        let pid = ctx.next_para_id();
+        let sid = ctx.effective_style_id(p.style_id);
+        out.push_str(&render_hp_p_open(p, pid, sid));
         out.push_str(&runs);
         out.push_str(&linesegs);
         out.push_str("</hp:p>");
@@ -1610,12 +1624,25 @@ fn render_common_shape_xml(
             let fb = writer_to_string(|w| super::shape::write_fill_brush(w, &d.fill, ctx))
                 .unwrap_or_default();
             let sh = writer_to_string(|w| super::shape::write_shadow(w, d)).unwrap_or_default();
+            // [Issue #1944] drawText(도형 내 글상자 문단) — rect 경로(shape.rs write_rect)는
+            // shadow 직후 방출하나 legacy 공용 경로(ellipse/arc/polygon/curve)는 누락해
+            // 도형 안 텍스트가 저장 시 소실됐다(순서도 마름모 라벨 등). OWPML 순서
+            // (shadow → drawText → hc:pt) 대로 shadow 와 points 사이에 방출한다.
+            let dt = d
+                .text_box
+                .as_ref()
+                .filter(|tb| !tb.paragraphs.is_empty())
+                .map(|tb| {
+                    writer_to_string(|w| super::shape::write_draw_text(w, tb, ctx))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
             let pts: String = points
                 .iter()
                 .map(|p| format!(r#"<hc:pt x="{}" y="{}"/>"#, p.x, p.y))
                 .collect();
             // [#1598] ellipse/arc 전용 지오메트리(center/축/시작끝점)는 hc:pt 와 상호배타.
-            format!("{ls}{fb}{sh}{pts}{geom_tail}")
+            format!("{ls}{fb}{sh}{dt}{pts}{geom_tail}")
         })
         .unwrap_or_default();
     // 태그 부수 속성 — numberingType/dropcapstyle/href/groupLevel/instid (rect/line 동형).
@@ -1693,7 +1720,9 @@ fn render_note_sublist(
     for p in paragraphs.iter() {
         let (runs, linesegs, advance) = render_paragraph_parts(p, vert_cursor, ctx);
         vert_cursor = advance;
-        out.push_str(&render_hp_p_open(p, ctx.next_para_id()));
+        let pid = ctx.next_para_id();
+        let sid = ctx.effective_style_id(p.style_id);
+        out.push_str(&render_hp_p_open(p, pid, sid));
         out.push_str(&runs);
         out.push_str(&linesegs);
         out.push_str("</hp:p>");
@@ -2033,6 +2062,47 @@ mod tests {
     use super::*;
     use crate::model::paragraph::{CharShapeRef, Paragraph};
 
+    /// [Issue #1944] legacy 공용 도형 경로(polygon/ellipse/arc/curve)가 도형 내
+    /// 글상자(drawText) 문단을 방출해야 한다 — 종전 누락으로 도형 안 텍스트 소실.
+    #[test]
+    fn common_shape_emits_draw_text_for_legacy_shapes() {
+        use crate::model::shape::{CommonObjAttr, DrawingObjAttr, TextBox};
+
+        let mut para = Paragraph::default();
+        para.text = "마름모라벨".to_string();
+
+        let drawing = DrawingObjAttr {
+            text_box: Some(TextBox {
+                paragraphs: vec![para],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let c = CommonObjAttr::default();
+        let mut ctx = SerializeContext::default();
+
+        let xml = render_common_shape_xml("polygon", &c, &None, Some(&drawing), &[], "", &mut ctx);
+        assert!(
+            xml.contains("<hp:drawText"),
+            "polygon 도형이 drawText 를 방출해야 함: {xml}"
+        );
+        assert!(
+            xml.contains("마름모라벨"),
+            "글상자 문단 텍스트가 보존되어야 함"
+        );
+        // 빈 글상자는 미방출 (rect 경로와 동일 계약).
+        let empty = DrawingObjAttr {
+            text_box: Some(TextBox::default()),
+            ..Default::default()
+        };
+        let xml_empty =
+            render_common_shape_xml("polygon", &c, &None, Some(&empty), &[], "", &mut ctx);
+        assert!(
+            !xml_empty.contains("<hp:drawText"),
+            "빈 글상자는 drawText 를 방출하지 않아야 함"
+        );
+    }
+
     /// [Task #1627] empty-text(객체-only) 문단에서 bookmark 는 문단 시작으로 끌려가지 않고
     /// para.controls 순서대로 in-order 방출되어야 한다(원본 컨트롤 순서 보존).
     #[test]
@@ -2079,7 +2149,9 @@ mod tests {
         para.para_shape_id = 7;
         para.style_id = 3;
         para.text = "hi".to_string();
-        let (doc, section) = make_doc_with_paragraph(para);
+        let (mut doc, section) = make_doc_with_paragraph(para);
+        // style_id=3 이 등록되도록 스타일 4개 확보 (미등록 강등 #1933 회피).
+        doc.doc_info.styles = vec![crate::model::style::Style::default(); 4];
         let mut ctx = SerializeContext::collect_from_document(&doc);
         let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
         let xml = std::str::from_utf8(&bytes).unwrap();
@@ -2091,6 +2163,31 @@ mod tests {
         assert!(
             xml.contains(r#"styleIDRef="3""#),
             "<hp:p> must reflect style_id=3"
+        );
+    }
+
+    /// [Issue #1933] 스타일 목록 밖 styleIDRef 는 기본(0)으로 강등되어 직렬화가
+    /// 하드 실패하지 않는다 (한글 정합 — 열리는데 저장 불가 해소).
+    #[test]
+    fn out_of_range_style_id_downgraded_to_default() {
+        let mut para = Paragraph::default();
+        para.style_id = 96; // 스타일 목록(4개, idx 0..3) 밖
+        para.text = "hi".to_string();
+        let (mut doc, section) = make_doc_with_paragraph(para);
+        doc.doc_info.styles = vec![crate::model::style::Style::default(); 4];
+        let mut ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_section(&section, &doc, 0, &mut ctx).unwrap();
+        // 참조 정합 단언 — 강등 없으면 styleIDRef:[96] 미등록으로 하드 실패한다.
+        ctx.assert_all_refs_resolved()
+            .expect("#1933: 미등록 styleIDRef 강등으로 참조 정합해야 함");
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            xml.contains(r#"styleIDRef="0""#),
+            "미등록 style_id=96 은 0 으로 강등되어야 함"
+        );
+        assert!(
+            !xml.contains(r#"styleIDRef="96""#),
+            "미등록 style_id 는 방출되지 않아야 함"
         );
     }
 
