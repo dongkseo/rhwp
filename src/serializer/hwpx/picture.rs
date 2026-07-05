@@ -686,13 +686,16 @@ mod tests {
 
     #[test]
     fn img_uses_manifest_id() {
+        // [#1891] manifest id 는 `image{bin_data_id}` 숫자 불변식을 따라야 한다.
+        // 파서(section.rs)가 binaryItemIDRef 의 숫자를 그대로 bin_data_id 로 읽으므로,
+        // 종전 순번 명명(id=5 → "image1")은 재파스에서 참조가 1 로 어긋났다.
         let doc = make_doc_with_bin(5, "jpg");
         let mut ctx = SerializeContext::collect_from_document(&doc);
         let pic = make_picture(5);
         let xml = serialize(&pic, &mut ctx);
         assert!(
-            xml.contains(r#"binaryItemIDRef="image1""#),
-            "binaryItemIDRef must resolve to manifest id image1: {}",
+            xml.contains(r#"binaryItemIDRef="image5""#),
+            "binaryItemIDRef must resolve to manifest id image5 (숫자 불변식): {}",
             xml
         );
     }

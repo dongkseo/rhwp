@@ -125,6 +125,10 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     let bin_entries = ctx.bin_data_entries();
     let mut zip_bin_entries: HashSet<String> = HashSet::new();
     for entry in &bin_entries {
+        // 외부 참조(isEmbeded=0)는 ZIP 엔트리가 없다 — manifest 항목만 방출 (#1891).
+        if !entry.is_embedded {
+            continue;
+        }
         let data = doc
             .bin_data_content
             .iter()
@@ -146,6 +150,7 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
             id: e.manifest_id.clone(),
             href: e.href.clone(),
             media_type: e.media_type.clone(),
+            is_embedded: e.is_embedded,
         })
         .collect();
     let content_hpf = content::write_content_hpf(
@@ -212,11 +217,16 @@ fn write_container_rdf(section_hrefs: &[String]) -> String {
 
 /// 3-way BinData 동기화 단언: `ctx.bin_data_entries()`, content.hpf manifest,
 /// ZIP entry 의 href 집합이 모두 일치하는지 확인.
+/// 외부 참조(isEmbeded=0) 항목은 ZIP 엔트리가 없는 것이 정상이므로 제외한다 (#1891).
 fn assert_bin_data_3way(
     bin_entries: &[context::BinDataEntry],
     zip_entries: &HashSet<String>,
 ) -> Result<(), SerializeError> {
-    let ctx_hrefs: HashSet<String> = bin_entries.iter().map(|e| e.href.clone()).collect();
+    let ctx_hrefs: HashSet<String> = bin_entries
+        .iter()
+        .filter(|e| e.is_embedded)
+        .map(|e| e.href.clone())
+        .collect();
     if ctx_hrefs != *zip_entries {
         let missing_zip: Vec<_> = ctx_hrefs.difference(zip_entries).cloned().collect();
         let orphan_zip: Vec<_> = zip_entries.difference(&ctx_hrefs).cloned().collect();

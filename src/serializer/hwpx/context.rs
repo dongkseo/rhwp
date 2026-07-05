@@ -68,12 +68,15 @@ impl<T: Copy + Eq + std::hash::Hash> IdPool<T> {
 pub struct BinDataEntry {
     /// content.hpf 의 `opf:item id` (예: "image1")
     pub manifest_id: String,
-    /// ZIP 엔트리 경로 (예: "BinData/image1.png")
+    /// ZIP 엔트리 경로 (예: "BinData/image1.png") 또는 외부 참조 원본 경로
+    /// (`is_embedded=false`, 예: `D:\다운로드\...`)
     pub href: String,
     /// MIME 타입 (예: "image/png")
     pub media_type: String,
     /// IR 상의 bin_data_id (storage_id) — 매핑 역추적용
     pub bin_data_id: u16,
+    /// content.hpf `isEmbeded` — false 면 외부 파일 참조(ZIP 엔트리 없음, #1891).
+    pub is_embedded: bool,
 }
 
 /// 1-pass 스캔으로 구축되는 직렬화 컨텍스트.
@@ -161,14 +164,18 @@ impl SerializeContext {
             }
         }
 
-        // BinData: bin_data_content의 storage_id → manifest 엔트리 생성
-        for (i, bd) in doc.bin_data_content.iter().enumerate() {
+        // BinData: bin_data_content의 storage_id → manifest 엔트리 생성.
+        // manifest id 는 반드시 `image{bin_data_id}` — HWPX 파서(section.rs)가
+        // binaryItemIDRef 의 숫자를 그대로 bin_data_id 로 파싱하므로(숫자 불변식),
+        // 순번(i+1) 명명은 링크 항목으로 id 에 구멍이 있는 문서(#1891 73504)에서
+        // 이름과 id 가 어긋나 재파스 그림 참조가 엉킨다.
+        for bd in doc.bin_data_content.iter() {
             let ext = if bd.extension.is_empty() {
                 "bin"
             } else {
                 bd.extension.as_str()
             };
-            let manifest_id = format!("image{}", i + 1);
+            let manifest_id = format!("image{}", bd.id);
             let href = format!("BinData/{}.{}", manifest_id, ext);
             let media_type = mime_from_ext(ext);
             ctx.bin_data_map.insert(
@@ -178,6 +185,34 @@ impl SerializeContext {
                     href,
                     media_type: media_type.to_string(),
                     bin_data_id: bd.id,
+                    is_embedded: true,
+                },
+            );
+        }
+
+        // 외부 참조(Link) BinData: 콘텐츠가 없어도 manifest 항목과 참조는 보존해야
+        // 한다 (#1891 — 미등록이면 해당 <hp:pic> 직렬화가 실패해 그림 컨트롤이
+        // 통째로 드롭되고 레이아웃 앵커가 사라져 렌더가 갈라진다). ZIP 엔트리는
+        // 만들지 않고 content.hpf 에 isEmbeded="0" + 원본 href 로만 방출한다.
+        // 명명은 위와 같은 숫자 불변식(`image{storage_id}`)을 따른다.
+        for bd in &doc.doc_info.bin_data_list {
+            if !matches!(bd.data_type, crate::model::bin_data::BinDataType::Link) {
+                continue;
+            }
+            // storage_id=0 은 "참조 없는 placeholder pic" 센티널(#1567)과 겹치므로
+            // 등록하지 않는다 (HWP5 Link 항목은 storage_id 미부여일 수 있음).
+            if bd.storage_id == 0 || ctx.bin_data_map.contains_key(&bd.storage_id) {
+                continue;
+            }
+            let ext = bd.extension.as_deref().unwrap_or("");
+            ctx.bin_data_map.insert(
+                bd.storage_id,
+                BinDataEntry {
+                    manifest_id: format!("image{}", bd.storage_id),
+                    href: bd.abs_path.clone().unwrap_or_default(),
+                    media_type: mime_from_ext(ext).to_string(),
+                    bin_data_id: bd.storage_id,
+                    is_embedded: false,
                 },
             );
         }
