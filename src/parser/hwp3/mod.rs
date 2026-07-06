@@ -454,11 +454,26 @@ struct Hwp3CharScan<'a> {
     ctrl_data_records: &'a mut Vec<Option<Vec<u8>>>,
 }
 
-/// [#2001 추출] 컨트롤 코드 catch-all(`_`) arm — GSO/개체(표·글상자·수식·버튼 등)
-/// 컨트롤 문자 파싱. 원본 arm 본문의 무변경 이동이며, 문자 루프를 향하던 `break`
-/// 17곳은 반환값 `(i, utf16_len, 문자루프중단)` 으로 치환됐다.
+/// [#2003] `parse_object_control_char` 의 개체 파싱 캐리오버 묶음 — 개체 디스패치가
+/// 채우고 후속(인터루드·tail)이 소비한다.
+struct Hwp3DrawingCarry<'a> {
+    nested_paragraphs: &'a mut Vec<crate::model::paragraph::Paragraph>,
+    parsed_table: &'a mut Option<crate::model::table::Table>,
+    parsed_equation: &'a mut Option<crate::model::control::Equation>,
+    parsed_picture: &'a mut Option<crate::model::image::Picture>,
+    parsed_line: &'a mut Option<crate::model::shape::LineShape>,
+    parsed_drawing_object: &'a mut Option<crate::model::shape::ShapeObject>,
+    parsed_obj_type: &'a mut u16,
+    parsed_is_hypertext: &'a mut bool,
+    info_buf: &'a mut Vec<u8>,
+}
+
+/// [#2003 추출] 개체 컨트롤 디스패치 — ch==10(표/글상자/수식/버튼)·11(그리기)·
+/// 14~17·29·5~8 의 if-else 체인 전체. 원본 무변경 이동 (셀·캡션은
+/// `parse_paragraph_list` 재귀). 반환 `Some(중단여부)` = 호출자 조기 return,
+/// `None` = 후속(인터루드·tail) 진행. i/utf16_len 은 읽기 전용.
 #[allow(clippy::too_many_arguments)]
-fn parse_object_control_char(
+fn parse_hwp3_object_dispatch(
     body_cursor: &mut Cursor<&[u8]>,
     doc_char_shapes: &mut Vec<crate::model::style::CharShape>,
     doc_para_shapes: &mut Vec<crate::model::style::ParaShape>,
@@ -467,52 +482,32 @@ fn parse_object_control_char(
     pic_name_to_id: &mut std::collections::HashMap<String, u16>,
     body_left_hu: i32,
     column_width_hu: i32,
-    body_height_hu: i32,
     ch: u16,
-    para_info: &Hwp3ParaInfo,
-    mut i: usize,
-    mut utf16_len: u32,
-    scan: &mut Hwp3CharScan<'_>,
-) -> Result<(usize, u32, bool), Hwp3Error> {
+    header_val1: u32,
+    i: usize,
+    utf16_len: u32,
+    controls: &mut Vec<crate::model::control::Control>,
+    ctrl_data_records: &mut Vec<Option<Vec<u8>>>,
+    carry: &mut Hwp3DrawingCarry<'_>,
+) -> Result<Option<bool>, Hwp3Error> {
     use byteorder::{LittleEndian, ReadBytesExt};
-    let Hwp3CharScan {
-        text_string,
-        char_offsets,
-        hwp3_char_to_utf16_pos,
-        controls,
-        ctrl_data_records,
-    } = scan;
-    let header_val1 = match body_cursor.read_u32::<LittleEndian>() {
-        Ok(v) => v,
-        Err(_) => return Ok((i, utf16_len, true)),
-    };
-    let _ch2 = match body_cursor.read_u16::<LittleEndian>() {
-        Ok(v) => v,
-        Err(_) => return Ok((i, utf16_len, true)),
-    };
-    for k in 0..3usize {
-        if i + k < hwp3_char_to_utf16_pos.len() {
-            hwp3_char_to_utf16_pos[i + k] = utf16_len;
-        }
-    }
-    i += 3; // 8바이트 헤더는 char_count에서 4개의 hchar를 차지합니다 (여기서 1개 읽고 3개 건너뜀)
-
-    let mut nested_paragraphs = Vec::new();
-    let mut parsed_table = None;
-    let mut parsed_equation = None;
-    let mut parsed_picture = None;
-    let mut parsed_line = None;
-    let mut parsed_drawing_object: Option<crate::model::shape::ShapeObject> = None;
-    let mut parsed_obj_type = 0;
-    let mut parsed_is_hypertext = false;
-
-    let mut info_buf = Vec::new();
-
+    let _ = (i, utf16_len);
+    let Hwp3DrawingCarry {
+        nested_paragraphs,
+        parsed_table,
+        parsed_equation,
+        parsed_picture,
+        parsed_line,
+        parsed_drawing_object,
+        parsed_obj_type,
+        parsed_is_hypertext,
+        info_buf,
+    } = carry;
     if ch == 10 {
         // 표 / 글상자 / 수식 / 버튼
         info_buf.resize(84, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
         let obj_type = if info_buf.len() >= 80 {
             (&info_buf[78..80]).read_u16::<LittleEndian>().unwrap_or(0)
@@ -524,8 +519,8 @@ fn parse_object_control_char(
         } else {
             0
         };
-        parsed_obj_type = obj_type;
-        parsed_is_hypertext = (other_options & 0x10) != 0;
+        **parsed_obj_type = obj_type;
+        **parsed_is_hypertext = (other_options & 0x10) != 0;
         let cell_count = if info_buf.len() >= 82 {
             (&info_buf[80..82]).read_u16::<LittleEndian>().unwrap_or(1)
         } else {
@@ -633,10 +628,10 @@ fn parse_object_control_char(
         let mut cells = Vec::new();
         let mut cell_buf = match alloc_record_buf(27 * (cell_count as usize)) {
             Ok(b) => b,
-            Err(_) => return Ok((i, utf16_len, true)),
+            Err(_) => return Ok(Some(true)),
         };
         if let Err(_) = body_cursor.read_exact(&mut cell_buf) {
-            return Ok((i, utf16_len, true));
+            return Ok(Some(true));
         }
 
         let mut xs_raw = Vec::new();
@@ -858,15 +853,15 @@ fn parse_object_control_char(
                 }
                 eq.script = script_text.trim().to_string();
             }
-            parsed_equation = Some(eq);
+            **parsed_equation = Some(eq);
         } else {
-            parsed_table = Some(table);
+            **parsed_table = Some(table);
         }
     } else if ch == 11 {
         // 그림
         info_buf.resize(348, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
 
         let mut pic = crate::model::image::Picture::default();
@@ -964,10 +959,10 @@ fn parse_object_control_char(
         // [Task #877] garbage length 로 인한 거대 alloc → WASM panic 방지.
         let mut ext_buf = match alloc_record_buf(n_ext as usize) {
             Ok(b) => b,
-            Err(_) => return Ok((i, utf16_len, true)),
+            Err(_) => return Ok(Some(true)),
         };
         if let Err(_) = body_cursor.read_exact(&mut ext_buf) {
-            return Ok((i, utf16_len, true));
+            return Ok(Some(true));
         }
 
         let pic_type = info_buf[74];
@@ -1003,7 +998,7 @@ fn parse_object_control_char(
                 pic_name_to_id,
             ) {
                 Ok(drawing_obj) => {
-                    parsed_drawing_object = Some(drawing_obj);
+                    **parsed_drawing_object = Some(drawing_obj);
                 }
                 Err(e) => {
                     eprintln!("Failed to parse drawing object tree: {:?}", e);
@@ -1043,7 +1038,7 @@ fn parse_object_control_char(
 
         if pic_type == 0 || pic_type == 1 || pic_type == 2 {
             pic.caption = caption;
-            parsed_picture = Some(pic);
+            **parsed_picture = Some(pic);
         } else if pic_type == 3 {
             // For drawing objects, we might attach the caption if the root is a known shape
             if let Some(mut drawing_obj) = parsed_drawing_object.take() {
@@ -1098,14 +1093,14 @@ fn parse_object_control_char(
                     }
                     _ => {}
                 }
-                parsed_drawing_object = Some(drawing_obj);
+                **parsed_drawing_object = Some(drawing_obj);
             }
         }
     } else if ch == 14 {
         // 선
         info_buf.resize(84, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
 
         let mut line = crate::model::shape::LineShape::default();
@@ -1157,14 +1152,14 @@ fn parse_object_control_char(
             line.drawing.fill = fill;
         }
 
-        parsed_line = Some(line);
+        **parsed_line = Some(line);
     } else if ch == 15 {
         // 숨은 설명
         info_buf.resize(8, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
-        nested_paragraphs = parse_paragraph_list(
+        **nested_paragraphs = parse_paragraph_list(
             body_cursor,
             doc_char_shapes,
             doc_para_shapes,
@@ -1178,10 +1173,10 @@ fn parse_object_control_char(
     } else if ch == 16 {
         // 머리말/꼬리말
         info_buf.resize(10, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
-        nested_paragraphs = parse_paragraph_list(
+        **nested_paragraphs = parse_paragraph_list(
             body_cursor,
             doc_char_shapes,
             doc_para_shapes,
@@ -1195,8 +1190,8 @@ fn parse_object_control_char(
     } else if ch == 17 {
         // 각주/미주
         info_buf.resize(14, 0);
-        if let Err(_) = body_cursor.read_exact(&mut info_buf) {
-            return Ok((i, utf16_len, true));
+        if let Err(_) = body_cursor.read_exact(info_buf.as_mut_slice()) {
+            return Ok(Some(true));
         }
         let is_endnote = (&info_buf[10..12]).read_u16::<LittleEndian>().unwrap_or(0) == 1;
         let note_column_width_hu = if is_endnote {
@@ -1204,7 +1199,7 @@ fn parse_object_control_char(
         } else {
             column_width_hu
         };
-        nested_paragraphs = parse_paragraph_list(
+        **nested_paragraphs = parse_paragraph_list(
             body_cursor,
             doc_char_shapes,
             doc_para_shapes,
@@ -1219,7 +1214,7 @@ fn parse_object_control_char(
         // 상호 참조
         if header_val1 < 1000000 {
             info_buf.resize(header_val1 as usize, 0);
-            let _ = body_cursor.read_exact(&mut info_buf);
+            let _ = body_cursor.read_exact(info_buf.as_mut_slice());
         }
     } else if ch == 5 {
         // [Task #877] 필드 코드 (spec §10.1, 표 33): 가변 길이 8 + n bytes.
@@ -1228,10 +1223,10 @@ fn parse_object_control_char(
         if header_val1 > 0 {
             let mut field_data = match alloc_record_buf(header_val1 as usize) {
                 Ok(b) => b,
-                Err(_) => return Ok((i, utf16_len, true)),
+                Err(_) => return Ok(Some(true)),
             };
             if let Err(_) = body_cursor.read_exact(&mut field_data) {
-                return Ok((i, utf16_len, true));
+                return Ok(Some(true));
             }
         }
     } else if ch == 6 {
@@ -1245,7 +1240,7 @@ fn parse_object_control_char(
         // cc count 는 outer i+=3 으로 4 hchars (= 8 bytes) 만 차지.
         let mut bookmark_extra = [0u8; 34];
         if let Err(_) = body_cursor.read_exact(&mut bookmark_extra) {
-            return Ok((i, utf16_len, true));
+            return Ok(Some(true));
         }
         let name_buf = &bookmark_extra[0..32];
         let name = crate::parser::hwp3::encoding::decode_hwp3_string(name_buf)
@@ -1268,7 +1263,7 @@ fn parse_object_control_char(
         // 추가 76 byte 소비 필요.
         let mut date_fmt = [0u8; 76];
         if let Err(_) = body_cursor.read_exact(&mut date_fmt) {
-            return Ok((i, utf16_len, true));
+            return Ok(Some(true));
         }
     } else if ch == 8 {
         // [Task #877] 날짜 코드 (spec §10.4, 표 38): 96 bytes total.
@@ -1280,13 +1275,100 @@ fn parse_object_control_char(
         // 현재 _=> else 에서 8 byte 소비. 추가 88 byte 필요.
         let mut date_code = [0u8; 88];
         if let Err(_) = body_cursor.read_exact(&mut date_code) {
-            return Ok((i, utf16_len, true));
+            return Ok(Some(true));
         }
     } else {
         // 알 수 없음 (코드 0-4, 12, 27 등 예약 문자)
         // 8바이트 헤더(ch+field+ch2)만 소비. header_val1은 길이 필드가 아님.
         // ch=3 실증: hex dump에서 ch2=0x2E('.')로 스펙의 반복코드와 불일치.
         // 헤더 직후가 정상 단락 내용이므로 추가 skip 없음.
+    }
+    Ok(None)
+}
+
+/// [#2001 추출] 컨트롤 코드 catch-all(`_`) arm — GSO/개체(표·글상자·수식·버튼 등)
+/// 컨트롤 문자 파싱. 원본 arm 본문의 무변경 이동이며, 문자 루프를 향하던 `break`
+/// 17곳은 반환값 `(i, utf16_len, 문자루프중단)` 으로 치환됐다.
+#[allow(clippy::too_many_arguments)]
+fn parse_object_control_char(
+    body_cursor: &mut Cursor<&[u8]>,
+    doc_char_shapes: &mut Vec<crate::model::style::CharShape>,
+    doc_para_shapes: &mut Vec<crate::model::style::ParaShape>,
+    doc_border_fills: &mut Vec<crate::model::style::BorderFill>,
+    doc_tab_defs: &mut Vec<crate::model::style::TabDef>,
+    pic_name_to_id: &mut std::collections::HashMap<String, u16>,
+    body_left_hu: i32,
+    column_width_hu: i32,
+    body_height_hu: i32,
+    ch: u16,
+    para_info: &Hwp3ParaInfo,
+    mut i: usize,
+    mut utf16_len: u32,
+    scan: &mut Hwp3CharScan<'_>,
+) -> Result<(usize, u32, bool), Hwp3Error> {
+    use byteorder::{LittleEndian, ReadBytesExt};
+    let Hwp3CharScan {
+        text_string,
+        char_offsets,
+        hwp3_char_to_utf16_pos,
+        controls,
+        ctrl_data_records,
+    } = scan;
+    let header_val1 = match body_cursor.read_u32::<LittleEndian>() {
+        Ok(v) => v,
+        Err(_) => return Ok((i, utf16_len, true)),
+    };
+    let _ch2 = match body_cursor.read_u16::<LittleEndian>() {
+        Ok(v) => v,
+        Err(_) => return Ok((i, utf16_len, true)),
+    };
+    for k in 0..3usize {
+        if i + k < hwp3_char_to_utf16_pos.len() {
+            hwp3_char_to_utf16_pos[i + k] = utf16_len;
+        }
+    }
+    i += 3; // 8바이트 헤더는 char_count에서 4개의 hchar를 차지합니다 (여기서 1개 읽고 3개 건너뜀)
+
+    let mut nested_paragraphs = Vec::new();
+    let mut parsed_table = None;
+    let mut parsed_equation = None;
+    let mut parsed_picture = None;
+    let mut parsed_line = None;
+    let mut parsed_drawing_object: Option<crate::model::shape::ShapeObject> = None;
+    let mut parsed_obj_type = 0;
+    let mut parsed_is_hypertext = false;
+
+    let mut info_buf = Vec::new();
+
+    let early_return = parse_hwp3_object_dispatch(
+        body_cursor,
+        doc_char_shapes,
+        doc_para_shapes,
+        doc_border_fills,
+        doc_tab_defs,
+        pic_name_to_id,
+        body_left_hu,
+        column_width_hu,
+        ch,
+        header_val1,
+        i,
+        utf16_len,
+        controls,
+        ctrl_data_records,
+        &mut Hwp3DrawingCarry {
+            nested_paragraphs: &mut nested_paragraphs,
+            parsed_table: &mut parsed_table,
+            parsed_equation: &mut parsed_equation,
+            parsed_picture: &mut parsed_picture,
+            parsed_line: &mut parsed_line,
+            parsed_drawing_object: &mut parsed_drawing_object,
+            parsed_obj_type: &mut parsed_obj_type,
+            parsed_is_hypertext: &mut parsed_is_hypertext,
+            info_buf: &mut info_buf,
+        },
+    )?;
+    if let Some(break_char_loop) = early_return {
+        return Ok((i, utf16_len, break_char_loop));
     }
 
     let is_non_tac_table = ch == 10
