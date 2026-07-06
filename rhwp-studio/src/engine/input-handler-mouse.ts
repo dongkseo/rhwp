@@ -131,59 +131,17 @@ function startCellSelectionDragCandidate(this: any, e: MouseEvent, cellRC: { row
 function resolveTableResizeHit(
   self: any,
   pageIdx: number,
-  pageX: number,
-  pageY: number,
+  _pageX: number,
+  _pageY: number,
 ): { tableRef: { sec: number; ppi: number; ci: number; pageHint?: number }; bboxes: any[]; pageBboxes: any[] } | null {
-  const tryTableRef = (tableRef: { sec: number; ppi: number; ci: number } | null) => {
-    if (!tableRef) return null;
-    try {
-      const bboxes = self.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci, pageIdx);
-      const pageBboxes = bboxes.filter((b: any) => b.pageIndex === pageIdx);
-      if (pageBboxes.length === 0) return null;
-      self.cachedTableRef = { ...tableRef, pageHint: pageIdx };
-      self.cachedCellBboxes = bboxes;
-      return { tableRef: self.cachedTableRef, bboxes, pageBboxes };
-    } catch {
-      return null;
-    }
-  };
-
+  // 일반 클릭에서 새 bbox를 만들면 대형/중첩 표 문서가 수 초 동안 멈춘다.
+  // 리사이즈 시작은 이미 확보된 bbox 캐시가 있을 때만 판정하고, 없으면 텍스트 클릭으로 처리한다.
   if (self.cachedTableRef && self.cachedCellBboxes?.length) {
     const pageBboxes = self.cachedCellBboxes.filter((b: any) => b.pageIndex === pageIdx);
     if (pageBboxes.length > 0) {
       return { tableRef: self.cachedTableRef, bboxes: self.cachedCellBboxes, pageBboxes };
     }
   }
-
-  try {
-    const hit = self.wasm.hitTest(pageIdx, pageX, pageY);
-    if (hit.parentParaIndex !== undefined && hit.controlIndex !== undefined && !hit.isTextBox) {
-      const resolved = tryTableRef({
-        sec: hit.sectionIndex,
-        ppi: hit.parentParaIndex,
-        ci: hit.controlIndex,
-      });
-      if (resolved) return resolved;
-    }
-  } catch { /* hitTest 실패 시 layout fallback으로 진행 */ }
-
-  try {
-    const layout = self.wasm.getPageControlLayout(pageIdx);
-    const tolerance = 4;
-    const table = (layout.controls || []).find((ctrl: any) =>
-      ctrl.type === 'table' &&
-      ctrl.secIdx !== undefined &&
-      ctrl.paraIdx !== undefined &&
-      ctrl.controlIdx !== undefined &&
-      pageX >= ctrl.x - tolerance &&
-      pageX <= ctrl.x + ctrl.w + tolerance &&
-      pageY >= ctrl.y - tolerance &&
-      pageY <= ctrl.y + ctrl.h + tolerance);
-    if (table) {
-      return tryTableRef({ sec: table.secIdx, ppi: table.paraIdx, ci: table.controlIdx });
-    }
-  } catch { /* layout fallback 실패 시 표 밖으로 처리 */ }
-
   return null;
 }
 
@@ -1790,18 +1748,19 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
   }
 
   // 셀 bbox 캐싱 (같은 표면 재사용)
+  // passive hover 중 새 bbox를 만들면 대형/중첩 표에서 커서 이동만으로도 수 초간 멈춘다.
+  // 이미 캐시된 표만 리사이즈 marker를 갱신하고, 실제 리사이즈 시작 판정은 mousedown 경로에서 처리한다.
   if (!this.cachedTableRef ||
       this.cachedTableRef.sec !== tableRef.sec ||
       this.cachedTableRef.ppi !== tableRef.ppi ||
       this.cachedTableRef.ci !== tableRef.ci ||
       this.cachedTableRef.pageHint !== pageIdx) {
-    try {
-      this.cachedCellBboxes = this.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci, pageIdx);
-      this.cachedTableRef = { ...tableRef, pageHint: pageIdx };
-    } catch {
-      this.cachedCellBboxes = null;
-      this.cachedTableRef = null;
+    this.tableResizeRenderer.clear();
+    hideProtectedCellHover(this);
+    if (this.container.style.cursor) {
+      this.container.style.cursor = '';
     }
+    return;
   }
 
   if (!this.cachedCellBboxes || this.cachedCellBboxes.length === 0) {
