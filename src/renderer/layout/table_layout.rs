@@ -5497,7 +5497,6 @@ impl LayoutEngine {
             table.page_break,
             crate::model::table::TablePageBreak::RowBreak
         ) && (table.col_count <= 2 || table.row_count > 5)
-            && !self.is_hwpx_source.get()
             && !row_has_top_and_bottom_flow;
         let allow_midpage_reset_absorb = self.is_hwpx_source.get() || row_has_top_and_bottom_flow;
         let rewind_internal_hard_break_orphan = Self::row_has_prior_rowspan_cover(table, row);
@@ -5684,7 +5683,6 @@ impl LayoutEngine {
             table.page_break,
             crate::model::table::TablePageBreak::RowBreak
         ) && (table.col_count <= 2 || table.row_count > 5)
-            && !self.is_hwpx_source.get()
             && !block_has_top_and_bottom_flow;
         let allow_midpage_reset_absorb = self.is_hwpx_source.get() || block_has_top_and_bottom_flow;
         for (i, cell) in cells.iter().enumerate() {
