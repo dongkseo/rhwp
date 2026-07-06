@@ -152,6 +152,25 @@ const sbPage = () => document.getElementById('sb-page')!;
 const sbSection = () => document.getElementById('sb-section')!;
 const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
 
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    window.setTimeout(finish, 50);
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+  });
+}
+
+async function updateLoadProgress(percent: number, label: string): Promise<void> {
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+  sbMessage().textContent = `파일 로딩 ${safePercent}% - ${label}`;
+  await waitForNextPaint();
+}
+
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -641,27 +660,34 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
   let normalizedDuringLoad = false;
   try {
     console.log('[initDoc] 1. 폰트 로딩 시작');
+    await updateLoadProgress(55, '폰트 준비 중...');
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
-        msg.textContent = `폰트 로딩 중... (${loaded}/${total})`;
+        const fontPercent = total > 0 ? 55 + Math.round((loaded / total) * 20) : 65;
+        msg.textContent = `파일 로딩 ${fontPercent}% - 폰트 로딩 중... (${loaded}/${total})`;
       }, extensionViewerSettings);
     }
     console.log('[initDoc] 2. 폰트 로딩 완료');
-    msg.textContent = displayName;
+    await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
     sbSection().textContent = `구역: 1 / ${totalSections}`;
     applySavedTextMarkSettings();
     console.log('[initDoc] 3. inputHandler deactivate');
     inputHandler?.deactivate();
     console.log('[initDoc] 4. canvasView loadDocument');
+    await updateLoadProgress(82, '페이지 렌더 준비 중...');
     canvasView?.loadDocument();
     console.log('[initDoc] 5. toolbar setEnabled');
+    await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     console.log('[initDoc] 7. inputHandler activateWithCaretPosition');
+    await updateLoadProgress(96, '편집 상태 초기화 중...');
     inputHandler?.activateWithCaretPosition();
+    await updateLoadProgress(100, '완료');
+    msg.textContent = displayName;
     console.log('[initDoc] 8. 완료');
 
     // #177: HWPX 비표준 lineseg 감지 → 경고 있으면 모달로 사용자 선택 요청
@@ -741,16 +767,16 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
 }
 
 async function loadFile(file: File, options: { skipUnsavedGuard?: boolean } = {}): Promise<boolean> {
-  const msg = sbMessage();
   try {
     if (!options.skipUnsavedGuard) {
       const canReplace = await confirmSaveBeforeReplacingDocument(commandServices);
       if (!canReplace) return false;
     }
-    msg.textContent = '파일 로딩 중...';
     const startTime = performance.now();
+    await updateLoadProgress(0, '파일 읽는 중...');
     const data = new Uint8Array(await file.arrayBuffer());
-    await loadBytes(data, file.name, null, startTime);
+    await updateLoadProgress(15, '파일 읽기 완료');
+    await loadBytes(data, file.name, null, startTime, { dataReadProgressShown: true });
     return true;
   } catch (error) {
     showLoadError(error);
@@ -763,13 +789,20 @@ async function loadBytes(
   fileName: string,
   fileHandle: typeof wasm.currentFileHandle,
   startTime = performance.now(),
+  options: { dataReadProgressShown?: boolean } = {},
 ): Promise<void> {
+  if (!options.dataReadProgressShown) {
+    await updateLoadProgress(0, '문서 데이터 준비 중...');
+  }
+  await updateLoadProgress(25, '문서 파싱 및 쪽 계산 중...');
   const docInfo = wasm.loadDocument(data, fileName);
+  await updateLoadProgress(45, '자동 저장 준비 중...');
   wasm.currentFileHandle = fileHandle;
   await autosaveManager.beginDocument(
     { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
     { discardPreviousDraft: true },
   );
+  await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
   await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지 (${elapsed.toFixed(1)}ms)`);
 }

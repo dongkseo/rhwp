@@ -133,16 +133,16 @@ function resolveTableResizeHit(
   pageIdx: number,
   pageX: number,
   pageY: number,
-): { tableRef: { sec: number; ppi: number; ci: number }; bboxes: any[]; pageBboxes: any[] } | null {
+): { tableRef: { sec: number; ppi: number; ci: number; pageHint?: number }; bboxes: any[]; pageBboxes: any[] } | null {
   const tryTableRef = (tableRef: { sec: number; ppi: number; ci: number } | null) => {
     if (!tableRef) return null;
     try {
-      const bboxes = self.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci);
+      const bboxes = self.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci, pageIdx);
       const pageBboxes = bboxes.filter((b: any) => b.pageIndex === pageIdx);
       if (pageBboxes.length === 0) return null;
-      self.cachedTableRef = tableRef;
+      self.cachedTableRef = { ...tableRef, pageHint: pageIdx };
       self.cachedCellBboxes = bboxes;
-      return { tableRef, bboxes, pageBboxes };
+      return { tableRef: self.cachedTableRef, bboxes, pageBboxes };
     } catch {
       return null;
     }
@@ -1793,10 +1793,11 @@ export function handleResizeHover(this: any, e: MouseEvent): void {
   if (!this.cachedTableRef ||
       this.cachedTableRef.sec !== tableRef.sec ||
       this.cachedTableRef.ppi !== tableRef.ppi ||
-      this.cachedTableRef.ci !== tableRef.ci) {
+      this.cachedTableRef.ci !== tableRef.ci ||
+      this.cachedTableRef.pageHint !== pageIdx) {
     try {
-      this.cachedCellBboxes = this.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci);
-      this.cachedTableRef = tableRef;
+      this.cachedCellBboxes = this.wasm.getTableCellBboxes(tableRef.sec, tableRef.ppi, tableRef.ci, pageIdx);
+      this.cachedTableRef = { ...tableRef, pageHint: pageIdx };
     } catch {
       this.cachedCellBboxes = null;
       this.cachedTableRef = null;

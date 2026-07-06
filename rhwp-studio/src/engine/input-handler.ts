@@ -301,7 +301,7 @@ export class InputHandler {
 
   // 표 경계선 hover 상태
   private resizeHoverRafId = 0;
-  private cachedTableRef: { sec: number; ppi: number; ci: number } | null = null;
+  private cachedTableRef: { sec: number; ppi: number; ci: number; pageHint?: number } | null = null;
   private cachedCellBboxes: CellBbox[] | null = null;
   private protectedCellHitCache: { key: string; protected: boolean } | null = null;
   private protectedCellHoverEl: HTMLDivElement | null = null;
