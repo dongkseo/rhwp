@@ -5276,8 +5276,80 @@ impl LayoutEngine {
             append_non_inline_units(&mut units, pi, para_non_inline_extra_h);
         }
 
+        let units =
+            Self::delay_empty_anchor_topandbottom_flow_units_before_hard_break(units, cell, table);
+
         let _ = (pad_top, pad_bottom); // [Task #1022] cell.height 필러 제거 — row_cut_content_height 가 셀별 max(cell.height, content+pad) 로 행 단계에서 정합.
         units
+    }
+
+    fn delay_empty_anchor_topandbottom_flow_units_before_hard_break(
+        units: Vec<CellUnit>,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+    ) -> Vec<CellUnit> {
+        if !matches!(
+            table.page_break,
+            crate::model::table::TablePageBreak::RowBreak
+        ) || table.common.treat_as_char
+        {
+            return units;
+        }
+        let mut has_future_visible_hard_break = vec![false; units.len()];
+        let mut seen_visible_hard_break = false;
+        for idx in (0..units.len()).rev() {
+            has_future_visible_hard_break[idx] = seen_visible_hard_break;
+            let unit = &units[idx];
+            if unit.hard_break_before && unit.vis_start < unit.vis_end {
+                seen_visible_hard_break = true;
+            }
+        }
+
+        let mut reordered = Vec::with_capacity(units.len());
+        let mut pending = Vec::new();
+        for (idx, unit) in units.into_iter().enumerate() {
+            if has_future_visible_hard_break[idx]
+                && Self::is_delayable_empty_anchor_topandbottom_flow_unit(cell, &unit)
+            {
+                pending.push(unit);
+                continue;
+            }
+            if unit.hard_break_before && unit.vis_start < unit.vis_end && !pending.is_empty() {
+                reordered.append(&mut pending);
+            }
+            reordered.push(unit);
+        }
+        reordered.append(&mut pending);
+        reordered
+    }
+
+    fn is_delayable_empty_anchor_topandbottom_flow_unit(
+        cell: &crate::model::table::Cell,
+        unit: &CellUnit,
+    ) -> bool {
+        if !Self::is_non_inline_control_flow_unit(unit) {
+            return false;
+        }
+        let Some(para) = cell.paragraphs.get(unit.para_idx) else {
+            return false;
+        };
+        para.text.trim().is_empty()
+            && para.controls.iter().any(|control| match control {
+                Control::Picture(pic) => {
+                    !pic.common.treat_as_char
+                        && pic.common.flow_with_text
+                        && matches!(pic.common.text_wrap, TextWrap::TopAndBottom)
+                        && matches!(pic.common.vert_rel_to, VertRelTo::Para)
+                }
+                Control::Shape(shape) => {
+                    let common = shape.common();
+                    !common.treat_as_char
+                        && common.flow_with_text
+                        && matches!(common.text_wrap, TextWrap::TopAndBottom)
+                        && matches!(common.vert_rel_to, VertRelTo::Para)
+                }
+                _ => false,
+            })
     }
 
     pub(crate) fn cell_units_content_height(
@@ -6728,6 +6800,13 @@ mod row_cut_tests {
         }
     }
 
+    fn empty_anchor_non_inline_picture_para(vpos_start: i32) -> Paragraph {
+        let mut para = non_inline_picture_para(vpos_start);
+        para.text.clear();
+        para.char_count = 0;
+        para
+    }
+
     #[test]
     fn test_topandbottom_flow_height_includes_margins() {
         // TopAndBottom + Para + flow_with_text 그림은 실제 렌더 y가
@@ -7055,6 +7134,52 @@ mod row_cut_tests {
         assert!(
             r2.end_cut[0] > spacer_unit,
             "다음 조각에서는 그림과 spacer 를 함께 전진"
+        );
+    }
+
+    #[test]
+    fn test_empty_anchor_topandbottom_flow_delayed_before_hard_break() {
+        // 빈 anchor 문단의 TopAndBottom 그림은 저장 vpos hard break 직전까지 지연될 수 있다.
+        // 이렇게 해야 그림은 다음 쪽 상단으로 넘기면서도 anchor 뒤 일반 텍스트는 이전 쪽에
+        // 계속 채울 수 있다.
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let t = rowbreak_table(vec![cell(
+            0,
+            0,
+            vec![
+                visible_text_para(1, 0),
+                empty_anchor_non_inline_picture_para(1200),
+                empty_overlay_para(1, 2400),
+                visible_text_para(2, 3600),
+                visible_text_para(1, 1000),
+            ],
+        )]);
+        let units = eng.cell_units(&t.cells[0], &t, &styles);
+        let picture_unit = units
+            .iter()
+            .position(|unit| {
+                unit.vis_start == unit.vis_end
+                    && !unit.empty_spacer
+                    && unit.nested_row.is_none()
+                    && !unit.mixed_nested_fragment
+            })
+            .expect("지연된 그림 flow 유닛 존재");
+        let hard_break_unit = units
+            .iter()
+            .position(|unit| unit.hard_break_before && unit.vis_start < unit.vis_end)
+            .expect("저장 vpos hard break 유닛 존재");
+
+        assert_eq!(
+            picture_unit + 1,
+            hard_break_unit,
+            "빈 anchor 그림 flow 유닛은 다음 가시 hard break 직전에 배치"
+        );
+        assert!(
+            units[..picture_unit]
+                .iter()
+                .any(|unit| unit.para_idx == 3 && unit.vis_start < unit.vis_end),
+            "그림 anchor 뒤 일반 텍스트는 그림보다 앞서 흐를 수 있어야 함"
         );
     }
 
