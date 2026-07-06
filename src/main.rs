@@ -3522,6 +3522,10 @@ fn dump_controls(args: &[String]) {
                             sa.current_width as f64 / 7200.0 * 25.4, sa.current_height as f64 / 7200.0 * 25.4,
                             pic.common.treat_as_char);
                         println!(
+                            "{}  [placement] wrap={:?} vert={:?}(off={}) horz={:?}(off={}) vert_align={:?}",
+                            prefix, pic.common.text_wrap, pic.common.vert_rel_to, pic.common.vertical_offset,
+                            pic.common.horz_rel_to, pic.common.horizontal_offset, pic.common.vert_align);
+                        println!(
                             "{}  [image_attr] effect={:?} brightness={} contrast={} watermark={}{}",
                             prefix,
                             pic.image_attr.effect,

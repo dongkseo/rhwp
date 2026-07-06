@@ -1653,12 +1653,18 @@ impl Paginator {
         for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
             match ctrl {
                 Control::Table(table) => {
-                    // 글앞으로 / 글뒤로: Shape처럼 취급 — 공간 차지 없음
-                    if matches!(
-                        table.common.text_wrap,
-                        crate::model::shape::TextWrap::InFrontOfText
-                            | crate::model::shape::TextWrap::BehindText
-                    ) {
+                    // 글앞으로 / 글뒤로: Shape처럼 취급 — 공간 차지 없음.
+                    // 단, treat_as_char(글자처럼 취급) 표는 인라인이므로 wrap 설정과
+                    // 무관하게 높이를 예약해야 한다(한컴 의미론). #1995: 전체폭 단일셀
+                    // 콜아웃 박스가 글앞으로로 저장돼도 흐름 높이를 차지해야 후속
+                    // 문단이 박스 위로 겹치지 않는다.
+                    if !table.common.treat_as_char
+                        && matches!(
+                            table.common.text_wrap,
+                            crate::model::shape::TextWrap::InFrontOfText
+                                | crate::model::shape::TextWrap::BehindText
+                        )
+                    {
                         st.current_items.push(PageItem::Shape {
                             para_index: para_idx,
                             control_index: ctrl_idx,

@@ -3524,8 +3524,42 @@ impl TypesetEngine {
                 }
             }
 
+            // [#1995] 한 문단에 근접-전면(near-full-page) non-TAC 그림이 여러 장이면
+            // (임베드 매뉴얼을 페이지 이미지로 삽입한 경우 등) 각 이미지는 공존 불가하므로
+            // 각각 한 페이지에 단독 배치해야 한다. 미수정 시 96장이 한 앵커에 스택되어
+            // 문서가 과소 페이지가 된다(오라클 268 vs rhwp 174). 한 문단에 본문높이의
+            // 60% 이상인 non-TAC 그림이 2장 이상일 때만 발동(정상 단일 그림 문단 불변).
+            let fullpage_img_body_h = st.base_available_height();
+            let fullpage_img_ctrls: Vec<usize> = if fullpage_img_body_h > 0.0 && !has_table {
+                para.controls
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(ci, c)| match c {
+                        Control::Picture(pic) if !pic.common.treat_as_char => {
+                            let h = hwpunit_to_px(pic.common.height as i32, self.dpi);
+                            (h >= fullpage_img_body_h * 0.6).then_some(ci)
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let is_multi_fullpage_img_para = fullpage_img_ctrls.len() >= 2;
+
             // 인라인 컨트롤 처리: 도형/그림/수식/각주 (Paginator engine.rs:509-525 동일)
             for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
+                // [#1995] 다수 전면 이미지: 각 전면 그림을 새 페이지에 단독 배치.
+                if is_multi_fullpage_img_para && fullpage_img_ctrls.contains(&ctrl_idx) {
+                    st.force_new_page();
+                    st.current_items.push(PageItem::Shape {
+                        para_index: para_idx,
+                        control_index: ctrl_idx,
+                    });
+                    // 페이지를 채워 후속 그림/문단이 다음 페이지로 밀리도록.
+                    st.current_height = fullpage_img_body_h;
+                    continue;
+                }
                 match ctrl {
                     Control::Shape(_) | Control::Picture(_) | Control::Equation(_) => {
                         if !has_table {
@@ -11419,11 +11453,19 @@ impl TypesetEngine {
                         && !oversized_multirow
                         && has_tac
                         && para_is_non_tac_overlay_table_anchor(para);
+                    // #703: 글앞으로/글뒤로 데코레이션(비-TAC) 표만 본문 흐름에서 제외.
+                    // treat_as_char(글자처럼 취급) 표는 wrap 설정과 무관하게 인라인이므로
+                    // 흐름 높이를 예약해야 한다(한컴 의미론). #1995: 전체폭 단일셀 콜아웃
+                    // 박스가 글앞으로로 저장돼도 zero-height Shape 로 빠지면 후속 문단이
+                    // 박스 위로 겹치고 문서가 과소 페이지로 압축된다. 단일컬럼 케이스만
+                    // 가드하고, multicol overlay anchor 경로(자체 TAC 판정 보유)는 유지.
                     if matches!(
                         table.common.text_wrap,
                         crate::model::shape::TextWrap::InFrontOfText
                             | crate::model::shape::TextWrap::BehindText
-                    ) && ((st.col_count == 1 && !oversized_multirow)
+                    ) && ((st.col_count == 1
+                        && !oversized_multirow
+                        && !table.common.treat_as_char)
                         || multicol_empty_overlay_anchor
                         || multicol_tac_host_overlay_anchor)
                     {
@@ -15803,6 +15845,66 @@ mod tests {
             1,
             "[BUG #703] typeset 도 1 페이지여야 함. 결함 시 BehindText 표 height ≈800 px 가 \
              cur_h 에 가산되어 후속 paragraph 가 다음 페이지로 밀림 (RED)",
+        );
+    }
+
+    /// Issue #1995: 한 문단에 근접-전면(near-full-page) non-TAC 이미지가 여러 장이면
+    /// 각 이미지는 공존 불가하므로 각각 한 페이지에 단독 배치되어야 한다.
+    ///
+    /// 결함(수정 전): 임베드 매뉴얼을 페이지 이미지로 삽입한 문서(한 문단에 전면 이미지
+    /// 수십~백장)에서 rhwp 가 전부 한 앵커에 스택 → 문서가 과소 페이지(예: rhwp 174 vs
+    /// 한글 268). 수정: typeset 인라인 컨트롤 방출 시 각 전면 이미지를 force_new_page 로
+    /// 개별 페이지에 배치.
+    #[test]
+    fn test_typeset_1995_multi_fullpage_images_split_pages() {
+        use crate::model::shape::TextWrap;
+        let engine = TypesetEngine::with_default_dpi();
+        let paginator = Paginator::with_default_dpi();
+        let styles = ResolvedStyleSet::default();
+        let page_def = a4_page_def();
+        let col_def = ColumnDef::default();
+        let composed: Vec<ComposedParagraph> = Vec::new();
+
+        // 전면 non-TAC 이미지 3장 (각 60000 HU ≈ 800px, 본문 60%+ 점유, wrap=Square)
+        let make_pic = || {
+            let mut pic = crate::model::image::Picture::default();
+            pic.common.treat_as_char = false;
+            pic.common.text_wrap = TextWrap::Square;
+            pic.common.width = 51974;
+            pic.common.height = 60000;
+            crate::model::control::Control::Picture(Box::new(pic))
+        };
+        let host_para = Paragraph {
+            line_segs: vec![LineSeg {
+                line_height: 1000,
+                line_spacing: 600,
+                ..Default::default()
+            }],
+            controls: vec![make_pic(), make_pic(), make_pic()],
+            ..Default::default()
+        };
+        let paras = vec![host_para];
+
+        let (_paginator_result, measured) =
+            paginator.paginate(&paras, &composed, &styles, &page_def, &col_def, 0);
+        let typeset_result = engine.typeset_section(
+            &paras,
+            &composed,
+            &styles,
+            &page_def,
+            &col_def,
+            0,
+            &measured.tables,
+            false,
+            &std::collections::HashSet::new(),
+        );
+
+        // 전면 이미지 3장 → 각각 한 페이지 (>= 3). 결함 시 1 페이지에 스택(RED).
+        assert!(
+            typeset_result.pages.len() >= 3,
+            "[#1995] 전면 non-TAC 이미지 3장은 각각 한 페이지에 단독 배치되어야 함(>= 3 페이지). \
+             실제 {} 페이지 — 미수정 시 한 앵커에 스택",
+            typeset_result.pages.len(),
         );
     }
 }
