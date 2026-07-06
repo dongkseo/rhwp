@@ -44,6 +44,8 @@ const DRAG_SCROLL_MIN_STEP_PX = 2;
 const DRAG_SCROLL_MAX_STEP_PX = 20;
 const PX_TO_RAW_2X = 150;
 const PX_TO_HWPUNIT = 75;
+const DEFERRED_PAGINATION_AUTO_FLUSH_DELAY_MS = 10_000;
+const DEFERRED_PAGINATION_AUTO_FLUSH_PAGE_LIMIT = 30;
 
 type FormatCopyState = {
   charProps: Partial<CharProperties>;
@@ -306,6 +308,7 @@ export class InputHandler {
   private protectedCellHitCache: { key: string; protected: boolean } | null = null;
   private protectedCellHoverEl: HTMLDivElement | null = null;
   private deferredPaginationFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private deferredPaginationPending = false;
 
   // 표 경계선 리사이즈 드래그 상태
   private isResizeDragging = false;
@@ -2232,7 +2235,7 @@ export class InputHandler {
 
   /** 편집 후 처리: 재렌더링 + 캐럿 갱신 */
   private afterEdit(): void {
-    this.cancelDeferredPaginationFlush();
+    this.flushDeferredPaginationIfNeeded('before-full-edit', false);
     this.lastCellKey = null; // 편집 후 셀 bbox 캐시 무효화
     this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
@@ -2257,21 +2260,46 @@ export class InputHandler {
 
   private scheduleDeferredPaginationFlush(): void {
     this.cancelDeferredPaginationFlush();
+    this.deferredPaginationPending = true;
+    if (!this.shouldAutoFlushDeferredPagination()) {
+      return;
+    }
     this.deferredPaginationFlushTimer = setTimeout(() => {
-      this.deferredPaginationFlushTimer = null;
-      try {
-        this.wasm.flushDeferredPagination();
-      } catch (err) {
-        console.warn('[InputHandler] 지연 페이지네이션 flush 실패:', err);
-      }
-      this.eventBus.emit('document-changed', 'deferred-pagination-flush');
-    }, 1200);
+      this.flushDeferredPaginationIfNeeded('idle-auto');
+    }, DEFERRED_PAGINATION_AUTO_FLUSH_DELAY_MS);
   }
 
   private cancelDeferredPaginationFlush(): void {
     if (this.deferredPaginationFlushTimer) {
       clearTimeout(this.deferredPaginationFlushTimer);
       this.deferredPaginationFlushTimer = null;
+    }
+  }
+
+  private shouldAutoFlushDeferredPagination(): boolean {
+    return this.wasm.pageCount <= DEFERRED_PAGINATION_AUTO_FLUSH_PAGE_LIMIT;
+  }
+
+  hasDeferredPaginationPending(): boolean {
+    return this.deferredPaginationPending;
+  }
+
+  flushDeferredPaginationIfNeeded(reason = 'manual', emitChange = true): boolean {
+    const shouldFlush = this.deferredPaginationPending || this.deferredPaginationFlushTimer !== null;
+    this.cancelDeferredPaginationFlush();
+    if (!shouldFlush) return false;
+
+    try {
+      this.wasm.flushDeferredPagination();
+      this.deferredPaginationPending = false;
+      if (emitChange) {
+        this.eventBus.emit('document-changed', `deferred-pagination-flush:${reason}`);
+      }
+      return true;
+    } catch (err) {
+      this.deferredPaginationPending = true;
+      console.warn('[InputHandler] 지연 페이지네이션 flush 실패:', err);
+      return false;
     }
   }
 
