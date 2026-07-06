@@ -748,19 +748,8 @@ impl LayoutEngine {
                         total += spacing_after;
                     }
                     if start < end {
-                        total += para
-                            .controls
-                            .iter()
-                            .map(|ctrl| match ctrl {
-                                Control::Picture(pic) => {
-                                    self.cell_non_inline_control_flow_height(&pic.common)
-                                }
-                                Control::Shape(shape) => {
-                                    self.cell_non_inline_control_flow_height(shape.common())
-                                }
-                                _ => 0.0,
-                            })
-                            .sum::<f64>();
+                        total +=
+                            self.paragraph_cell_non_inline_controls_flow_height(&para.controls);
                     }
                 }
                 total
@@ -1095,6 +1084,7 @@ impl LayoutEngine {
                         }
                         _ => inner_area.x,
                     };
+                    let mut rendered_top_and_bottom_non_inline = false;
 
                     for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
                         match ctrl {
@@ -1259,7 +1249,14 @@ impl LayoutEngine {
                                             Some(&cell_context),
                                         );
                                     }
-                                    para_y += self.non_inline_control_flow_height(&pic.common);
+                                    if matches!(
+                                        pic.common.text_wrap,
+                                        crate::model::shape::TextWrap::TopAndBottom
+                                    ) {
+                                        rendered_top_and_bottom_non_inline = true;
+                                    } else {
+                                        para_y += self.non_inline_control_flow_height(&pic.common);
+                                    }
                                 }
                                 has_preceding_text = true;
                             }
@@ -1354,9 +1351,17 @@ impl LayoutEngine {
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
                                     );
+                                    let is_top_and_bottom_shape = matches!(
+                                        shape.common().text_wrap,
+                                        crate::model::shape::TextWrap::TopAndBottom
+                                    );
                                     let mut shape_flow_h =
                                         self.cell_non_inline_control_flow_height(shape.common());
-                                    if shape_flow_h <= 0.0 {
+                                    if is_top_and_bottom_shape {
+                                        rendered_top_and_bottom_non_inline = true;
+                                        shape_flow_h = 0.0;
+                                    }
+                                    if !is_top_and_bottom_shape && shape_flow_h <= 0.0 {
                                         shape_flow_h =
                                             if cut_units.is_some() && visible_non_inline_controls {
                                                 hwpunit_to_px(
@@ -1617,6 +1622,10 @@ impl LayoutEngine {
                             }
                             _ => {}
                         }
+                    }
+                    if rendered_top_and_bottom_non_inline {
+                        para_y +=
+                            self.paragraph_top_and_bottom_non_inline_flow_height(&para.controls);
                     }
                 }
 
