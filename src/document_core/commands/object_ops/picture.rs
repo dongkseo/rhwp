@@ -474,6 +474,7 @@ impl DocumentCore {
         // 한컴 산출물 Scenario A~D 분석: tac false→true 시 picture 의 control 위치는
         // 불변이고, 4 필드만 갱신 (treat_as_char / h/v_rel_to=Para / h/v_offset=0 /
         // parent line_segs[0]). text/char_offsets/paragraph 수 변화 없음.
+        let mut reflow_text_para_after_floating = false;
         if should_migrate_to_inline || should_migrate_to_floating {
             let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
                 HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
@@ -518,9 +519,24 @@ impl DocumentCore {
                     }
                     _ => {}
                 }
-            } else {
+            } else if para.text.is_empty() && para.char_offsets.is_empty() {
                 Self::migrate_empty_picture_para_inline_to_floating(para);
+            } else if !para.text.is_empty() && parent_para_idx < body_len {
+                // 텍스트가 있는 문단: false→true 마이그레이션이 line_segs[0] 를
+                // 그림 높이로 키워 놓았으므로, 그림이 inline 흐름에서 빠지는 시점에
+                // 남은 인라인 콘텐츠 기준으로 재계산해야 한다. 그림 삭제 경로
+                // (reflow_paragraph_line_segs_after_control_delete) 와 동일한 원리.
+                // paragraph &mut borrow 가 끝난 뒤 reflow_paragraph 로 수행.
+                // 텍스트 없이 컨트롤 문자만 있는 문단(표 문단 등)은 기존 동작 유지.
+                reflow_text_para_after_floating = true;
             }
+        }
+        if reflow_text_para_after_floating {
+            self.reflow_paragraph(section_idx, parent_para_idx);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                parent_para_idx,
+            );
         }
         // 캡션 생성 시 AutoNumber 재할당 + 텍스트 생성 (본문 path 만 — 머리말/꼬리말은 별도).
         if caption_created {
