@@ -139,7 +139,20 @@ impl LayoutEngine {
             )
             && vert_off_signed > 0
         {
-            y_start + hwpunit_to_px(vert_off_signed, self.dpi)
+            // [#2015] host 텍스트가 pre-emit 된 경우, 진입 y_start 는 이미
+            // para_start+host_h(host 텍스트 끝) 흐름 위치다. vert_offset 은 para_start 기준
+            // 오프셋이므로 그대로 더하면 host_h 만큼 이중계상되어 표가 아래로 밀린다
+            // (부동 RowBreak 표 91.2px 오버플로우). 표의 참 상단 = para_start+vert_off =
+            // y_start+(vert_off−host_h). typeset 예산도 동일 감액을 적용한다.
+            // host pre-emit 이 아니면 host_h=0 → 종전과 동일(회귀 없음).
+            let host_h = self
+                .pre_emitted_host_heights
+                .borrow()
+                .get(&para_index)
+                .copied()
+                .unwrap_or(0.0);
+            let eff_off = (hwpunit_to_px(vert_off_signed, self.dpi) - host_h).max(0.0);
+            y_start + eff_off
         } else {
             y_start
         };

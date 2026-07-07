@@ -331,6 +331,10 @@ struct TypesetState {
     /// [Task #1755] 이월 전 쪽에 host 텍스트 줄을 PartialParagraph 로 pre-emit 한 문단 —
     /// layout 의 마지막 fragment 뒤 host 렌더 억제 신호(PaginationResult 로 전달).
     pre_emitted_host_paras: std::collections::HashSet<usize>,
+    /// [#2015] pre-emit 한 host 텍스트의 실제 높이(px). vert_offset(para_start 기준)를
+    /// current_height(=para_start+host_h) 기준으로 환산할 때 감액분으로 쓴다. typeset 예산과
+    /// layout(table_partial.rs) 배치가 동일 감액을 적용해 정합한다.
+    pre_emitted_host_heights: std::collections::HashMap<usize, f64>,
     /// [Task #359] 다음 pi 가 vpos-reset 가드를 발동할 예정 → 현재 pi 의 fit 안전마진 비활성화.
     /// 단독 항목 페이지 발생 차단용.
     skip_safety_margin_once: bool,
@@ -1419,6 +1423,7 @@ impl TypesetState {
             deferred_table_controls: Vec::new(),
             prefilled_paras: std::collections::HashSet::new(),
             pre_emitted_host_paras: std::collections::HashSet::new(),
+            pre_emitted_host_heights: std::collections::HashMap::new(),
             skip_safety_margin_once: false,
             skip_footnote_margin_once: false,
             tail_overflow_tolerance_once: 0.0,
@@ -3806,6 +3811,7 @@ impl TypesetEngine {
             wrap_around_paras: Vec::new(),
             hidden_empty_paras: st.hidden_empty_paras,
             pre_emitted_host_paras: st.pre_emitted_host_paras,
+            pre_emitted_host_heights: st.pre_emitted_host_heights,
             endnotes: st.endnotes,
             endnote_paragraphs: st.endnote_paragraphs,
             endnote_para_sources: st.endnote_para_sources,
@@ -12244,6 +12250,8 @@ impl TypesetEngine {
         });
         st.current_height += host_h;
         st.pre_emitted_host_paras.insert(para_idx);
+        // [#2015] vert_offset 이중계상 보정용 host 높이 기록.
+        st.pre_emitted_host_heights.insert(para_idx, host_h);
         true
     }
 
@@ -13213,7 +13221,19 @@ impl TypesetEngine {
                 // HwpUnit=u32 이므로 음수 (u32 wrap) 는 i32 로 캐스트 후 확인.
                 let v_off_i32 = table.common.vertical_offset as i32;
                 if is_para_topbottom && v_off_i32 > 0 {
-                    hwpunit_to_px(v_off_i32, self.dpi)
+                    let raw = hwpunit_to_px(v_off_i32, self.dpi);
+                    // [#2015] host 텍스트가 pre-emit(pre_emit_visible_rowbreak_host_text)
+                    // 되어 current_height 를 para_start → para_start+host_h 로 전진시킨 경우,
+                    // vert_off(para_start 기준 표 오프셋)를 그대로 빼면 host_h 만큼 이중계상되어
+                    // 앵커가 body 바닥 아래로 밀린다(91.2px 오버플로우). 표의 참 오프셋은
+                    // current_height 기준 (vert_off − host_h) 이므로 pre-emit host_h 만큼 감액.
+                    // layout(table_partial.rs) 도 동일 감액을 적용해 typeset 컷과 정합한다.
+                    let host_h = st
+                        .pre_emitted_host_heights
+                        .get(&para_idx)
+                        .copied()
+                        .unwrap_or(0.0);
+                    (raw - host_h).max(0.0)
                 } else {
                     0.0
                 }

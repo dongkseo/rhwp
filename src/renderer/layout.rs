@@ -939,6 +939,8 @@ pub struct LayoutEngine {
     /// [Task #1755] 지연 이월 표의 host 텍스트 줄이 typeset 에서 이월 전 쪽에
     /// PartialParagraph 로 pre-emit 된 문단 집합 — 마지막 fragment 뒤 host 렌더 억제.
     pre_emitted_host_paras: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// [#2015] pre-emit 한 host 텍스트 높이(px) — vert_offset 이중계상 보정용.
+    pre_emitted_host_heights: std::cell::RefCell<std::collections::HashMap<usize, f64>>,
     /// 렌더용 가상 미주 문단 시작 인덱스
     endnote_para_base: std::cell::Cell<usize>,
     /// 가상 미주 문단별 원본 위치
@@ -1037,6 +1039,7 @@ impl LayoutEngine {
             last_item_endnote_equation_tail_line_box: std::cell::Cell::new(false),
             hidden_empty_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
             pre_emitted_host_paras: std::cell::RefCell::new(std::collections::HashSet::new()),
+            pre_emitted_host_heights: std::cell::RefCell::new(std::collections::HashMap::new()),
             endnote_para_base: std::cell::Cell::new(usize::MAX),
             endnote_para_sources: std::cell::RefCell::new(Vec::new()),
             endnote_between_notes_hu: std::cell::Cell::new(0),
@@ -1241,6 +1244,11 @@ impl LayoutEngine {
     /// [Task #1755] 이월 전 쪽에 host 텍스트가 pre-emit 된 문단 집합 설정
     pub fn set_pre_emitted_host_paras(&self, paras: &std::collections::HashSet<usize>) {
         *self.pre_emitted_host_paras.borrow_mut() = paras.clone();
+    }
+
+    /// [#2015] pre-emit 된 host 텍스트 높이 맵 설정 (vert_offset 이중계상 보정용)
+    pub fn set_pre_emitted_host_heights(&self, heights: &std::collections::HashMap<usize, f64>) {
+        *self.pre_emitted_host_heights.borrow_mut() = heights.clone();
     }
 
     /// 렌더용 가상 미주 문단과 원본 Endnote 내부 문단의 매핑을 설정한다.
