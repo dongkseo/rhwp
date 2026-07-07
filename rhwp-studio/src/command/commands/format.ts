@@ -472,7 +472,7 @@ export const formatCommands: CommandDef[] = [
           dialog.open(ref.sec, ref.ppi, ref.ci, ref.cellIdx, ref.cellParaIdx, ref.noteRef);
           return;
         }
-        const dialog = new PicturePropsDialog(services.wasm, services.eventBus);
+        const dialog = new PicturePropsDialog(services.wasm, services.eventBus, services);
         dialog.open(ref.sec, ref.ppi, ref.ci, ref.type);
         return;
       }

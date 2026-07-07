@@ -762,60 +762,63 @@ export class InputHandler {
       `그림입니다.\r\n원본 그림의 이름: ${fileName}\r\n원본 그림의 크기: 가로 ${naturalWidth}pixel, 세로 ${naturalHeight}pixel`;
 
     try {
-      const result = this.wasm.insertPicture(
-        sec,
-        paraIdx,
-        hit.charOffset,
-        cellPathJson,
-        data,
-        width,
-        height,
-        naturalWidth,
-        naturalHeight,
-        ext,
-        desc,
-        undefined,
-        undefined,
-      );
-      if (!result.ok) {
-        return {
-          ok: false,
-          error: (result as any).error || '삽입 위치 또는 이미지 정보를 확인할 수 없습니다.',
-        };
-      }
-
-      const logicalOffset = typeof result.logicalOffset === 'number'
-        ? result.logicalOffset
-        : hit.charOffset + 1;
-      const cursorAfter: DocumentPosition = inTextBox
-        ? { ...hit, charOffset: logicalOffset }
-        : {
-            sectionIndex: sec,
-            paragraphIndex: result.paraIdx ?? paraIdx,
-            charOffset: logicalOffset,
-          };
-
-      if (inTextBox && cellPath.length > 0) {
-        this.wasm.setCellPicturePropertiesByPath(
+      // 삽입 + 인라인 전환을 하나의 스냅샷으로 기록 (Undo 지원, pasteImage 경로와 동일 패턴)
+      let insertError: string | null = null;
+      this.executeOperation({ kind: 'snapshot', operationType: 'insertPicture', operation: (wasm: WasmBridge) => {
+        const result = wasm.insertPicture(
           sec,
           paraIdx,
-          cellPath,
-          result.controlIdx,
-          { treatAsChar: true },
+          hit.charOffset,
+          cellPathJson,
+          data,
+          width,
+          height,
+          naturalWidth,
+          naturalHeight,
+          ext,
+          desc,
+          undefined,
+          undefined,
         );
-      } else {
-        this.wasm.setPictureProperties(
-          sec,
-          result.paraIdx ?? paraIdx,
-          result.controlIdx,
-          { treatAsChar: true },
-        );
+        if (!result.ok) {
+          insertError = (result as any).error || '삽입 위치 또는 이미지 정보를 확인할 수 없습니다.';
+          return hit;
+        }
+
+        const logicalOffset = typeof result.logicalOffset === 'number'
+          ? result.logicalOffset
+          : hit.charOffset + 1;
+        const cursorAfter: DocumentPosition = inTextBox
+          ? { ...hit, charOffset: logicalOffset }
+          : {
+              sectionIndex: sec,
+              paragraphIndex: result.paraIdx ?? paraIdx,
+              charOffset: logicalOffset,
+            };
+
+        if (inTextBox && cellPath.length > 0) {
+          wasm.setCellPicturePropertiesByPath(
+            sec,
+            paraIdx,
+            cellPath,
+            result.controlIdx,
+            { treatAsChar: true },
+          );
+        } else {
+          wasm.setPictureProperties(
+            sec,
+            result.paraIdx ?? paraIdx,
+            result.controlIdx,
+            { treatAsChar: true },
+          );
+        }
+        this.cursor.clearSelection();
+        return cursorAfter;
+      }});
+      if (insertError) {
+        return { ok: false, error: insertError };
       }
-      this.cursor.clearSelection();
-      this.cursor.moveTo(cursorAfter);
-      this.cursor.resetPreferredX();
       this.active = true;
-      this.afterEdit();
       this.focusTextarea();
       return { ok: true };
     } catch (err) {

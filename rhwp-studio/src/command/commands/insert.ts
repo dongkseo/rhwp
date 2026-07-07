@@ -322,7 +322,7 @@ export const insertCommands: CommandDef[] = [
         return;
       }
       if (!picturePropsDialog) {
-        picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus);
+        picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus, services);
       }
       // [Task #825] 머리말/꼬리말 그림은 ref.headerFooter 동반 — dialog 에 전달.
       // [Task #1138] 표 셀 내 도형(shape/line) 은 cellPath 구성하여 dialog 에 전달

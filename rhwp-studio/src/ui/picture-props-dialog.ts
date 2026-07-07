@@ -13,6 +13,7 @@
 import type { PictureProperties, ShapeProperties, CellPathLike } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 import { userSettings } from '@/core/user-settings';
 import { enableDialogDrag } from './dialog-drag';
 
@@ -57,6 +58,8 @@ export class PicturePropsDialog {
 
   private wasm: WasmBridge;
   private eventBus: EventBus;
+  /** undo 기록 라우팅용 (없으면 wasm 직접 호출 fallback). */
+  private services: CommandServices | undefined;
 
   // 탭
   private tabs: HTMLButtonElement[] = [];
@@ -217,9 +220,10 @@ export class PicturePropsDialog {
   private shadowDirBtns: HTMLButtonElement[] = [];
   private shadowTransInput!: HTMLInputElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus) {
+  constructor(wasm: WasmBridge, eventBus: EventBus, services?: CommandServices) {
     this.wasm = wasm;
     this.eventBus = eventBus;
+    this.services = services;
   }
 
   // ════════════════════════════════════════════════════════
@@ -2217,31 +2221,48 @@ export class PicturePropsDialog {
       // - picture: headerFooter > cellPath > 외부
       //   [Task #1151 v4] 셀 안 inline picture 는 setCellPicturePropertiesByPath
       //   wasm API 호출. 본문 picture (cellPath 없음) 는 기존 setPictureProperties.
-      if (this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') {
-        if (this.cellPath) {
-          this.wasm.setCellShapePropertiesByPath(
+      const applyProps = () => {
+        if (this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') {
+          if (this.cellPath) {
+            this.wasm.setCellShapePropertiesByPath(
+              this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
+            );
+          } else {
+            this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+          }
+        } else if (this.headerFooter) {
+          // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
+          // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported
+          // 에러 반환 — 본 dialog 에서는 일반 속성 변경만 허용).
+          this.wasm.setHeaderFooterPictureProperties(
+            this.sec, this.headerFooter.outerParaIdx, this.headerFooter.outerControlIdx,
+            this.para, this.ci, updated,
+          );
+        } else if (this.cellPath) {
+          // [Task #1151 v4] 셀 안 inline picture — by_path API 호출.
+          this.wasm.setCellPicturePropertiesByPath(
             this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
           );
         } else {
-          this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
+          this.wasm.setPictureProperties(this.sec, this.para, this.ci, updated);
         }
-      } else if (this.headerFooter) {
-        // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
-        // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported
-        // 에러 반환 — 본 dialog 에서는 일반 속성 변경만 허용).
-        this.wasm.setHeaderFooterPictureProperties(
-          this.sec, this.headerFooter.outerParaIdx, this.headerFooter.outerControlIdx,
-          this.para, this.ci, updated,
-        );
-      } else if (this.cellPath) {
-        // [Task #1151 v4] 셀 안 inline picture — by_path API 호출.
-        this.wasm.setCellPicturePropertiesByPath(
-          this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
-        );
+      };
+      // 개체 속성 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'objectProps',
+          operation: () => {
+            applyProps();
+            return ih.getCursorPosition();
+          },
+        });
       } else {
-        this.wasm.setPictureProperties(this.sec, this.para, this.ci, updated);
+        applyProps();
+        this.eventBus.emit('document-changed');
       }
-      this.eventBus.emit('document-changed');
     }
     this.hide();
   }
