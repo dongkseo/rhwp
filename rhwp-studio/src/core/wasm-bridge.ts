@@ -284,6 +284,15 @@ export class WasmBridge {
     return this.doc?.pageCount() ?? 0;
   }
 
+  flushDeferredPagination(): { ok: boolean; pageCount?: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const d = this.doc as unknown as { flushDeferredPagination?: () => string };
+    if (typeof d.flushDeferredPagination !== 'function') {
+      return { ok: true, pageCount: this.pageCount };
+    }
+    return JSON.parse(d.flushDeferredPagination());
+  }
+
   getSectionCount(): number {
     return this.doc?.getSectionCount() ?? 0;
   }
@@ -698,6 +707,25 @@ export class WasmBridge {
 
   insertTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+  }
+
+  insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): string {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const d = this.doc as unknown as {
+      insertTextInCellDeferredPagination?: (
+        sec: number,
+        parentPara: number,
+        controlIdx: number,
+        cellIdx: number,
+        cellParaIdx: number,
+        charOffset: number,
+        text: string,
+      ) => string;
+    };
+    if (typeof d.insertTextInCellDeferredPagination === 'function') {
+      return d.insertTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+    }
     return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
   }
 

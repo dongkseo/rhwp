@@ -4,7 +4,9 @@
 //!
 //! 재현 문서 (tracked 공개 샘플):
 //! `samples/issue1949_giant_cell_nested_tables_perf.hwpx` (해양수산부 별표, 0.3MB).
-//! 바깥 3×1 RowBreak 표의 셀[2] = 2507문단 + 중첩표 수십 개, 112쪽에 걸침.
+//! `samples/issue1949_giant_cell_nested_tables_perf.hwp` (같은 기준의 HWP 저장본).
+//! 바깥 3×1 RowBreak 표의 셀[2] = 2507문단 + 중첩표 수십 개, 한컴 2024 기준
+//! PDF와 같이 115쪽에 걸침.
 //!
 //! 정정: `cell_units`(셀 콘텐츠 유닛)를 셀 포인터 키로 메모이즈(`LayoutEngine`,
 //! 재조판 경계에서 clear). O(pages × cell) → O(cell + pages). 수정 후 전체 렌더
@@ -27,10 +29,13 @@ fn load_doc(rel: &str) -> rhwp::wasm_api::HwpDocument {
 fn giant_cell_rowbreak_table_renders_all_pages_without_blowup() {
     let doc = load_doc("samples/issue1949_giant_cell_nested_tables_perf.hwpx");
     let pages = doc.page_count();
-    // 거대 셀이 112쪽에 걸친다(수정 전에도 페이지네이션은 정상, 폭주는 렌더 단계).
-    assert!(
-        (90..=130).contains(&pages),
-        "issue1949: 페이지 수 {pages} 가 기대 범위(90..=130) 밖",
+    assert_eq!(pages, 115, "issue1949/1999: 기준 PDF와 쪽수 불일치");
+
+    let hwp_doc = load_doc("samples/issue1949_giant_cell_nested_tables_perf.hwp");
+    assert_eq!(
+        hwp_doc.page_count(),
+        115,
+        "issue1949/1999: HWP 저장본이 기준 PDF와 쪽수 불일치"
     );
 
     // 전체 페이지 렌더 — 캐시가 없으면 O(pages×cell) 로 사실상 완료 불가.

@@ -826,6 +826,44 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 표 셀 내부 문단에 텍스트를 삽입하되 전체 페이지네이션은 호출자가 지연한다.
+    ///
+    /// Studio의 page-local 단일 입력처럼 현재 페이지를 먼저 갱신하고 idle 시점에
+    /// 전체 페이지네이션을 한 번만 수행하는 경로에서 사용한다.
+    #[wasm_bindgen(js_name = insertTextInCellDeferredPagination)]
+    pub fn insert_text_in_cell_deferred_pagination(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        cell_para_idx: u32,
+        char_offset: u32,
+        text: &str,
+    ) -> Result<String, JsValue> {
+        self.insert_text_in_cell_native_deferred_pagination(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            cell_para_idx as usize,
+            char_offset as usize,
+            text,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 지연된 페이지네이션을 즉시 flush하고 최신 페이지 수를 반환한다.
+    #[wasm_bindgen(js_name = flushDeferredPagination)]
+    pub fn flush_deferred_pagination(&mut self) -> Result<String, JsValue> {
+        self.invalidate_page_tree_cache();
+        self.paginate();
+        Ok(format!(
+            "{{\"ok\":true,\"pageCount\":{}}}",
+            self.page_count()
+        ))
+    }
+
     /// `insertTextInCell` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ sectionIdx, parentParaIdx, controlIdx, cellIdx, cellParaIdx,

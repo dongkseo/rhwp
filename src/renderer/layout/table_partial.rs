@@ -748,19 +748,8 @@ impl LayoutEngine {
                         total += spacing_after;
                     }
                     if start < end {
-                        total += para
-                            .controls
-                            .iter()
-                            .map(|ctrl| match ctrl {
-                                Control::Picture(pic) => {
-                                    self.cell_non_inline_control_flow_height(&pic.common)
-                                }
-                                Control::Shape(shape) => {
-                                    self.cell_non_inline_control_flow_height(shape.common())
-                                }
-                                _ => 0.0,
-                            })
-                            .sum::<f64>();
+                        total +=
+                            self.paragraph_cell_non_inline_controls_flow_height(&para.controls);
                     }
                 }
                 total
@@ -1095,6 +1084,7 @@ impl LayoutEngine {
                         }
                         _ => inner_area.x,
                     };
+                    let mut rendered_top_and_bottom_non_inline = false;
 
                     for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
                         match ctrl {
@@ -1159,22 +1149,30 @@ impl LayoutEngine {
                                 } else {
                                     // 비인라인 이미지: TopAndBottom+Para 는 row height 증가와
                                     // 무관하게 LINE_SEG 기준 anchor 를 유지한다.
-                                    let anchor_y = if matches!(
+                                    let top_and_bottom_para = matches!(
                                         pic.common.text_wrap,
                                         crate::model::shape::TextWrap::TopAndBottom
                                     ) && matches!(
                                         pic.common.vert_rel_to,
                                         crate::model::shape::VertRelTo::Para
-                                    ) {
-                                        para.line_segs
-                                            .first()
-                                            .filter(|seg| seg.vertical_pos >= 0)
-                                            .map(|seg| {
-                                                cell_y
-                                                    + pad_top
-                                                    + hwpunit_to_px(seg.vertical_pos, self.dpi)
-                                            })
-                                            .unwrap_or(para_y_before_compose)
+                                    );
+                                    let anchor_y = if top_and_bottom_para {
+                                        if cut_units.is_some() && visible_non_inline_controls {
+                                            // continuation 조각에 개체 flow 유닛이 실제 포함된 경우
+                                            // 원본 line_seg vertical_pos 는 전체 셀 내부 좌표다. 그대로
+                                            // 쓰면 다음 쪽 상단에 와야 할 그림이 조각 하단으로 밀린다.
+                                            para_y_before_compose
+                                        } else {
+                                            para.line_segs
+                                                .first()
+                                                .filter(|seg| seg.vertical_pos >= 0)
+                                                .map(|seg| {
+                                                    cell_y
+                                                        + pad_top
+                                                        + hwpunit_to_px(seg.vertical_pos, self.dpi)
+                                                })
+                                                .unwrap_or(para_y_before_compose)
+                                        }
                                     } else {
                                         para_y
                                     };
@@ -1259,7 +1257,14 @@ impl LayoutEngine {
                                             Some(&cell_context),
                                         );
                                     }
-                                    para_y += self.non_inline_control_flow_height(&pic.common);
+                                    if matches!(
+                                        pic.common.text_wrap,
+                                        crate::model::shape::TextWrap::TopAndBottom
+                                    ) {
+                                        rendered_top_and_bottom_non_inline = true;
+                                    } else {
+                                        para_y += self.non_inline_control_flow_height(&pic.common);
+                                    }
                                 }
                                 has_preceding_text = true;
                             }
@@ -1354,9 +1359,17 @@ impl LayoutEngine {
                                         clamp_header_negative_para_offset,
                                         table_cell_ctx,
                                     );
+                                    let is_top_and_bottom_shape = matches!(
+                                        shape.common().text_wrap,
+                                        crate::model::shape::TextWrap::TopAndBottom
+                                    );
                                     let mut shape_flow_h =
                                         self.cell_non_inline_control_flow_height(shape.common());
-                                    if shape_flow_h <= 0.0 {
+                                    if is_top_and_bottom_shape {
+                                        rendered_top_and_bottom_non_inline = true;
+                                        shape_flow_h = 0.0;
+                                    }
+                                    if !is_top_and_bottom_shape && shape_flow_h <= 0.0 {
                                         shape_flow_h =
                                             if cut_units.is_some() && visible_non_inline_controls {
                                                 hwpunit_to_px(
@@ -1617,6 +1630,10 @@ impl LayoutEngine {
                             }
                             _ => {}
                         }
+                    }
+                    if rendered_top_and_bottom_non_inline {
+                        para_y +=
+                            self.paragraph_top_and_bottom_non_inline_flow_height(&para.controls);
                     }
                 }
 

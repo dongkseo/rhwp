@@ -286,7 +286,9 @@ impl HeightMeasurer {
         if common.treat_as_char || !matches!(common.text_wrap, TextWrap::TopAndBottom) {
             return 0.0;
         }
-        let object_height = hwpunit_to_px(common.height as i32, self.dpi);
+        let object_height = hwpunit_to_px(common.height as i32, self.dpi)
+            + hwpunit_to_px(common.margin.top as i32, self.dpi)
+            + hwpunit_to_px(common.margin.bottom as i32, self.dpi);
         if matches!(common.vert_rel_to, VertRelTo::Para) {
             if common.flow_with_text {
                 hwpunit_to_px((common.vertical_offset as i32).max(0), self.dpi) + object_height

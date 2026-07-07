@@ -1,5 +1,6 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentPosition, CharProperties, ParaProperties, CellPathLike } from '@/core/types';
+import { MAX_PAGE_LOCAL_TEXT_EDIT_CHARS } from './input-edit-invalidation';
 
 /** 편집 명령 공통 인터페이스 */
 export interface EditCommand {
@@ -86,6 +87,13 @@ function isNestedCell(pos: DocumentPosition): boolean {
   return (pos.cellPath?.length ?? 0) > 1;
 }
 
+export function canUseDeferredCellTextInsert(pos: DocumentPosition, text: string): boolean {
+  if (!isCell(pos) || isNestedCell(pos)) return false;
+  if (text.length === 0 || text.length > MAX_PAGE_LOCAL_TEXT_EDIT_CHARS) return false;
+  if (/[\r\n\t]/.test(text)) return false;
+  return true;
+}
+
 /** cellPath를 WASM용 JSON 문자열로 변환 */
 function cellPathJson(pos: DocumentPosition): string {
   return JSON.stringify(pos.cellPath ?? []);
@@ -95,7 +103,11 @@ function doInsertText(wasm: WasmBridge, pos: DocumentPosition, text: string): vo
   if (isNestedCell(pos)) {
     wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, text);
   } else if (isCell(pos)) {
-    wasm.insertTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+    if (canUseDeferredCellTextInsert(pos, text)) {
+      wasm.insertTextInCellDeferredPagination(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+    } else {
+      wasm.insertTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+    }
   } else {
     wasm.insertText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, text);
   }

@@ -496,6 +496,52 @@ impl DocumentCore {
         char_offset: usize,
         text: &str,
     ) -> Result<String, HwpError> {
+        self.insert_text_in_cell_native_impl(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            char_offset,
+            text,
+            true,
+        )
+    }
+
+    /// 표 셀 내부 단일 텍스트 삽입 후 전체 페이지네이션을 호출자가 지연한다.
+    pub fn insert_text_in_cell_native_deferred_pagination(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        char_offset: usize,
+        text: &str,
+    ) -> Result<String, HwpError> {
+        self.insert_text_in_cell_native_impl(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            cell_idx,
+            cell_para_idx,
+            char_offset,
+            text,
+            false,
+        )
+    }
+
+    fn insert_text_in_cell_native_impl(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        char_offset: usize,
+        text: &str,
+        paginate_immediately: bool,
+    ) -> Result<String, HwpError> {
         // 셀 문단 접근 검증 및 텍스트 삽입
         let active_field = self.active_field.clone();
         let cell_path = [(control_idx, cell_idx, cell_para_idx)];
@@ -545,7 +591,10 @@ impl DocumentCore {
         // raw 스트림 무효화, 재페이지네이션 (셀 편집 → composed 불변, section dirty만 설정)
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
-        self.paginate_if_needed();
+        self.invalidate_page_tree_cache_from(0);
+        if paginate_immediately {
+            self.paginate_if_needed();
+        }
 
         let new_offset = char_offset + new_chars_count;
         self.event_log.push(DocumentEvent::CellTextChanged {

@@ -1,7 +1,7 @@
 /** input-handler text methods — extracted from InputHandler class */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { InsertTextCommand, DeleteTextCommand, MergeParagraphCommand, MergeNextParagraphCommand, MergeParagraphInCellCommand, MergeNextParagraphInCellCommand } from './command';
+import { InsertTextCommand, DeleteTextCommand, MergeParagraphCommand, MergeNextParagraphCommand, MergeParagraphInCellCommand, MergeNextParagraphInCellCommand, canUseDeferredCellTextInsert } from './command';
 import type { DocumentPosition } from '@/core/types';
 import { showConfirm } from '@/ui/confirm-dialog';
 import {
@@ -624,7 +624,11 @@ export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string):
     this.wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(pos.cellPath), pos.charOffset, text);
   } else if (pos.parentParaIndex !== undefined) {
     const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellIndex: cei, cellParaIndex: cpi, charOffset } = pos;
-    this.wasm.insertTextInCell(sec, ppi!, ci!, cei!, cpi!, charOffset, text);
+    if (canUseDeferredCellTextInsert(pos, text)) {
+      this.wasm.insertTextInCellDeferredPagination(sec, ppi!, ci!, cei!, cpi!, charOffset, text);
+    } else {
+      this.wasm.insertTextInCell(sec, ppi!, ci!, cei!, cpi!, charOffset, text);
+    }
   } else {
     const { sectionIndex: sec, paragraphIndex: para, charOffset } = pos;
     this.wasm.insertText(sec, para, charOffset, text);

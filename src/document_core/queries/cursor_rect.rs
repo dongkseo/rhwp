@@ -827,7 +827,7 @@ impl DocumentCore {
         // 후보 페이지를 순회하며 커서 위치 탐색
         // 1차: 정확한 앵커(zero-width 노드) 우선 검색, 2차: 일반 검색
         for &page_num in &pages {
-            let tree = self.build_page_tree(page_num)?;
+            let tree = self.build_page_tree_cached(page_num)?;
             if !self.show_control_codes {
                 if let Ok(para) = self.get_render_paragraph_ref(section_idx, para_idx) {
                     if let Some(hit) = find_inline_flow_cursor_hit(

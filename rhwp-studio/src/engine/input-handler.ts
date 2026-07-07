@@ -44,6 +44,8 @@ const DRAG_SCROLL_MIN_STEP_PX = 2;
 const DRAG_SCROLL_MAX_STEP_PX = 20;
 const PX_TO_RAW_2X = 150;
 const PX_TO_HWPUNIT = 75;
+const DEFERRED_PAGINATION_AUTO_FLUSH_DELAY_MS = 10_000;
+const DEFERRED_PAGINATION_AUTO_FLUSH_PAGE_LIMIT = 30;
 
 type FormatCopyState = {
   charProps: Partial<CharProperties>;
@@ -301,10 +303,12 @@ export class InputHandler {
 
   // 표 경계선 hover 상태
   private resizeHoverRafId = 0;
-  private cachedTableRef: { sec: number; ppi: number; ci: number } | null = null;
+  private cachedTableRef: { sec: number; ppi: number; ci: number; pageHint?: number } | null = null;
   private cachedCellBboxes: CellBbox[] | null = null;
   private protectedCellHitCache: { key: string; protected: boolean } | null = null;
   private protectedCellHoverEl: HTMLDivElement | null = null;
+  private deferredPaginationFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private deferredPaginationPending = false;
 
   // 표 경계선 리사이즈 드래그 상태
   private isResizeDragging = false;
@@ -2064,8 +2068,9 @@ export class InputHandler {
       } catch { /* 스타일 조회 실패 시 무시 */ }
 
       // 셀 영역 정보 (눈금자 셀 너비 표시용)
-      // getTableCellBboxes는 렌더 트리 전 페이지 순회 비용이 크므로:
-      // 1) 같은 셀이면 재조회 생략  2) 새 셀이면 rAF로 지연하여 클릭 응답 블로킹 방지
+      // getTableCellBboxes는 대형/중첩 표에서 수 초 동안 main thread를 막을 수 있다.
+      // 일반 커서 이동/텍스트 입력 경로에서는 새 bbox 조회를 하지 않고, 표 hover/resize 경로에서
+      // 이미 확보한 캐시가 있을 때만 재사용한다.
       if (inCell) {
         const cellKey = `${pos.sectionIndex}:${pos.parentParaIndex}:${pos.controlIndex}:${pos.cellIndex}`;
         if (cellKey !== this.lastCellKey) {
@@ -2074,18 +2079,19 @@ export class InputHandler {
           const ppi = pos.parentParaIndex!;
           const ci = pos.controlIndex!;
           const cellIdx = pos.cellIndex!;
-          const pageHint = this.cursor.getRect()?.pageIndex;
-          requestAnimationFrame(() => {
-            try {
-              const bboxes = this.wasm.getTableCellBboxes(sec, ppi, ci, pageHint);
-              const bbox = bboxes.find(b => b.cellIdx === cellIdx);
-              if (bbox) {
-                this.eventBus.emit('cursor-cell-changed', {
-                  inCell: true, cellX: bbox.x, cellWidth: bbox.w,
-                });
-              }
-            } catch { /* 무시 */ }
-          });
+          const cached = this.cachedTableRef?.sec === sec
+            && this.cachedTableRef.ppi === ppi
+            && this.cachedTableRef.ci === ci
+            ? this.cachedCellBboxes
+            : null;
+          const bbox = cached?.find(b => b.cellIdx === cellIdx);
+          if (bbox) {
+            this.eventBus.emit('cursor-cell-changed', {
+              inCell: true, cellX: bbox.x, cellWidth: bbox.w,
+            });
+          } else {
+            this.eventBus.emit('cursor-cell-changed', { inCell: false });
+          }
         }
       } else if (this.lastCellKey !== null) {
         this.lastCellKey = null;
@@ -2229,6 +2235,7 @@ export class InputHandler {
 
   /** 편집 후 처리: 재렌더링 + 캐럿 갱신 */
   private afterEdit(): void {
+    this.flushDeferredPaginationIfNeeded('before-full-edit', false);
     this.lastCellKey = null; // 편집 후 셀 bbox 캐시 무효화
     this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
@@ -2238,7 +2245,7 @@ export class InputHandler {
 
   /** 셀 내부 단일 텍스트 편집 후 처리: 현재 페이지 canvas만 갱신한다. */
   private afterPageLocalEdit(): void {
-    this.lastCellKey = null;
+    // 텍스트 입력은 셀 폭을 바꾸지 않으므로 눈금자 셀 bbox 캐시를 무효화하지 않는다.
     this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
     const pageIndex = this.cursor.getRect()?.pageIndex;
@@ -2247,7 +2254,53 @@ export class InputHandler {
     } else {
       this.eventBus.emit('document-changed');
     }
+    this.scheduleDeferredPaginationFlush();
     this.updateCaret();
+  }
+
+  private scheduleDeferredPaginationFlush(): void {
+    this.cancelDeferredPaginationFlush();
+    this.deferredPaginationPending = true;
+    if (!this.shouldAutoFlushDeferredPagination()) {
+      return;
+    }
+    this.deferredPaginationFlushTimer = setTimeout(() => {
+      this.flushDeferredPaginationIfNeeded('idle-auto');
+    }, DEFERRED_PAGINATION_AUTO_FLUSH_DELAY_MS);
+  }
+
+  private cancelDeferredPaginationFlush(): void {
+    if (this.deferredPaginationFlushTimer) {
+      clearTimeout(this.deferredPaginationFlushTimer);
+      this.deferredPaginationFlushTimer = null;
+    }
+  }
+
+  private shouldAutoFlushDeferredPagination(): boolean {
+    return this.wasm.pageCount <= DEFERRED_PAGINATION_AUTO_FLUSH_PAGE_LIMIT;
+  }
+
+  hasDeferredPaginationPending(): boolean {
+    return this.deferredPaginationPending;
+  }
+
+  flushDeferredPaginationIfNeeded(reason = 'manual', emitChange = true): boolean {
+    const shouldFlush = this.deferredPaginationPending || this.deferredPaginationFlushTimer !== null;
+    this.cancelDeferredPaginationFlush();
+    if (!shouldFlush) return false;
+
+    try {
+      this.wasm.flushDeferredPagination();
+      this.deferredPaginationPending = false;
+      if (emitChange) {
+        this.eventBus.emit('document-changed', `deferred-pagination-flush:${reason}`);
+      }
+      return true;
+    } catch (err) {
+      this.deferredPaginationPending = true;
+      console.warn('[InputHandler] 지연 페이지네이션 flush 실패:', err);
+      return false;
+    }
   }
 
   /** raw IME/iOS 텍스트 입력처럼 command를 거치지 않는 경로의 갱신 라우터. */
@@ -2873,6 +2926,7 @@ export class InputHandler {
       cancelAnimationFrame(this.resizeHoverRafId);
       this.resizeHoverRafId = 0;
     }
+    this.cancelDeferredPaginationFlush();
     document.removeEventListener('keydown', this.onF11InterceptBound, true);
     this.container.removeEventListener('mousedown', this.onClickBound);
     this.container.removeEventListener('dblclick', this.onDblClickBound);
