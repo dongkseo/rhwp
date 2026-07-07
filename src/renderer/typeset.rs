@@ -12349,8 +12349,29 @@ impl TypesetEngine {
             let measured_fits_current = st.current_height + table_total <= available;
             let declared_overflows_current =
                 st.current_height + declared_total > available + DECLARED_FLOAT_FIT_TOLERANCE_PX;
+            // 저장된 LineSeg와 객체 높이가 현재 쪽 본문 하단 안에 들어간다고 말하면,
+            // host 줄 간격/선언 높이의 근소 초과만으로 먼저 이월하지 않는다.
+            let saved_object_bottom_fits_current = para
+                .line_segs
+                .iter()
+                .find(|ls| !is_synthetic_line_seg(ls))
+                .is_some_and(|seg| {
+                    let base = st.vpos_page_base.unwrap_or(0);
+                    let v_off = signed_hwpunit(table.common.vertical_offset);
+                    let top_hu = seg
+                        .vertical_pos
+                        .saturating_add(v_off.max(0))
+                        .saturating_sub(base);
+                    let bottom_hu =
+                        top_hu.saturating_add(table.common.height.min(i32::MAX as u32) as i32);
+                    let top_px = hwpunit_to_px(top_hu, self.dpi);
+                    let bottom_px = hwpunit_to_px(bottom_hu, self.dpi);
+                    top_px + 16.0 >= st.current_height
+                        && bottom_px <= available + DECLARED_FLOAT_FIT_TOLERANCE_PX
+                });
             if !st.current_items.is_empty()
                 && declared_overflows_current
+                && !saved_object_bottom_fits_current
                 && !single_row_object_declared_fits_current
                 && (st.has_stored_line_segs || measured_fits_current)
                 && declared_total <= available
