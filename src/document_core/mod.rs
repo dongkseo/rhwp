@@ -57,6 +57,15 @@ pub struct DocumentCore {
     pub(crate) styles: ResolvedStyleSet,
     /// 구역별 구성된 문단 목록
     pub(crate) composed: Vec<Vec<ComposedParagraph>>,
+    /// [#2004] 부동(tac=false) 전면 이미지 스택을 인라인(tac=true)으로 재분류한 render-전용
+    /// 문단/구성. 섹션별 Some 이면 pagination·layout 이 원본 대신 이 정규화본을 사용한다.
+    /// **원본 `document` 는 무손상** → 직렬화(save) 정합 유지. paginate 시 재계산.
+    pub(crate) render_normalized: Vec<
+        Option<(
+            Vec<crate::model::paragraph::Paragraph>,
+            Vec<ComposedParagraph>,
+        )>,
+    >,
     /// DPI
     pub(crate) dpi: f64,
     /// 대체 폰트 경로
@@ -229,6 +238,7 @@ impl DocumentCore {
             pagination: Vec::new(),
             styles: ResolvedStyleSet::default(),
             composed: Vec::new(),
+            render_normalized: Vec::new(),
             dpi: DEFAULT_DPI,
             fallback_font: DEFAULT_FALLBACK_FONT.to_string(),
             layout_engine: LayoutEngine::new(DEFAULT_DPI),

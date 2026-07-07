@@ -23,6 +23,70 @@ use crate::renderer::svg_layer::SvgLayerRenderer;
 use std::cell::RefCell;
 use std::fmt::Write as _;
 
+// ── [#2004] 부동 전면 이미지 스택 → 인라인 재분류 (render-전용, 원본 무손상) ──
+
+/// 부동(tac=false) 그림/그림-도형의 공통 속성(읽기).
+fn floating_stack_picture_common(ctrl: &Control) -> Option<&crate::model::shape::CommonObjAttr> {
+    match ctrl {
+        Control::Picture(pic) => Some(&pic.common),
+        Control::Shape(shape) => match shape.as_ref() {
+            crate::model::shape::ShapeObject::Picture(p) => Some(&p.common),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 한 문단이 "동일 위치·겹침불허·전면급 부동 그림 다수" 스택인지.
+/// 한글은 이런 그림을 쪽당 1장씩 배치하지만 rhwp 는 앵커 쪽에 겹쳐 그린다(#2004 부동 변종).
+/// 게이트를 좁혀(모든 컨트롤이 tac=false·Square·overlap=false·전면급 그림 + 동일 세로오프셋 +
+/// 개수≥2 + 가시 텍스트 없음) 일반 부동개체 문단 오검출을 차단한다.
+fn para_is_floating_image_stack(para: &Paragraph, min_height_hu: i32) -> bool {
+    use crate::model::shape::TextWrap;
+    if para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}') {
+        return false;
+    }
+    if para.controls.is_empty() {
+        return false;
+    }
+    let mut count = 0usize;
+    let mut first_voff: Option<i32> = None;
+    for ctrl in &para.controls {
+        let Some(common) = floating_stack_picture_common(ctrl) else {
+            return false;
+        };
+        if common.treat_as_char
+            || !matches!(common.text_wrap, TextWrap::Square)
+            || common.allow_overlap
+            || (common.height as i32) < min_height_hu
+        {
+            return false;
+        }
+        match first_voff {
+            Some(v) if v != common.vertical_offset as i32 => return false,
+            None => first_voff = Some(common.vertical_offset as i32),
+            _ => {}
+        }
+        count += 1;
+    }
+    count >= 2
+}
+
+/// 문단의 그림/그림-도형을 인라인(tac=true)으로 재분류(정규화본에만 적용, 원본 무손상).
+fn reclassify_floating_pictures_inline(para: &mut Paragraph) {
+    for ctrl in para.controls.iter_mut() {
+        match ctrl {
+            Control::Picture(pic) => pic.common.treat_as_char = true,
+            Control::Shape(shape) => {
+                if let crate::model::shape::ShapeObject::Picture(p) = shape.as_mut() {
+                    p.common.treat_as_char = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn uses_hwp3_origin_page_tolerance(document: &Document) -> bool {
     let total_paragraphs: usize = document.sections.iter().map(|s| s.paragraphs.len()).sum();
     if total_paragraphs <= 50 {
@@ -2237,6 +2301,8 @@ impl DocumentCore {
 
     fn paginate_pass(&mut self, force_breaks: &[std::collections::HashSet<usize>]) {
         self.invalidate_page_tree_cache();
+        // [#2004] 부동 이미지 스택 → 인라인 재분류 정규화본 재계산(원본 무손상).
+        self.compute_render_normalized();
         let paginator = Paginator::new(self.dpi);
         let hwp3_origin_flow_spacing_before = uses_hwp3_origin_flow_spacing_before(&self.document);
         let is_hwp5_origin_hwpx = self
@@ -2373,10 +2439,22 @@ impl DocumentCore {
                 continue;
             }
 
-            let composed = if idx < self.composed.len() {
-                &self.composed[idx]
-            } else {
-                continue;
+            // [#2004] render-전용 정규화본(부동 이미지 스택 인라인 재분류) 우선. 원본 무손상.
+            // 직접 필드 접근으로 disjoint-borrow 유지(이후 self.measured_* 가변 대입과 공존).
+            let norm = self.render_normalized.get(idx).and_then(|o| o.as_ref());
+            let para_src: &[Paragraph] = match norm {
+                Some((p, _)) => &p[..],
+                None => &section.paragraphs[..],
+            };
+            let composed: &[ComposedParagraph] = match norm {
+                Some((_, c)) => &c[..],
+                None => {
+                    if idx < self.composed.len() {
+                        &self.composed[idx][..]
+                    } else {
+                        continue;
+                    }
+                }
             };
 
             // 증분 측정: 이전 측정 데이터가 있으면 문단/표 수준 선택적 캐싱
@@ -2385,7 +2463,7 @@ impl DocumentCore {
                     .dirty_paragraphs
                     .get(idx)
                     .and_then(|opt| opt.as_deref());
-                let column_def_sel = Self::find_initial_column_def(&section.paragraphs);
+                let column_def_sel = Self::find_initial_column_def(para_src);
                 let layout_sel = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
                     &section.section_def.page_def,
                     &column_def_sel,
@@ -2397,7 +2475,7 @@ impl DocumentCore {
                     .map(|a| a.width)
                     .unwrap_or(layout_sel.body_area.width);
                 measurer.measure_section_selective(
-                    &section.paragraphs,
+                    para_src,
                     composed,
                     &self.styles,
                     &self.measured_sections[idx],
@@ -2405,7 +2483,7 @@ impl DocumentCore {
                     Some(col_w_sel),
                 )
             } else {
-                let column_def_pre = Self::find_initial_column_def(&section.paragraphs);
+                let column_def_pre = Self::find_initial_column_def(para_src);
                 let layout_pre = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
                     &section.section_def.page_def,
                     &column_def_pre,
@@ -2416,24 +2494,19 @@ impl DocumentCore {
                     .first()
                     .map(|a| a.width)
                     .unwrap_or(layout_pre.body_area.width);
-                measurer.measure_section(
-                    &section.paragraphs,
-                    composed,
-                    &self.styles,
-                    Some(col_w_pre),
-                )
+                measurer.measure_section(para_src, composed, &self.styles, Some(col_w_pre))
             };
 
             let hwp3_origin_page_tolerance =
                 self.document.is_hwp3_variant || uses_hwp3_origin_page_tolerance(&self.document);
-            let column_def = Self::find_initial_column_def(&section.paragraphs);
+            let column_def = Self::find_initial_column_def(para_src);
             // TypesetEngine을 main pagination으로 사용. RHWP_USE_PAGINATOR=1 로 fallback 가능.
             let use_paginator = std::env::var("RHWP_USE_PAGINATOR")
                 .map(|v| v == "1")
                 .unwrap_or(false);
             let mut result = if use_paginator {
                 paginator.paginate_with_measured_opts(
-                    &section.paragraphs,
+                    para_src,
                     &measured,
                     &section.section_def.page_def,
                     &column_def,
@@ -2510,7 +2583,7 @@ impl DocumentCore {
                 };
                 let typesetter = TypesetEngine::new(self.dpi);
                 typesetter.typeset_section_with_variant(
-                    &section.paragraphs,
+                    para_src,
                     composed,
                     &self.styles,
                     &section.section_def.page_def,
@@ -2974,6 +3047,102 @@ impl DocumentCore {
     }
 
     /// 글로벌 페이지 번호로 해당 페이지와 문단/구성 목록을 찾는다.
+    /// [#2004] 섹션의 render-전용 문단 (부동 이미지 스택 재분류본, 없으면 원본).
+    pub(crate) fn section_render_paragraphs(&self, sec_idx: usize) -> &[Paragraph] {
+        match self.render_normalized.get(sec_idx).and_then(|o| o.as_ref()) {
+            Some((paras, _)) => &paras[..],
+            None => self
+                .document
+                .sections
+                .get(sec_idx)
+                .map(|s| &s.paragraphs[..])
+                .unwrap_or(&[]),
+        }
+    }
+
+    /// [#2004] 섹션의 render-전용 구성 (재분류본, 없으면 원본).
+    pub(crate) fn section_render_composed(&self, sec_idx: usize) -> &[ComposedParagraph] {
+        match self.render_normalized.get(sec_idx).and_then(|o| o.as_ref()) {
+            Some((_, comp)) => &comp[..],
+            None => self.composed.get(sec_idx).map(|c| &c[..]).unwrap_or(&[]),
+        }
+    }
+
+    /// [#2004] 부동 전면 이미지 스택 섹션의 정규화본(그림 tac=true 재분류 + 재구성)을 재계산.
+    /// 원본 `document`/`composed` 는 무손상(save 무결). paginate 시작 시 호출.
+    pub(crate) fn compute_render_normalized(&mut self) {
+        let sec_count = self.document.sections.len();
+        let mut out: Vec<Option<(Vec<Paragraph>, Vec<ComposedParagraph>)>> =
+            Vec::with_capacity(sec_count);
+        for idx in 0..sec_count {
+            let section = &self.document.sections[idx];
+            let pd = &section.section_def.page_def;
+            let body_h_hu = pd.height as i32
+                - pd.margin_top as i32
+                - pd.margin_bottom as i32
+                - pd.margin_header as i32
+                - pd.margin_footer as i32;
+            let min_height_hu = (body_h_hu / 2).max(1);
+            let matches: Vec<usize> = section
+                .paragraphs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| para_is_floating_image_stack(p, min_height_hu))
+                .map(|(i, _)| i)
+                .collect();
+            if matches.is_empty() {
+                out.push(None);
+                continue;
+            }
+            let mut np = section.paragraphs.clone();
+            for &i in &matches {
+                reclassify_floating_pictures_inline(&mut np[i]);
+            }
+            let base = self.composed.get(idx);
+            let nc: Vec<ComposedParagraph> = np
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    if matches.binary_search(&i).is_ok() {
+                        let mut c = compose_paragraph(p);
+                        // [#2004] composer 가 line_seg 부족(HWP5 빈-문단)으로 1줄로 붕괴하면
+                        // 그림 수만큼 줄을 합성(모두 char_start 동일)해 Stage2 stacked 게이트
+                        // (comp.lines.len()==tac_controls) 가 발동하게 한다.
+                        let npics = c.tac_controls.len();
+                        if npics >= 2 && c.lines.len() != npics && !c.lines.is_empty() {
+                            let template = c.lines[0].clone();
+                            let mut lines = Vec::with_capacity(npics);
+                            for k in 0..npics {
+                                let lh_hu = p
+                                    .controls
+                                    .get(c.tac_controls[k].2)
+                                    .and_then(|ctrl| {
+                                        floating_stack_picture_common(ctrl)
+                                            .map(|cm| cm.height as i32)
+                                    })
+                                    .unwrap_or(template.line_height);
+                                let mut l = template.clone();
+                                l.runs = Vec::new();
+                                l.char_start = 0;
+                                l.line_height = lh_hu;
+                                l.has_line_break = false;
+                                lines.push(l);
+                            }
+                            c.lines = lines;
+                        }
+                        c
+                    } else {
+                        base.and_then(|c| c.get(i))
+                            .cloned()
+                            .unwrap_or_else(|| compose_paragraph(p))
+                    }
+                })
+                .collect();
+            out.push(Some((np, nc)));
+        }
+        self.render_normalized = out;
+    }
+
     pub(crate) fn find_page(
         &self,
         page_num: u32,
@@ -2989,16 +3158,9 @@ impl DocumentCore {
         for (sec_idx, pr) in self.pagination.iter().enumerate() {
             if (page_num as usize) < offset as usize + pr.pages.len() {
                 let local_idx = (page_num - offset) as usize;
-                let paragraphs = if sec_idx < self.document.sections.len() {
-                    &self.document.sections[sec_idx].paragraphs[..]
-                } else {
-                    &[][..]
-                };
-                let composed = if sec_idx < self.composed.len() {
-                    &self.composed[sec_idx][..]
-                } else {
-                    &[][..]
-                };
+                // [#2004] render-전용 정규화본 우선(부동 이미지 스택 재분류). 없으면 원본.
+                let paragraphs = self.section_render_paragraphs(sec_idx);
+                let composed = self.section_render_composed(sec_idx);
                 return Ok((&pr.pages[local_idx], paragraphs, composed));
             }
             offset += pr.pages.len() as u32;
@@ -3018,12 +3180,7 @@ impl DocumentCore {
         let mut global_page = 0u32;
 
         for (sec_idx, pr) in self.pagination.iter().enumerate() {
-            let body_paragraphs = self
-                .document
-                .sections
-                .get(sec_idx)
-                .map(|s| &s.paragraphs[..])
-                .unwrap_or(&[]);
+            let body_paragraphs = self.section_render_paragraphs(sec_idx);
             // [Task #1082] 미주 paragraphs 를 본문 뒤에 합쳐 인덱싱 정합.
             // 미주 PageItem 의 para_index = body_paragraphs.len() + 미주 로컬 인덱스
             // (typeset.rs en_para_idx 와 동일). 합치지 않으면 미주 항목이 out-of-bounds 로

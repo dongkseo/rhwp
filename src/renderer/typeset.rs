@@ -9901,9 +9901,46 @@ impl TypesetEngine {
                     (cw - effective_margin_l - margin_r).max(0.0)
                 })
             };
+            // [#2004] 동일 char_start 에 tac(글자처럼) 그림이 다수 앵커되어 각자 한 줄씩
+            // 차지하는 "이미지 스택" 문단: tac_control_indices_for_line 의 char-range 매핑이
+            // [start, next_start)=[0,0) 로 비어 중간 줄이 empty_tac_guide_line(0 높이)로 붕괴한다
+            // ([860, 0.., 860] 패턴). 한글은 각 그림을 쪽당 1장씩 배치하므로 각 줄에 순서대로
+            // 그림 높이를 직접 부여해 pagination 이 줄별로 쪽을 나누게 한다. 게이트를
+            // (tac-그림-only + 그림수==줄수 + 전부 동일 char_start + 모든 높이>8px) 로 좁혀
+            // 일반 인라인 그림/텍스트 문단 회귀를 차단한다.
+            let stacked_tac_picture_heights: Option<Vec<f64>> = {
+                let tacs = &comp.tac_controls;
+                if para_is_treat_as_char_picture_only(para)
+                    && tacs.len() >= 2
+                    && comp.lines.len() == tacs.len()
+                    && comp
+                        .lines
+                        .iter()
+                        .all(|l| l.char_start == comp.lines[0].char_start)
+                {
+                    let hs: Vec<f64> = tacs
+                        .iter()
+                        .map(|(_, _, ci)| {
+                            para.controls
+                                .get(*ci)
+                                .and_then(|c| tac_picture_or_shape_height_px(c, self.dpi))
+                                .unwrap_or(0.0)
+                        })
+                        .collect();
+                    (hs.iter().all(|h| *h > 8.0)).then_some(hs)
+                } else {
+                    None
+                }
+            };
             let mut pairs = Vec::with_capacity(comp.lines.len());
             let mut prev_line_reserved_tac_picture_height: Option<f64> = None;
             for (line_idx, line) in comp.lines.iter().enumerate() {
+                if let Some(ref hs) = stacked_tac_picture_heights {
+                    let ls_px = hwpunit_to_px(line.line_spacing, self.dpi);
+                    pairs.push((hs[line_idx], ls_px));
+                    prev_line_reserved_tac_picture_height = Some(hs[line_idx]);
+                    continue;
+                }
                 let runs_all_whitespace = line.runs.iter().all(|r| r.text.trim().is_empty());
                 let line_has_tac_control = line_has_tac_control(para, comp, line_idx);
                 let empty_tac_guide_line = runs_all_whitespace
@@ -10524,6 +10561,17 @@ impl TypesetEngine {
 
         // split: 줄 단위 분할
         let line_count = fmt.line_heights.len();
+        // [#2004] tac(글자처럼) 전면 그림이 줄마다 하나씩 쌓인 "이미지 스택" 문단은 저장
+        // LINE_SEG 가 각 줄 vpos=0(각자 쪽 상단)으로 인코딩되어, 아래 hwp_authoritative
+        // (다음 줄 vpos==0 이고 현재 줄 bottom 이 본문 안이면 현재 쪽 유지) 가 모든 줄을 한
+        // 쪽에 쌓아 버린다. 이 문단만 hwp_authoritative 를 끄고 줄별 fit 분할(쪽당 1장)로
+        // 되돌린다. 게이트는 formatter 의 stacked_tac_picture_heights 와 동일 의미.
+        let is_tac_picture_stack = para_is_treat_as_char_picture_only(para)
+            && line_count >= 2
+            && fmt
+                .line_heights
+                .iter()
+                .all(|h| *h > st.base_available_height() * 0.5);
         if line_count == 0 {
             st.current_items.push(PageItem::FullParagraph {
                 para_index: para_idx,
@@ -10656,11 +10704,12 @@ impl TypesetEngine {
                     // 손실을 차단하기 위해 HWP 신호를 우선한다.
                     // 조건: (1) 다음 줄의 vpos==0 (페이지 경계 신호)
                     //       (2) 현재 줄의 hwp 좌표 vpos+lh 가 body_available 안
-                    let hwp_authoritative = para
-                        .line_segs
-                        .get(li + 1)
-                        .map(|next| next.vertical_pos == 0)
-                        .unwrap_or(false)
+                    let hwp_authoritative = !is_tac_picture_stack
+                        && para
+                            .line_segs
+                            .get(li + 1)
+                            .map(|next| next.vertical_pos == 0)
+                            .unwrap_or(false)
                         && para
                             .line_segs
                             .get(li)

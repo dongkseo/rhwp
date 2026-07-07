@@ -111,6 +111,7 @@ impl DocumentCore {
             pagination: Vec::new(),
             styles,
             composed,
+            render_normalized: Vec::new(),
             dpi: DEFAULT_DPI,
             fallback_font: DEFAULT_FALLBACK_FONT.to_string(),
             layout_engine: LayoutEngine::new(DEFAULT_DPI),
