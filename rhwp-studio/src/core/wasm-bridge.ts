@@ -1444,6 +1444,22 @@ export class WasmBridge {
     return JSON.parse(this.doc.getCursorRectByPath(sec, parentPara, pathJson, charOffset));
   }
 
+  /** [#2021] 경로 기반 커서 좌표 + 페이지 힌트 — 직전 캐럿 페이지를 넘기면 해당
+   *  페이지(±1)를 먼저 탐색해 거대 표 문서의 선형 페이지 재빌드를 피한다.
+   *  힌트가 틀려도 전체 탐색 fallback으로 좌표는 동일하다. */
+  getCursorRectByPathNear(
+    sec: number, parentPara: number, pathJson: string, charOffset: number, hintPage: number,
+  ): CursorRect {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    if (typeof this.doc.getCursorRectByPathNear !== 'function') {
+      // 구버전 wasm 폴백
+      return JSON.parse(this.doc.getCursorRectByPath(sec, parentPara, pathJson, charOffset));
+    }
+    return JSON.parse(
+      this.doc.getCursorRectByPathNear(sec, parentPara, pathJson, charOffset, hintPage),
+    );
+  }
+
   getCellInfoByPath(sec: number, parentPara: number, pathJson: string): CellInfo {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getCellInfoByPath(sec, parentPara, pathJson));

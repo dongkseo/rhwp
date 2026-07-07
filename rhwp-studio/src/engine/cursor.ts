@@ -1020,7 +1020,11 @@ export class CursorState {
         // cellPath가 있으면 1-depth 표/글상자도 경로 기반 API 사용
         const { sectionIndex: sec, parentParaIndex: ppi, cellPath, charOffset } = this.position;
         const pathJson = JSON.stringify(cellPath);
-        this.rect = this.wasm.getCursorRectByPath(sec, ppi!, pathJson, charOffset);
+        // [#2021] 직전 캐럿 페이지를 힌트로 — 거대 표 문서의 선형 페이지 탐색 회피
+        const hintPage = this.rect?.pageIndex;
+        this.rect = hintPage != null
+          ? this.wasm.getCursorRectByPathNear(sec, ppi!, pathJson, charOffset, hintPage)
+          : this.wasm.getCursorRectByPath(sec, ppi!, pathJson, charOffset);
       } else if (this.isInCell()) {
         const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellIndex: cei, cellParaIndex: cpi, charOffset } = this.position;
         this.rect = this.wasm.getCursorRectInCell(sec, ppi!, ci!, cei!, cpi!, charOffset);
