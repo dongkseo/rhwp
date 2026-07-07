@@ -28,6 +28,10 @@ freeze 진입. 신규 렌더링 PR 은 1차 진행 중 hold 라벨 운용(계획
 | 페이지 오라클 | `tests/fixtures/render_page_controlset.tsv`(93) + `render_page_oracle_1658.tsv`(453) | `verify_pi_page_vs_hangul.py` 계열 | 일치 유지(악화 0) |
 | roundtrip baseline | `hwpx_roundtrip_baseline`(4)·`hwp5_roundtrip_baseline`(3)·`visual_roundtrip_baseline`(3) | `cargo test --profile release-test --test <각>` | 하드실패 0 |
 | **OVR baseline (신규, 5샘플)** | `mydocs/metrics/2026-07-04/ovr/*.baseline.json` | `python tools/object_visual_regression.py <샘플> -o out --no-hwp --baseline <json>` | 개체 이동/리사이즈 0 (±2px tol) |
+
+> 갱신 이력: `rowbreak-problem-pages`는 2026-07-07 재생성 (기준 `a05e6f1b`) — #1936 머지로
+> 발생한 p13/p14 재배분 3건(obj4/5/6)이 **작업지시자 시각 판정 통과**(한컴 정답지 기준)로
+> 정합 상태로 확정되어 baseline을 현행화. 판정 전까지는 "추가 변동 0" 기준으로 운용했음.
 | 대시보드 영점 | `mydocs/metrics/2026-07-04/` | `./scripts/metrics.sh --snapshot` | (개선 측정 영점) |
 | 전체 테스트 | — | `cargo test --profile release-test --tests` | FAILED 0 (영점 2,820) |
 
