@@ -8239,6 +8239,21 @@ impl LayoutEngine {
                                 });
                         }
                     } else if !common.treat_as_char
+                        && matches!(shape.as_ref(), ShapeObject::Ole(_))
+                        && matches!(common.text_wrap, TextWrap::Square)
+                        && matches!(common.vert_rel_to, VertRelTo::Para)
+                    {
+                        let has_visible_text =
+                            para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}');
+                        if !has_visible_text {
+                            let line_advance = para
+                                .line_segs
+                                .first()
+                                .map(|ls| hwpunit_to_px(ls.line_height + ls.line_spacing, self.dpi))
+                                .unwrap_or(0.0);
+                            result_y = result_y.max(y_offset + line_advance);
+                        }
+                    } else if !common.treat_as_char
                         && matches!(
                             common.text_wrap,
                             crate::model::shape::TextWrap::TopAndBottom

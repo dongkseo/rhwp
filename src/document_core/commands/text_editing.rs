@@ -8,7 +8,7 @@ use crate::model::control::{Control, FieldType};
 use crate::model::event::DocumentEvent;
 use crate::model::page::ColumnDef;
 use crate::model::paragraph::Paragraph;
-use crate::model::shape::{TextWrap, VertRelTo};
+use crate::model::shape::{ShapeObject, TextWrap, VertRelTo};
 use crate::renderer::composer::{compose_paragraph, reflow_line_segs, ComposedParagraph};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::resolve_styles;
@@ -25,6 +25,13 @@ struct FieldStartInsertion {
     control_idx: usize,
     start_char_idx: usize,
     end_char_idx: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SquareOleWrapChainForEnter {
+    bottom_vpos: i32,
+    column_start: i32,
+    segment_width: i32,
 }
 
 fn active_field_matches(
@@ -100,6 +107,113 @@ fn is_empty_topbottom_table_anchor_for_enter(para: &Paragraph) -> bool {
         })
 }
 
+fn square_ole_anchor_wrap_chain_for_enter(para: &Paragraph) -> Option<SquareOleWrapChainForEnter> {
+    if para_has_visible_text_for_enter(para) || !para.char_offsets.is_empty() {
+        return None;
+    }
+    let line_seg = para.line_segs.first()?;
+    if line_seg.column_start <= 0 || line_seg.segment_width <= 0 {
+        return None;
+    }
+
+    para.controls.iter().find_map(|ctrl| {
+        let Control::Shape(shape) = ctrl else {
+            return None;
+        };
+        if !matches!(shape.as_ref(), ShapeObject::Ole(_))
+            || shape.common().treat_as_char
+            || !matches!(shape.common().text_wrap, TextWrap::Square)
+        {
+            return None;
+        }
+
+        let height = shape.common().height.min(i32::MAX as u32) as i32;
+        if height <= 0 {
+            return None;
+        }
+        Some(SquareOleWrapChainForEnter {
+            bottom_vpos: line_seg.vertical_pos.saturating_add(height),
+            column_start: line_seg.column_start,
+            segment_width: line_seg.segment_width,
+        })
+    })
+}
+
+fn is_empty_stored_square_wrap_line_for_enter(para: &Paragraph) -> bool {
+    !para_has_visible_text_for_enter(para)
+        && para.char_offsets.is_empty()
+        && para.controls.is_empty()
+        && para
+            .line_segs
+            .first()
+            .is_some_and(|seg| seg.column_start > 0 && seg.segment_width > 0)
+}
+
+fn has_same_stored_wrap_line(lhs: &Paragraph, rhs: &Paragraph) -> bool {
+    match (lhs.line_segs.first(), rhs.line_segs.first()) {
+        (Some(a), Some(b)) => {
+            a.column_start == b.column_start && a.segment_width == b.segment_width
+        }
+        _ => false,
+    }
+}
+
+fn square_ole_wrap_chain_for_enter(
+    paragraphs: &[Paragraph],
+    para_idx: usize,
+) -> Option<SquareOleWrapChainForEnter> {
+    let Some(anchor) = paragraphs.get(para_idx) else {
+        return None;
+    };
+    if let Some(chain) = square_ole_anchor_wrap_chain_for_enter(anchor) {
+        return Some(chain);
+    }
+    if !is_empty_stored_square_wrap_line_for_enter(anchor) {
+        return None;
+    }
+
+    let mut idx = para_idx;
+    while idx > 0 {
+        idx -= 1;
+        let Some(prev) = paragraphs.get(idx) else {
+            return None;
+        };
+        if let Some(chain) = square_ole_anchor_wrap_chain_for_enter(prev) {
+            return (chain.column_start == anchor.line_segs[0].column_start
+                && chain.segment_width == anchor.line_segs[0].segment_width)
+                .then_some(chain);
+        }
+        if is_empty_stored_square_wrap_line_for_enter(prev)
+            && has_same_stored_wrap_line(prev, anchor)
+        {
+            continue;
+        }
+        return None;
+    }
+    None
+}
+
+fn next_line_vpos_after_para_for_enter(para: &Paragraph) -> i32 {
+    para.line_segs
+        .last()
+        .map(|seg| {
+            seg.vertical_pos
+                .saturating_add(seg.line_height)
+                .saturating_add(seg.line_spacing)
+        })
+        .unwrap_or(0)
+}
+
+fn empty_paragraph_after_normal_flow(anchor: &Paragraph) -> Paragraph {
+    let mut para = empty_paragraph_after_table_anchor(anchor);
+    if let Some(seg) = para.line_segs.first_mut() {
+        seg.column_start = 0;
+        seg.segment_width = 0;
+        seg.vertical_pos = 0;
+    }
+    para
+}
+
 fn empty_paragraph_after_table_anchor(anchor: &Paragraph) -> Paragraph {
     let mut para = Paragraph::new_empty();
     para.para_shape_id = anchor.para_shape_id;
@@ -120,6 +234,16 @@ fn empty_paragraph_after_table_anchor(anchor: &Paragraph) -> Paragraph {
     raw_header_extra[4..6].copy_from_slice(&1u16.to_le_bytes());
     para.raw_header_extra = raw_header_extra;
     para.has_para_text = false;
+    para
+}
+
+fn empty_paragraph_after_square_wrap_anchor(anchor: &Paragraph) -> Paragraph {
+    let mut para = empty_paragraph_after_table_anchor(anchor);
+    if let (Some(seg), Some(anchor_seg)) = (para.line_segs.first_mut(), anchor.line_segs.first()) {
+        *seg = anchor_seg.clone();
+        seg.text_start = 0;
+        seg.vertical_pos = 0;
+    }
     para
 }
 
@@ -1176,6 +1300,53 @@ impl DocumentCore {
                 self.recompose_paragraph(section_idx, new_para_idx);
                 self.paginate_if_needed();
             }
+
+            self.event_log.push(DocumentEvent::ParagraphSplit {
+                section: section_idx,
+                para: para_idx,
+                offset: char_offset,
+            });
+            return Ok(super::super::helpers::json_ok_with(&format!(
+                "\"paraIdx\":{},\"charOffset\":0",
+                new_para_idx
+            )));
+        }
+
+        let square_ole_enter_chain = {
+            let paragraphs = &self.document.sections[section_idx].paragraphs;
+            (char_offset == 0)
+                .then(|| square_ole_wrap_chain_for_enter(paragraphs, para_idx))
+                .flatten()
+        };
+        if let Some(chain) = square_ole_enter_chain {
+            self.document.sections[section_idx].raw_stream = None;
+            let new_para_idx = para_idx + 1;
+            let next_vpos = next_line_vpos_after_para_for_enter(
+                &self.document.sections[section_idx].paragraphs[para_idx],
+            );
+            let keep_wrap_zone = next_vpos < chain.bottom_vpos;
+            let new_para = if keep_wrap_zone {
+                empty_paragraph_after_square_wrap_anchor(
+                    &self.document.sections[section_idx].paragraphs[para_idx],
+                )
+            } else {
+                empty_paragraph_after_normal_flow(
+                    &self.document.sections[section_idx].paragraphs[para_idx],
+                )
+            };
+            self.document.sections[section_idx]
+                .paragraphs
+                .insert(new_para_idx, new_para);
+
+            if !keep_wrap_zone {
+                self.reflow_paragraph(section_idx, new_para_idx);
+            }
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                para_idx,
+            );
+            self.insert_composed_paragraph(section_idx, new_para_idx);
+            self.paginate_if_needed();
 
             self.event_log.push(DocumentEvent::ParagraphSplit {
                 section: section_idx,
