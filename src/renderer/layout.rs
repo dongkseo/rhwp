@@ -1315,6 +1315,11 @@ pub struct LayoutEngine {
     cell_units_cache: std::cell::RefCell<
         std::collections::HashMap<usize, std::rc::Rc<Vec<table_layout::CellUnit>>>,
     >,
+    /// [Issue #2063] 표 단위 불변량 `has_visible_text_with_nested_table` 를 표 포인터로
+    /// 캐시한다. 이 값은 (측정 대상 셀과 무관한) 표 전체 스캔 결과인데 셀별
+    /// `cell_units_uncached` 안에서 계산되어 52,694 셀 표에서 O(셀²)(≈28억) 로 폭증했다.
+    /// `cell_units_cache` 와 동일 조판 경계에서 clear 한다.
+    table_nested_text_flag_cache: std::cell::RefCell<std::collections::HashMap<usize, bool>>,
 }
 
 mod border_rendering;
@@ -1384,6 +1389,7 @@ impl LayoutEngine {
             is_hwpx_source: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -1391,6 +1397,7 @@ impl LayoutEngine {
     /// 경계에서 호출해 포인터 키 재사용으로 인한 오재사용을 방지한다.
     pub fn clear_layout_caches(&self) {
         self.cell_units_cache.borrow_mut().clear();
+        self.table_nested_text_flag_cache.borrow_mut().clear();
     }
 
     /// 기본 DPI(96)로 생성

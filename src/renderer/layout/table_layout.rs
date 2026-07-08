@@ -4584,6 +4584,26 @@ impl LayoutEngine {
         row_units
     }
 
+    /// [Issue #2063] 표에 "가시 텍스트 + 중첩 표"를 가진 셀이 하나라도 있는지(표 단위 불변량).
+    /// `cell_units_uncached` 안에서 셀마다 계산되면 O(셀²)(52,694² ≈ 28억)로 폭증하므로
+    /// 표 포인터를 키로 1회만 계산해 캐시한다(`cell_units_cache` 와 동일 조판 경계에서 clear).
+    fn table_has_visible_text_with_nested_table(&self, table: &crate::model::table::Table) -> bool {
+        let key = table as *const crate::model::table::Table as usize;
+        if let Some(&cached) = self.table_nested_text_flag_cache.borrow().get(&key) {
+            return cached;
+        }
+        let flag = table.cells.iter().any(|cell| {
+            cell.paragraphs.iter().any(|p| {
+                !p.text.trim().is_empty()
+                    && p.controls.iter().any(|c| matches!(c, Control::Table(_)))
+            })
+        });
+        self.table_nested_text_flag_cache
+            .borrow_mut()
+            .insert(key, flag);
+        flag
+    }
+
     /// [Task #1949] `cell_units_uncached` 의 메모이즈 래퍼. 거대 셀이 RowBreak 로
     /// 여러 페이지에 걸칠 때 각 페이지 컷 판정이 같은 셀 units 를 재계산하는 O(pages×cell)
     /// 폭증을 제거한다. 셀 포인터를 키로 표 단위 캐시(문서 재조판 경계에서 clear).
@@ -4624,12 +4644,8 @@ impl LayoutEngine {
             table.page_break,
             crate::model::table::TablePageBreak::RowBreak
         ) && !table.common.treat_as_char;
-        let has_visible_text_with_nested_table = table.cells.iter().any(|cell| {
-            cell.paragraphs.iter().any(|p| {
-                !p.text.trim().is_empty()
-                    && p.controls.iter().any(|c| matches!(c, Control::Table(_)))
-            })
-        });
+        let has_visible_text_with_nested_table =
+            self.table_has_visible_text_with_nested_table(table);
         // [Task #700] vpos 동기화 가드와 동일 — 한컴 정상 인코딩(첫 문단 vpos=0) 한정.
         let cell_first_vpos = cell
             .paragraphs
