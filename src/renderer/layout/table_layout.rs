@@ -4986,6 +4986,75 @@ impl LayoutEngine {
                         para_other_non_inline_h,
                     );
                     continue;
+                } else if nested_tables.len() == 1 && nested_tables[0].row_count == 1 {
+                    // [#2007] 1×1(단일 행) 중첩 표: per-중첩행 분해(row_count>=2)가 불가하나,
+                    // 그 단일 셀 콘텐츠가 페이지보다 크면(42065 pi=7: 135문단 8164px) atomic 으로
+                    // 두면 못 쪼개져 under-pagination. 텍스트+중첩표 문단에 쓰이는
+                    // nested_table_mixed_fragment_heights(단일 행 셀 문단을 페이지 분할 가능한
+                    // fragment 로 분해)를 빈-텍스트 문단에도 적용해 splittable 유닛으로 산출.
+                    let nt = nested_tables[0];
+                    let frags = self.nested_table_mixed_fragment_heights(nt, styles);
+                    // 게이트: 콘텐츠가 **명백히 여러 페이지가 필요**(≥ MULTI_PAGE_PX)할 때만
+                    // fragment 분해한다. 임계를 넉넉히(≈2 페이지) 두는 이유:
+                    // - 한 페이지에 맞는 1×1 중첩 표(서식): fragment 렌더 미세차로 회귀(form-002).
+                    // - 1~2 페이지 경계선 표(76076 규제영향분석서의 여러 ~1000px 중첩셀): fragment
+                    //   경계가 기존 배치와 ±1 어긋나 공식 PDF 쪽수(issue_1891) 회귀.
+                    // 42065 pi=7(8164px, 8쪽분)·2781515 별표(수쪽분)처럼 ≫ 2페이지인 거대 셀만 대상.
+                    let page_avail = self.current_body_area.get().3;
+                    let multi_page_px = if page_avail > 0.0 {
+                        page_avail * 2.0
+                    } else {
+                        1800.0
+                    };
+                    let total_frag_h: f64 = frags.iter().map(|(h, _, _)| *h).sum();
+                    if frags.len() > 1 && total_frag_h > multi_page_px {
+                        let om_top = hwpunit_to_px(nt.outer_margin_top as i32, self.dpi);
+                        let om_bot = hwpunit_to_px(nt.outer_margin_bottom as i32, self.dpi);
+                        let n = frags.len();
+                        for (fi, (h, trailing, content_h)) in frags.into_iter().enumerate() {
+                            let mut uh = h;
+                            let hard_break_before = reset_before && fi == 0;
+                            let mut vpos_gap_before = vpos_gap_before_para && fi == 0;
+                            if use_vpos_unit_positions && fi == 0 && !hard_break_before {
+                                if let Some(seg) = p.line_segs.first() {
+                                    let target_top = normalized_vpos_px(seg.vertical_pos);
+                                    if target_top > unit_cum {
+                                        uh += target_top - unit_cum;
+                                        vpos_gap_before = true;
+                                    }
+                                }
+                            }
+                            if fi == 0 {
+                                uh += om_top + spacing_before;
+                            }
+                            if fi + 1 == n {
+                                uh += om_bot + spacing_after;
+                            }
+                            units.push(CellUnit {
+                                height: uh,
+                                hard_break_before,
+                                vpos_gap_before,
+                                para_idx: pi,
+                                vis_start: line_count,
+                                vis_end: line_count,
+                                nested_row: None,
+                                mixed_nested_fragment: true,
+                                mixed_nested_trailing: trailing,
+                                mixed_nested_content_height: content_h,
+                                top_and_bottom_flow: false,
+                                empty_spacer: false,
+                            });
+                            unit_cum += uh;
+                        }
+                        append_non_inline_units(
+                            &mut units,
+                            pi,
+                            para_non_inline_extra_h,
+                            para_top_and_bottom_h,
+                            para_other_non_inline_h,
+                        );
+                        continue;
+                    }
                 }
             }
             if has_table_in_para && !p.text.trim().is_empty() && line_count > 0 {
