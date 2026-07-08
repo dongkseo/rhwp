@@ -893,11 +893,13 @@ pub(crate) fn para_has_overlay_shape(para: &Paragraph) -> bool {
 /// (자리차지 아님, tac=false) Shape/Picture/Table 인 경우.
 ///
 /// 별지 서식(양식) 문단이 여기 해당한다: 부동 글상자·도형·표가 빈 앵커 문단에 매달려
-/// Paper/Para 절대위치로 배치된다. 이때 stored LINE_SEG 의 `vertical_pos`/`line_height` 는
-/// 텍스트 흐름 좌표가 아니라 **개체의 절대 위치·높이(섹션 캔버스 좌표)**를 담는다. 이 문단을
-/// 흐름 콘텐츠로 취급하면(높이 예약 / 단나누기 페이지분할 / zone 오프셋에 절대 vpos 사용)
-/// 페이지가 과분할된다(74312 별지 서식: rhwp 81p vs 한글 18p). 흐름 footprint 를 0 으로
-/// 취급하기 위한 공통 게이트.
+/// Paper/Para 절대위치로 배치된다. 이 문단들을 일반 flow 로 취급하면 높이 예약 /
+/// 단나누기 페이지분할 / zone 오프셋에 섹션 누적 vpos 사용이 겹쳐 페이지가 과분할된다
+/// (74312 별지 서식: rhwp 81p vs 한글 18p).
+///
+/// 주의: 이 게이트는 81쪽 산란을 막는 부분 완화다. stored LINE_SEG vpos/line_height 를
+/// 무조건 버리는 것이 한글 모델은 아니며, #2019 v3 에서는 Paper 앵커 절대 개체 extent 를
+/// page-local pagination 에 반영해 PI-page/시각 정합을 별도로 해결해야 한다.
 ///
 /// 자리차지(TopAndBottom)·tac=true 는 개체가 흐름 공간을 실제로 차지하므로 제외.
 /// Shape/Picture 는 통과·글앞·글뒤만(Square 는 그림 좌우 흘림이 흔해 제외, 회귀 차단).
@@ -5938,6 +5940,54 @@ impl LayoutEngine {
                     } else {
                         0.0
                     };
+                let table_visual_height = mt
+                    .map(|m| m.total_height)
+                    .filter(|h| *h > 0.0)
+                    .unwrap_or_else(|| hwpunit_to_px(t.common.height as i32, self.dpi));
+                // [#2019 v3] 빈 앵커에 매달린 Paper/Page 기준 Square 표는 본문 flow 표가
+                // 아니라 페이지 절대좌표 부동 표다. 표 자체는 선언 y 에 그리되, 뒤따르는
+                // 문단을 표 아래로 밀지 않는다.
+                let paper_page_square_empty_top = if !is_tac
+                    && tbl_is_square
+                    && !para_has_visible_text(para)
+                    && matches!(
+                        t.common.vert_rel_to,
+                        crate::model::shape::VertRelTo::Paper
+                            | crate::model::shape::VertRelTo::Page
+                    ) {
+                    let v_off = hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
+                    let (ref_y, ref_h) = match t.common.vert_rel_to {
+                        crate::model::shape::VertRelTo::Page => {
+                            (layout.body_area.y, layout.body_area.height)
+                        }
+                        _ => (0.0, layout.page_height),
+                    };
+                    let om_top =
+                        if matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+                            hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+                        } else {
+                            0.0
+                        };
+                    let om_bottom =
+                        if matches!(t.common.vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+                            hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi)
+                        } else {
+                            0.0
+                        };
+                    Some(match t.common.vert_align {
+                        crate::model::shape::VertAlign::Top
+                        | crate::model::shape::VertAlign::Inside => ref_y + v_off + om_top,
+                        crate::model::shape::VertAlign::Center => {
+                            ref_y + (ref_h - table_visual_height) / 2.0 + v_off
+                        }
+                        crate::model::shape::VertAlign::Bottom
+                        | crate::model::shape::VertAlign::Outside => {
+                            ref_y + ref_h - table_visual_height - v_off - om_bottom
+                        }
+                    })
+                } else {
+                    None
+                };
                 // vert=Paper로 body_area 위에 배치되는 표
                 // 본문 영역 외부(머리말/꼬리말 자리)에 그려지는 페이지/페이퍼 앵커 TopAndBottom 표는
                 // 본문 흐름의 y_offset을 진행시키지 않고 out-of-flow로 paper_images에 렌더한다.
@@ -6038,6 +6088,8 @@ impl LayoutEngine {
                     };
                     let table_y_start = if let Some((_, _, _, lane_top, _)) = para_float_lane_info {
                         lane_top
+                    } else if let Some(abs_y) = paper_page_square_empty_top {
+                        abs_y
                     } else if let Some((_, iy)) = inline_pos {
                         iy
                     } else if is_current_visible_para_float {
@@ -6129,10 +6181,6 @@ impl LayoutEngine {
                     };
                     let allow_para_top_bleed = is_current_visible_para_float
                         && signed_hwpunit(t.common.vertical_offset) < 0;
-                    let table_visual_height = mt
-                        .map(|m| m.total_height)
-                        .filter(|h| *h > 0.0)
-                        .unwrap_or_else(|| hwpunit_to_px(t.common.height as i32, self.dpi));
                     let table_visual_end = if tac_already_rendered_inline {
                         table_y_start + table_visual_height
                     } else {
@@ -6213,6 +6261,8 @@ impl LayoutEngine {
                         } else {
                             table_y_before.max(table_visual_end + visible_outer_bottom_px)
                         }
+                    } else if paper_page_square_empty_top.is_some() {
+                        table_y_before
                     } else if table_visual_shift > 0.0 {
                         (table_visual_end - table_visual_shift).max(table_y_before)
                     } else {

@@ -38,6 +38,31 @@ fn textbox_contains_non_tac_picture(text_box: &TextBox) -> bool {
     })
 }
 
+fn textbox_vpos_origin_hu(common: &CommonObjAttr, matrix_positioned: bool) -> Option<i32> {
+    if matrix_positioned || common.treat_as_char {
+        return None;
+    }
+    if !matches!(common.vert_rel_to, VertRelTo::Paper | VertRelTo::Page)
+        || !matches!(common.vert_align, VertAlign::Top | VertAlign::Inside)
+    {
+        return None;
+    }
+
+    let origin = crate::renderer::float_placement::signed_hwpunit(common.vertical_offset);
+    (origin > 0).then_some(origin)
+}
+
+fn normalize_textbox_vpos_hu(vertical_pos: i32, origin_hu: Option<i32>) -> i32 {
+    match origin_hu {
+        Some(origin) if origin > 0 && vertical_pos >= origin => vertical_pos - origin,
+        _ => vertical_pos,
+    }
+}
+
+fn textbox_vpos_px(vertical_pos: i32, origin_hu: Option<i32>, dpi: f64) -> f64 {
+    hwpunit_to_px(normalize_textbox_vpos_hu(vertical_pos, origin_hu), dpi)
+}
+
 /// 평탄화된 HWPX 그룹(matrix group) 자식의 "글상자 보조선"(검정 얇은 SOLID 테두리)은
 /// 한컴 실물에서 인쇄되지 않는다(편람 장 표지 "행정업무 운영 개요" 제목/목록 글상자).
 /// 오탐 방지를 위해 매우 좁게 한정: 그룹 자식(group_level>0) + 회전/전단 없음 + 검정
@@ -1102,6 +1127,7 @@ impl LayoutEngine {
                     parent_cell_path,
                     shape.common().treat_as_char,
                     matrix_positioned,
+                    textbox_vpos_origin_hu(shape.common(), matrix_positioned),
                 );
                 parent.children.push(node);
             }
@@ -1395,6 +1421,7 @@ impl LayoutEngine {
                     parent_cell_path,
                     shape.common().treat_as_char,
                     matrix_positioned,
+                    textbox_vpos_origin_hu(shape.common(), matrix_positioned),
                 );
                 parent.children.push(node);
             }
@@ -1574,6 +1601,7 @@ impl LayoutEngine {
                     parent_cell_path,
                     shape.common().treat_as_char,
                     matrix_positioned,
+                    textbox_vpos_origin_hu(shape.common(), matrix_positioned),
                 );
                 parent.children.push(node);
             }
@@ -1634,6 +1662,7 @@ impl LayoutEngine {
                     parent_cell_path,
                     shape.common().treat_as_char,
                     matrix_positioned,
+                    textbox_vpos_origin_hu(shape.common(), matrix_positioned),
                 );
                 parent.children.push(node);
             }
@@ -2049,6 +2078,7 @@ impl LayoutEngine {
         parent_cell_path: &[CellPathEntry],
         parent_treat_as_char: bool,
         matrix_positioned: bool,
+        textbox_vpos_origin_hu: Option<i32>,
     ) {
         let text_box = match &drawing.text_box {
             Some(tb) => tb,
@@ -2195,7 +2225,12 @@ impl LayoutEngine {
                 for (tb_para_idx, composed) in composed_paras.iter().enumerate() {
                     let para = &overflow_paras[tb_para_idx];
                     if let Some(first_ls) = para.line_segs.first() {
-                        let vpos_y = inner_area.y + hwpunit_to_px(first_ls.vertical_pos, self.dpi);
+                        let vpos_y = inner_area.y
+                            + textbox_vpos_px(
+                                first_ls.vertical_pos,
+                                textbox_vpos_origin_hu,
+                                self.dpi,
+                            );
                         para_y = vpos_y.max(para_y);
                     }
                     let para_col_area = LayoutRect {
@@ -2345,7 +2380,10 @@ impl LayoutEngine {
                     let mut total_content_height = textbox_paragraphs[..para_count]
                         .iter()
                         .flat_map(|p| p.line_segs.last())
-                        .map(|ls| hwpunit_to_px(ls.vertical_pos + ls.line_height, self.dpi))
+                        .map(|ls| {
+                            textbox_vpos_px(ls.vertical_pos, textbox_vpos_origin_hu, self.dpi)
+                                + hwpunit_to_px(ls.line_height, self.dpi)
+                        })
                         .last()
                         .unwrap_or(0.0);
 
@@ -2353,7 +2391,9 @@ impl LayoutEngine {
                         let para_vpos = para
                             .line_segs
                             .first()
-                            .map(|ls| ls.vertical_pos)
+                            .map(|ls| {
+                                normalize_textbox_vpos_hu(ls.vertical_pos, textbox_vpos_origin_hu)
+                            })
                             .unwrap_or(0);
                         for ctrl in &para.controls {
                             let common = match ctrl {
@@ -2393,8 +2433,9 @@ impl LayoutEngine {
             // 더 큰 값 사용 (원본 호환 + 편집 후 정상 배치 모두 지원)
             let para = &textbox_paragraphs[tb_para_idx];
             if let Some(first_ls) = para.line_segs.first() {
-                let vpos_y =
-                    inner_area.y + vert_offset + hwpunit_to_px(first_ls.vertical_pos, self.dpi);
+                let vpos_y = inner_area.y
+                    + vert_offset
+                    + textbox_vpos_px(first_ls.vertical_pos, textbox_vpos_origin_hu, self.dpi);
                 para_y = vpos_y.max(para_y);
             }
             // 인라인(treat_as_char) 컨트롤의 총 폭 계산
@@ -2460,7 +2501,9 @@ impl LayoutEngine {
             // 이 문단에 해당하는 composed 문단의 시작 y 위치 계산
             let para_start_y = if pi < composed_paras.len() {
                 if let Some(first_seg) = para.line_segs.first() {
-                    inner_area.y + vert_offset + hwpunit_to_px(first_seg.vertical_pos, self.dpi)
+                    inner_area.y
+                        + vert_offset
+                        + textbox_vpos_px(first_seg.vertical_pos, textbox_vpos_origin_hu, self.dpi)
                 } else {
                     inline_y
                 }
