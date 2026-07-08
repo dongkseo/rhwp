@@ -78,8 +78,8 @@
 | 특정 기호 뒤 불필요 공백 | 해결 | 여권신청서 `2.「여권법」제9조` 줄의 낫표 advance 를 반각으로 보정하고 `tests/issue_2020.rs` 회귀 테스트로 고정했다. |
 | 이미지 위 텍스트 겹침 | 구조 플래그 해소 | FSC page count 와 2쪽 하단 표 이월을 해결했고, FSC 1/2쪽 visual sweep 자동 플래그 0. |
 | 윗첨자가 일반 글자로 렌더링 | 해결 | SVG 백엔드 첨자 크기/baseline 조정 테스트가 통과한다. |
-| 글꼴이 원본과 다름 | 환경/폰트 fidelity 잔여 | FSC 기준 PDF 는 DejaVu 계열 embedded font 로 생성되어 로컬 렌더 폰트와 pixel proxy 차이가 크다. 구조 플래그는 0이나 폰트 fidelity 는 별도 축이다. |
-| 도형 또는 원형 표시 위치 차이 | 자동 플래그 해소 | 복학원서 1쪽 `line_order_overlap` 은 U+F081C TAC filler 오탐으로 확인되어 sweep 수집기를 보정했다. pixel proxy 차이는 폰트/PUA/PDF fallback 영향으로 남는다. |
+| 글꼴이 원본과 다름 | close blocker 아님 | FSC 기준 PDF 는 DejaVu 계열 embedded font 로 생성되어 로컬 렌더 폰트와 pixel proxy 차이가 크다. 한컴 전용 폰트가 없는 공개 기본 검증에서는 pixel-level font fidelity 를 #2020 close 기준으로 삼지 않고, 별도 선택 검증 축으로 분리한다. |
+| 도형 또는 원형 표시 위치 차이 | 자동 플래그 해소 | 복학원서 1쪽 `line_order_overlap` 은 U+F081C TAC filler 오탐으로 확인되어 sweep 수집기를 보정했다. 남는 pixel proxy 차이는 폰트/PUA/PDF fallback 영향이며 #2020 close blocker 로 보지 않는다. |
 | 일부 객체가 회전된 것처럼 보임 | 자동 플래그 해소 | 복학원서 대표 페이지 visual sweep 자동 플래그 0. |
 | 같은 페이지 하단 내용이 다음 페이지로 밀림 | 해결 | FSC HWP 5쪽 유지, 2쪽 하단 14x15 표 유지, 국립국어원 3쪽 플래그 0을 확인했다. |
 
@@ -95,5 +95,5 @@
 ## 남은 관찰
 
 - 대표 페이지 자동 구조 플래그는 0으로 정리됐다.
-- 다만 FSC/복학원서 review 이미지의 pixel proxy 는 여전히 낮다. 현재 기준 PDF 자체가 DejaVu embedded font 또는 PUA fallback glyph 를 포함하므로, 구조 결함과 폰트 fidelity 문제를 분리해 PR 본문에 기록해야 한다.
-- #2020 close 여부는 maintainer 판단이 필요하다. 자동 구조 회귀 게이트 기준으로는 닫을 수 있으나, “원본과 동일한 글꼴” 수준의 pixel fidelity 를 목표로 삼으면 별도 폰트/렌더링 fidelity 축이 남는다.
+- 다만 FSC/복학원서 review 이미지의 pixel proxy 는 여전히 낮다. 현재 기준 PDF 자체가 DejaVu embedded font 또는 PUA fallback glyph 를 포함하므로, 구조 결함과 폰트 fidelity 문제를 분리해 PR 본문에 기록한다.
+- maintainer 판단으로 #2020 은 구조/레이아웃 회귀 게이트 기준에서 해결된 것으로 처리한다. “한컴 PDF와 픽셀 단위 글꼴 fidelity까지 동일” 기준은 한컴 전용 폰트가 있는 환경에서의 별도 font fidelity 축으로 남긴다.

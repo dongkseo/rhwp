@@ -29,7 +29,7 @@
 
 1. FSC p1 은 자동 플래그 0이므로 layout blocker 와 font fidelity 문제를 분리한다.
 2. 저장소 font alias/metrics 에서 금융위 보도자료에 쓰인 글꼴 mapping 이 누락됐는지 확인한다.
-3. 코드 수정 대상이 아니면 #2020 close 판단에서 환경 의존 잔여로 명시한다.
+3. 한컴 전용 폰트 부재로만 설명되는 pixel-level font fidelity 는 #2020 close 판단에서 분리하고, 환경 의존 선택 검증으로 명시한다.
 
 ## 5. 커밋 구성
 
@@ -46,7 +46,7 @@
 - Stage 1: 복학원서 `line_order_overlap` 은 U+F081C TAC filler 전용 render-tree 라인이 만든 visual sweep 오탐으로 확인했다. 렌더 정책은 기존 #937 처럼 filler 미출력을 유지하고, sweep 수집기에서 보이는 텍스트가 없는 filler 라인을 제외했다.
 - Stage 2: 여권신청서 낫표 `「」` glyph advance 를 반각으로 측정/렌더하도록 보정했다. `tests/issue_2020.rs` 에 `2.「여권법」제9조` 줄 간격 회귀 테스트를 추가했다.
 - Stage 2 보조: 하단 `210mm×297mm[...]` 용지 규격 footer 와 `-2-` 페이지 번호 footer 는 기준 PDF 와 같은 하단 footer bleed 인 경우 tail/frame overflow 플래그에서 제외했다.
-- Stage 3: FSC 1/2쪽 자동 구조 플래그는 0으로 정리됐다. 다만 기준 PDF 의 embedded font 가 DejaVu 계열이라 pixel-level font fidelity 는 별도 판단 대상으로 남긴다.
+- Stage 3: FSC 1/2쪽 자동 구조 플래그는 0으로 정리됐다. 기준 PDF 의 embedded font 가 DejaVu 계열이라 pixel-level font fidelity 는 별도 선택 검증 축으로 남기되, 한컴 전용 폰트가 없는 공개 기본 검증에서는 #2020 close blocker 로 보지 않는다.
 - 검증:
   - `cargo fmt --check`
   - `git diff --check`
