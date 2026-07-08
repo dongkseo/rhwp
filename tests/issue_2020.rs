@@ -3,7 +3,7 @@
 //! 첨부/참조 문서는 하나의 이슈 범위에서 다룬다. 이 테스트는 자동 판정 가능한
 //! 페이지 수와 FSC HWP/HWPX 흐름 동기화를 먼저 고정한다.
 
-use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
+use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 use rhwp::wasm_api::HwpDocument;
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,6 +29,53 @@ fn has_table(root: &RenderNode, para_index: usize, control_index: usize) -> bool
         }
     }
     false
+}
+
+fn find_table_bbox(
+    root: &RenderNode,
+    para_index: usize,
+    control_index: usize,
+) -> Option<BoundingBox> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if let RenderNodeType::Table(table) = &node.node_type {
+            if table.para_index == Some(para_index) && table.control_index == Some(control_index) {
+                return Some(node.bbox);
+            }
+        }
+        for child in &node.children {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+fn find_text_bbox(root: &RenderNode, needle: &str) -> Option<BoundingBox> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if let RenderNodeType::TextRun(run) = &node.node_type {
+            if run.text.contains(needle) {
+                return Some(node.bbox);
+            }
+        }
+        for child in &node.children {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+fn find_first_ellipse_bbox(root: &RenderNode) -> Option<BoundingBox> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.node_type, RenderNodeType::Ellipse(_)) {
+            return Some(node.bbox);
+        }
+        for child in &node.children {
+            stack.push(child);
+        }
+    }
+    None
 }
 
 fn parse_svg_attr(attrs: &str, key: &str) -> Option<f64> {
@@ -151,5 +198,48 @@ fn issue_2020_fsc_hwp_keeps_tail_table_on_page_two() {
     assert!(
         has_table(&tree.root, 24, 0),
         "FSC HWP pi=24 14x15 표는 HWPX/한컴 기준처럼 2쪽 하단에 남아야 한다"
+    );
+}
+
+#[test]
+fn issue_2020_bokhak_receipt_seal_line_and_stamp_align() {
+    let doc = load_doc("samples/복학원서.hwp");
+    let tree = doc
+        .build_page_render_tree(0)
+        .expect("render bokhak receipt page");
+    let svg = doc
+        .render_page_svg_native(0)
+        .expect("render bokhak receipt SVG");
+
+    assert!(
+        svg_line_with_text(&svg, "(인)").is_some(),
+        "복학원서 접수증 위 날인선에는 `(인)` 표시가 렌더링되어야 함"
+    );
+    assert!(
+        !svg.contains('\u{F081C}'),
+        "TAC filler 원문 U+F081C가 SVG에 그대로 출력되면 안 됨"
+    );
+
+    let seal_line = find_text_bbox(&tree.root, "(인)").expect("합성 날인선 TextRun");
+    let receipt_table = find_table_bbox(&tree.root, 16, 0).expect("pi=16 receipt table");
+    assert!(
+        seal_line.y < receipt_table.y && seal_line.width > 600.0,
+        "날인선은 접수증 표 위 본문 폭에 가깝게 놓여야 함: line={seal_line:?}, table={receipt_table:?}"
+    );
+    assert!(
+        (790.0..=800.0).contains(&receipt_table.y),
+        "접수증 TAC 표는 filler line 다음 line-seg 위치에 배치되어야 함: y={:.1}",
+        receipt_table.y
+    );
+
+    let stamp_text = find_text_bbox(&tree.root, "㊞").expect("receipt stamp text");
+    let stamp_circle = find_first_ellipse_bbox(&tree.root).expect("receipt stamp circle");
+    let text_cx = stamp_text.x + stamp_text.width / 2.0;
+    let text_cy = stamp_text.y + stamp_text.height / 2.0;
+    let circle_cx = stamp_circle.x + stamp_circle.width / 2.0;
+    let circle_cy = stamp_circle.y + stamp_circle.height / 2.0;
+    assert!(
+        (text_cx - circle_cx).abs() <= 8.0 && (text_cy - circle_cy).abs() <= 8.0,
+        "날짜 옆 `㊞`은 빨간 도장 원 중심과 맞아야 함: text=({text_cx:.1},{text_cy:.1}) circle=({circle_cx:.1},{circle_cy:.1})"
     );
 }
