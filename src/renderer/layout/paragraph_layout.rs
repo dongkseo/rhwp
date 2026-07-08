@@ -295,6 +295,18 @@ struct RunEmitState {
     current_line_reserved_tac_picture_height: Option<f64>,
 }
 
+/// [#2067] TAC 그림 배치의 줄-스코프 스칼라 입력 묶음.
+#[derive(Clone, Copy)]
+struct TacPictureLineVars {
+    run_char_pos: usize,
+    x: f64,
+    y: f64,
+    baseline: f64,
+    raw_lh: f64,
+    section_index: usize,
+    para_index: usize,
+}
+
 /// [#2003] run 방출 루프의 줄-스코프 읽기 스칼라 묶음.
 #[derive(Clone, Copy)]
 struct RunEmitVars {
@@ -1823,6 +1835,156 @@ impl LayoutEngine {
     /// `multi_col_width_hu`: 다단 문서에서 현재 단 너비(HWPUNIT). Some이면 segment_width 불일치 줄 건너뜀.
     /// `para`: 원본 문단 (treat_as_char 이미지 인라인 렌더링에 사용)
     /// `bin_data_content`: 이미지 데이터 (treat_as_char 이미지 인라인 렌더링에 사용)
+    /// [Task #2067] run 루프 종료 후, run 범위 밖(pos >= run_char_pos)의 미매칭
+    /// TAC 이미지 배치. 갱신된 x 를 반환한다.
+    #[allow(clippy::too_many_arguments)]
+    fn place_unmatched_line_tac_pictures(
+        &self,
+        tree: &mut PageRenderTree,
+        line_node: &mut RenderNode,
+        comp_line: &ComposedLine,
+        para: Option<&Paragraph>,
+        bin_data_content: Option<&[BinDataContent]>,
+        tac_offsets_px: &[(usize, f64, usize)],
+        cell_ctx: Option<&CellContext>,
+        reserved_tac_picture_height: &mut Option<f64>,
+        v: TacPictureLineVars,
+    ) -> f64 {
+        let TacPictureLineVars {
+            run_char_pos,
+            mut x,
+            y,
+            baseline,
+            raw_lh,
+            section_index,
+            para_index,
+        } = v;
+        if !comp_line.runs.is_empty() && !tac_offsets_px.is_empty() {
+            if let (Some(p), Some(bdc)) = (para, bin_data_content) {
+                let line_start_char = comp_line.char_start;
+                let line_end_char = line_start_char
+                    + comp_line
+                        .runs
+                        .iter()
+                        .map(|r| r.text.chars().count())
+                        .sum::<usize>();
+                for &(tac_pos, tac_w, tac_ci) in tac_offsets_px {
+                    if tac_pos <= run_char_pos || tac_pos > line_end_char {
+                        continue; // run 범위 내/끝 또는 미래 줄 TAC: 여기서 처리하지 않음
+                    }
+                    if let Some(ctrl) = p.controls.get(tac_ci) {
+                        if let Control::Picture(pic) = ctrl {
+                            let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
+                            if raw_lh + 4.0 >= pic_h {
+                                *reserved_tac_picture_height = Some(pic_h);
+                            }
+                            let img_y = (y + baseline - pic_h).max(y);
+                            let bin_data_id = pic.image_attr.bin_data_id;
+                            let image_data =
+                                find_bin_data(bdc, bin_data_id).map(|c| c.data.clone());
+                            let crop = {
+                                let c = &pic.crop;
+                                if c.right > c.left
+                                    && c.bottom > c.top
+                                    && (c.left != 0 || c.top != 0 || c.right != 0 || c.bottom != 0)
+                                {
+                                    Some((c.left, c.top, c.right, c.bottom))
+                                } else {
+                                    None
+                                }
+                            };
+                            let original_size_hu = if pic.shape_attr.original_width > 0
+                                && pic.shape_attr.original_height > 0
+                            {
+                                Some((
+                                    pic.shape_attr.original_width,
+                                    pic.shape_attr.original_height,
+                                ))
+                            } else {
+                                None
+                            };
+                            // [Task #1151 v7 항목 7] ImageNode 생성 helper 통합.
+                            let img_node = make_picture_image_node(
+                                tree,
+                                pic,
+                                section_index,
+                                para_index,
+                                tac_ci,
+                                cell_ctx,
+                                crop,
+                                original_size_hu,
+                                bin_data_id,
+                                image_data,
+                                BoundingBox::new(x, img_y, tac_w, pic_h),
+                            );
+                            line_node.children.push(img_node);
+                            x += tac_w;
+                        }
+                    }
+                }
+            }
+        }
+        x
+    }
+
+    /// [Task #2067] 빈 문단(runs 없음)의 TAC 양식 개체 배치. 갱신된 x 를 반환한다.
+    #[allow(clippy::too_many_arguments)]
+    fn place_empty_line_tac_forms(
+        &self,
+        tree: &mut PageRenderTree,
+        line_node: &mut RenderNode,
+        comp_line: &ComposedLine,
+        para: Option<&Paragraph>,
+        tac_offsets_px: &[(usize, f64, usize)],
+        cell_ctx: Option<&CellContext>,
+        mut x: f64,
+        y: f64,
+        baseline: f64,
+        section_index: usize,
+        para_index: usize,
+    ) -> f64 {
+        if comp_line.runs.is_empty() && !tac_offsets_px.is_empty() {
+            if let Some(p) = para {
+                for &(_tac_pos, tac_w, tac_ci) in tac_offsets_px {
+                    if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
+                        let form_h = hwpunit_to_px(f.height as i32, self.dpi);
+                        let form_y = (y + baseline - form_h).max(y);
+                        let cell_location = cell_ctx.map(|ctx| {
+                            let e = &ctx.path[0];
+                            (
+                                ctx.parent_para_index,
+                                e.control_index,
+                                e.cell_index,
+                                e.cell_para_index,
+                            )
+                        });
+                        let form_node = RenderNode::new(
+                            tree.next_id(),
+                            RenderNodeType::FormObject(FormObjectNode {
+                                form_type: f.form_type,
+                                caption: f.caption.clone(),
+                                text: f.text.clone(),
+                                fore_color: form_color_to_css(f.fore_color),
+                                back_color: form_color_to_css(f.back_color),
+                                value: f.value,
+                                enabled: f.enabled,
+                                section_index,
+                                para_index,
+                                control_index: tac_ci,
+                                name: f.name.clone(),
+                                cell_location,
+                            }),
+                            BoundingBox::new(x, form_y, tac_w, form_h),
+                        );
+                        line_node.children.push(form_node);
+                        x += tac_w;
+                    }
+                }
+            }
+        }
+        x
+    }
+
     pub(crate) fn layout_composed_paragraph(
         &self,
         tree: &mut PageRenderTree,
@@ -3002,116 +3164,39 @@ impl LayoutEngine {
                 }
             }
 
-            // run 루프 종료 후, run 범위 밖(pos >= run_char_pos)의 미매칭 TAC 이미지 렌더링
-            if !comp_line.runs.is_empty() && !tac_offsets_px.is_empty() {
-                if let (Some(p), Some(bdc)) = (para, bin_data_content) {
-                    let line_start_char = comp_line.char_start;
-                    let line_end_char = line_start_char
-                        + comp_line
-                            .runs
-                            .iter()
-                            .map(|r| r.text.chars().count())
-                            .sum::<usize>();
-                    for &(tac_pos, tac_w, tac_ci) in &tac_offsets_px {
-                        if tac_pos <= run_char_pos || tac_pos > line_end_char {
-                            continue; // run 범위 내/끝 또는 미래 줄 TAC: 여기서 처리하지 않음
-                        }
-                        if let Some(ctrl) = p.controls.get(tac_ci) {
-                            if let Control::Picture(pic) = ctrl {
-                                let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
-                                if raw_lh + 4.0 >= pic_h {
-                                    current_line_reserved_tac_picture_height = Some(pic_h);
-                                }
-                                let img_y = (y + baseline - pic_h).max(y);
-                                let bin_data_id = pic.image_attr.bin_data_id;
-                                let image_data =
-                                    find_bin_data(bdc, bin_data_id).map(|c| c.data.clone());
-                                let crop = {
-                                    let c = &pic.crop;
-                                    if c.right > c.left
-                                        && c.bottom > c.top
-                                        && (c.left != 0
-                                            || c.top != 0
-                                            || c.right != 0
-                                            || c.bottom != 0)
-                                    {
-                                        Some((c.left, c.top, c.right, c.bottom))
-                                    } else {
-                                        None
-                                    }
-                                };
-                                let original_size_hu = if pic.shape_attr.original_width > 0
-                                    && pic.shape_attr.original_height > 0
-                                {
-                                    Some((
-                                        pic.shape_attr.original_width,
-                                        pic.shape_attr.original_height,
-                                    ))
-                                } else {
-                                    None
-                                };
-                                // [Task #1151 v7 항목 7] ImageNode 생성 helper 통합.
-                                let img_node = make_picture_image_node(
-                                    tree,
-                                    pic,
-                                    section_index,
-                                    para_index,
-                                    tac_ci,
-                                    cell_ctx.as_ref(),
-                                    crop,
-                                    original_size_hu,
-                                    bin_data_id,
-                                    image_data,
-                                    BoundingBox::new(x, img_y, tac_w, pic_h),
-                                );
-                                line_node.children.push(img_node);
-                                x += tac_w;
-                            }
-                        }
-                    }
-                }
-            }
+            x = self.place_unmatched_line_tac_pictures(
+                tree,
+                &mut line_node,
+                comp_line,
+                para,
+                bin_data_content,
+                &tac_offsets_px,
+                cell_ctx.as_ref(),
+                &mut current_line_reserved_tac_picture_height,
+                TacPictureLineVars {
+                    run_char_pos,
+                    x,
+                    y,
+                    baseline,
+                    raw_lh,
+                    section_index,
+                    para_index,
+                },
+            );
 
-            // 빈 문단(runs 없음)에서 tac 양식 개체 렌더링
-            if comp_line.runs.is_empty() && !tac_offsets_px.is_empty() {
-                if let Some(p) = para {
-                    for &(_tac_pos, tac_w, tac_ci) in &tac_offsets_px {
-                        if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
-                            let form_h = hwpunit_to_px(f.height as i32, self.dpi);
-                            let form_y = (y + baseline - form_h).max(y);
-                            let cell_location = cell_ctx.as_ref().map(|ctx| {
-                                let e = &ctx.path[0];
-                                (
-                                    ctx.parent_para_index,
-                                    e.control_index,
-                                    e.cell_index,
-                                    e.cell_para_index,
-                                )
-                            });
-                            let form_node = RenderNode::new(
-                                tree.next_id(),
-                                RenderNodeType::FormObject(FormObjectNode {
-                                    form_type: f.form_type,
-                                    caption: f.caption.clone(),
-                                    text: f.text.clone(),
-                                    fore_color: form_color_to_css(f.fore_color),
-                                    back_color: form_color_to_css(f.back_color),
-                                    value: f.value,
-                                    enabled: f.enabled,
-                                    section_index,
-                                    para_index,
-                                    control_index: tac_ci,
-                                    name: f.name.clone(),
-                                    cell_location,
-                                }),
-                                BoundingBox::new(x, form_y, tac_w, form_h),
-                            );
-                            line_node.children.push(form_node);
-                            x += tac_w;
-                        }
-                    }
-                }
-            }
+            x = self.place_empty_line_tac_forms(
+                tree,
+                &mut line_node,
+                comp_line,
+                para,
+                &tac_offsets_px,
+                cell_ctx.as_ref(),
+                x,
+                y,
+                baseline,
+                section_index,
+                para_index,
+            );
 
             let defer_empty_line_control_marker = comp_line.runs.is_empty()
                 && !tac_offsets_px.is_empty()
