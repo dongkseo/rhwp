@@ -21,12 +21,12 @@ summaries copied from the same run.
 
 | Target | Pages | PDF pages | Flags | Pixel match | Visual proxy | Review asset | Overlay asset | Raw summary |
 |--------|-------|-----------|-------|-------------|--------------|--------------|---------------|-------------|
-| `issue2020-passport-lawgo-p1` | 1 | 2/2 | 0 | 80.50113 | 42.06503 | `issue2020_passport_lawgo_p1_review.png` | `issue2020_passport_lawgo_p1_overlay.png` | `issue2020_passport_lawgo_p1_summary.json` |
-| `issue2020-passport-2022-p1` | 1 | 2/2 | 0 | 80.42947 | 42.24337 | `issue2020_passport_hwp2022_p1_review.png` | `issue2020_passport_hwp2022_p1_overlay.png` | `issue2020_passport_hwp2022_p1_summary.json` |
-| `issue2020-fsc-hwp-p1-p2` | 1-2 | 5/5 | 0 | 86.90888 | 18.45890 | `issue2020_fsc_hwp_p1_p2_review.png` | `issue2020_fsc_hwp_p1_p2_overlay.png` | `issue2020_fsc_hwp_p1_p2_summary.json` |
-| `issue2020-fsc-hwpx-p1-p2` | 1-2 | 5/5 | 0 | 86.83262 | 18.25356 | `issue2020_fsc_hwpx_p1_p2_review.png` | `issue2020_fsc_hwpx_p1_p2_overlay.png` | `issue2020_fsc_hwpx_p1_p2_summary.json` |
-| `issue2020-bokhak-p1` | 1 | 1/1 | 0 | 86.82875 | 40.24777 | `issue2020_bokhak_p1_review.png` | `issue2020_bokhak_p1_overlay.png` | `issue2020_bokhak_p1_summary.json` |
-| `issue2020-niklp-p3` | 3 | 35/35 | 0 | 90.20470 | 35.29146 | `issue2020_niklp_p3_review.png` | `issue2020_niklp_p3_overlay.png` | `issue2020_niklp_p3_summary.json` |
+| `issue2020-passport-lawgo-p1` | 1 | 2/2 | 0 | 80.50113 | 42.06503 | `pr_2056_issue2020_passport_lawgo_p1_review.png` | `pr_2056_issue2020_passport_lawgo_p1_overlay.png` | `pr_2056_issue2020_passport_lawgo_p1_summary.json` |
+| `issue2020-passport-2022-p1` | 1 | 2/2 | 0 | 80.42947 | 42.24337 | `pr_2056_issue2020_passport_hwp2022_p1_review.png` | `pr_2056_issue2020_passport_hwp2022_p1_overlay.png` | `pr_2056_issue2020_passport_hwp2022_p1_summary.json` |
+| `issue2020-fsc-hwp-p1-p2` | 1-2 | 5/5 | 0 | 86.90888 | 18.45890 | `pr_2056_issue2020_fsc_hwp_p1_p2_review.png` | `pr_2056_issue2020_fsc_hwp_p1_p2_overlay.png` | `pr_2056_issue2020_fsc_hwp_p1_p2_summary.json` |
+| `issue2020-fsc-hwpx-p1-p2` | 1-2 | 5/5 | 0 | 86.83262 | 18.25356 | `pr_2056_issue2020_fsc_hwpx_p1_p2_review.png` | `pr_2056_issue2020_fsc_hwpx_p1_p2_overlay.png` | `pr_2056_issue2020_fsc_hwpx_p1_p2_summary.json` |
+| `issue2020-bokhak-p1` | 1 | 1/1 | 0 | 86.82875 | 40.24777 | `pr_2056_issue2020_bokhak_p1_review.png` | `pr_2056_issue2020_bokhak_p1_overlay.png` | `pr_2056_issue2020_bokhak_p1_summary.json` |
+| `issue2020-niklp-p3` | 3 | 35/35 | 0 | 90.20470 | 35.29146 | `pr_2056_issue2020_niklp_p3_review.png` | `pr_2056_issue2020_niklp_p3_overlay.png` | `pr_2056_issue2020_niklp_p3_summary.json` |
 
 ## Source pairs
 
