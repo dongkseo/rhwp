@@ -1322,9 +1322,15 @@ impl DocumentCore {
         };
 
         // --- 1. BinDataContent 추가 ---
-        let next_id = self.document.bin_data_content.len() as u16 + 1;
+        // bin_data_id(위치, 1-based 순번)와 storage id(BIN%04X 스트림 이름)는
+        // 다른 의미다. 위치는 배열 순번으로 유지하고, storage id 는 기존 id 와
+        // 충돌하지 않게 최댓값+1 로 채번한다 — 순번 채번은 storage id 에 구멍이
+        // 있는 문서에서 기존 이미지와 스트림 이름이 충돌해 저장 시 이미지가
+        // 뒤바뀌거나 소실된다.
+        let position_id = self.document.bin_data_content.len() as u16 + 1;
+        let storage_id = self.document.next_bin_data_storage_id();
         self.document.bin_data_content.push(BinDataContent {
-            id: next_id,
+            id: storage_id,
             data: image_data.to_vec(),
             extension: extension.to_string(),
         });
@@ -1340,7 +1346,7 @@ impl DocumentCore {
             status: BinDataStatus::Success,
             abs_path: None,
             rel_path: None,
-            storage_id: next_id,
+            storage_id,
             extension: Some(extension.to_string()),
         });
         self.document.doc_info.raw_stream = None; // DocInfo 재직렬화
@@ -1365,7 +1371,7 @@ impl DocumentCore {
             bottom: (natural_height_px * 75) as i32,
         };
         let image_attr = ImageAttr {
-            bin_data_id: next_id,
+            bin_data_id: position_id,
             brightness: 0,
             contrast: 0,
             effect: ImageEffect::RealPic,
@@ -3755,6 +3761,176 @@ mod issue_1280_textbox_creation_tests {
         assert_eq!(
             pic_count, 1,
             "글상자 안에 붙여넣은 그림 컨트롤이 보존되어야 한다 (#1323)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bindata_storage_id_collision_tests {
+    //! Issue #2038: BinData storage id 채번 충돌 — 순번(len+1) 채번은 storage id 에 구멍이
+    //! 있는 문서에서 기존 id 와 충돌해, 저장 시 같은 이름(BIN%04X)의 스트림이
+    //! 겹쳐 이미지가 뒤바뀌거나 소실된다. storage id 는 최댓값+1 로 채번하되
+    //! 위치 의미인 `ImageAttr.bin_data_id` 는 순번을 유지해야 한다.
+
+    use super::*;
+    use crate::model::bin_data::{
+        BinData, BinDataCompression, BinDataContent, BinDataStatus, BinDataType,
+    };
+    use std::collections::HashSet;
+
+    const EXISTING_IMAGE: &[u8] = &[0xAA, 0xBB, 0xCC];
+
+    fn minimal_png() -> Vec<u8> {
+        vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x00, 0x00, 0x00,
+            0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ]
+    }
+
+    /// 실제 문서를 로드한 뒤 storage id 2 만 존재하는 구멍(1 없음)을 주입한다.
+    /// 구채번(len+1 = 2)이라면 기존 id 2 와 충돌하는 구성.
+    fn make_core_with_storage_hole() -> DocumentCore {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/basic/english.hwp");
+        let bytes = std::fs::read(&path).expect("read english.hwp");
+        let mut core = DocumentCore::from_bytes(&bytes).expect("load english.hwp");
+        assert!(
+            core.document.bin_data_content.is_empty(),
+            "전제: english.hwp 에는 BinData 가 없어야 함"
+        );
+        core.document.bin_data_content.push(BinDataContent {
+            id: 2,
+            data: EXISTING_IMAGE.to_vec(),
+            extension: "png".to_string(),
+        });
+        core.document.doc_info.bin_data_list.push(BinData {
+            raw_data: None,
+            attr: 0x0101,
+            data_type: BinDataType::Embedding,
+            compression: BinDataCompression::Default,
+            status: BinDataStatus::Success,
+            abs_path: None,
+            rel_path: None,
+            storage_id: 2,
+            extension: Some("png".to_string()),
+        });
+        core
+    }
+
+    #[test]
+    fn insert_picture_storage_id_skips_existing_ids() {
+        let mut core = make_core_with_storage_hole();
+        core.insert_picture_native(
+            0,
+            0,
+            0,
+            &[],
+            &minimal_png(),
+            9000,
+            6000,
+            1,
+            1,
+            "png",
+            "",
+            None,
+            None,
+        )
+        .expect("insert_picture_native");
+
+        let content_ids: Vec<u16> = core
+            .document
+            .bin_data_content
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        let unique: HashSet<u16> = content_ids.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            content_ids.len(),
+            "BinDataContent.id 가 중복되면 저장 시 스트림 이름이 충돌한다: {content_ids:?}"
+        );
+        let storage_ids: Vec<u16> = core
+            .document
+            .doc_info
+            .bin_data_list
+            .iter()
+            .map(|b| b.storage_id)
+            .collect();
+        let unique_storage: HashSet<u16> = storage_ids.iter().copied().collect();
+        assert_eq!(
+            unique_storage.len(),
+            storage_ids.len(),
+            "BinData.storage_id 중복: {storage_ids:?}"
+        );
+
+        // bin_data_id 는 위치(1-based 순번) 의미 유지 — 신규 그림은 2번째 content
+        let new_bin_id = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .flat_map(|p| p.controls.iter())
+            .find_map(|c| match c {
+                Control::Picture(pic) => Some(pic.image_attr.bin_data_id),
+                _ => None,
+            })
+            .expect("삽입된 그림 컨트롤");
+        assert_eq!(
+            new_bin_id, 2,
+            "bin_data_id 는 content 배열 1-based 순번이어야 함"
+        );
+        let by_position = &core.document.bin_data_content[(new_bin_id - 1) as usize];
+        assert_eq!(
+            by_position.data,
+            minimal_png(),
+            "위치 기반 조회로 신규 그림 데이터가 나와야 함"
+        );
+        // 기존 이미지 데이터 불변
+        assert_eq!(core.document.bin_data_content[0].data, EXISTING_IMAGE);
+    }
+
+    #[test]
+    fn insert_into_storage_hole_doc_survives_hwp_save_roundtrip() {
+        let mut core = make_core_with_storage_hole();
+        core.insert_picture_native(
+            0,
+            0,
+            0,
+            &[],
+            &minimal_png(),
+            9000,
+            6000,
+            1,
+            1,
+            "png",
+            "",
+            None,
+            None,
+        )
+        .expect("insert_picture_native");
+
+        let saved = core.export_hwp_with_adapter().expect("export_hwp");
+        let reloaded = DocumentCore::from_bytes(&saved).expect("재로드");
+        let datas: Vec<&[u8]> = reloaded
+            .document()
+            .bin_data_content
+            .iter()
+            .map(|c| c.data.as_slice())
+            .collect();
+        assert!(
+            datas.iter().any(|d| *d == EXISTING_IMAGE),
+            "저장 왕복 후 기존 이미지가 소실됨 (스트림 이름 충돌): {:?}",
+            reloaded
+                .document()
+                .bin_data_content
+                .iter()
+                .map(|c| (c.id, c.data.len()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            datas.iter().any(|d| *d == minimal_png().as_slice()),
+            "저장 왕복 후 신규 이미지가 소실됨"
         );
     }
 }

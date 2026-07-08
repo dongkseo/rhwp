@@ -630,6 +630,139 @@ fn para_has_non_tac_picture_or_shape(para: &Paragraph) -> bool {
         .any(|ctrl| non_tac_picture_or_shape_common(ctrl).is_some())
 }
 
+fn paper_overlay_object_bottom_abs_px(para: &Paragraph, dpi: f64) -> Option<f64> {
+    if !crate::renderer::layout::para_is_floating_overlay_anchor(para) {
+        return None;
+    }
+
+    let mut max_bottom: Option<f64> = None;
+    for ctrl in &para.controls {
+        let common = match ctrl {
+            Control::Shape(shape) if !shape.common().treat_as_char => shape.common(),
+            Control::Picture(pic) if !pic.common.treat_as_char => &pic.common,
+            Control::Table(table) if !table.common.treat_as_char => &table.common,
+            _ => continue,
+        };
+        if !matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Paper) {
+            continue;
+        }
+
+        let top_hu = signed_hwpunit(common.vertical_offset);
+        let bottom_hu = top_hu
+            .saturating_add(common.height as i32)
+            .saturating_add(common.margin.bottom as i32);
+        let bottom_px = hwpunit_to_px(bottom_hu, dpi);
+        max_bottom = Some(max_bottom.map_or(bottom_px, |prev| prev.max(bottom_px)));
+    }
+
+    max_bottom
+}
+
+fn para_is_columndef_only_separator(para: &Paragraph) -> bool {
+    para.text.trim().is_empty()
+        && !para.controls.is_empty()
+        && para
+            .controls
+            .iter()
+            .all(|c| matches!(c, Control::ColumnDef(_)))
+}
+
+fn para_is_paper_page_square_empty_table_anchor(para: &Paragraph) -> bool {
+    !para_has_visible_text(para)
+        && para.controls.iter().any(|ctrl| {
+            matches!(ctrl, Control::Table(table)
+            if !table.common.treat_as_char
+                && matches!(
+                    table.common.text_wrap,
+                    crate::model::shape::TextWrap::Square
+                )
+                && matches!(
+                    table.common.vert_rel_to,
+                    crate::model::shape::VertRelTo::Paper
+                        | crate::model::shape::VertRelTo::Page
+                ))
+        })
+}
+
+fn para_is_pre_paper_page_square_table_scaffold(para_idx: usize, paragraphs: &[Paragraph]) -> bool {
+    let Some(para) = paragraphs.get(para_idx) else {
+        return false;
+    };
+    if para_has_visible_text(para)
+        || !matches!(
+            para.column_type,
+            ColumnBreakType::Page | ColumnBreakType::Section
+        )
+        || !para.controls.iter().all(|ctrl| {
+            matches!(
+                ctrl,
+                Control::SectionDef(_) | Control::ColumnDef(_) | Control::Bookmark(_)
+            )
+        })
+    {
+        return false;
+    }
+
+    paragraphs
+        .get(para_idx + 1)
+        .is_some_and(para_is_paper_page_square_empty_table_anchor)
+}
+
+fn para_is_post_paper_page_square_table_scaffold(
+    para_idx: usize,
+    paragraphs: &[Paragraph],
+) -> bool {
+    let Some(para) = paragraphs.get(para_idx) else {
+        return false;
+    };
+    if para_has_visible_text(para) {
+        return false;
+    }
+    let empty_no_control_para =
+        para.column_type == ColumnBreakType::None && para.controls.is_empty();
+    let columndef_only_separator =
+        para.column_type == ColumnBreakType::Column && para_is_columndef_only_separator(para);
+    if !empty_no_control_para && !columndef_only_separator {
+        return false;
+    }
+
+    paragraphs
+        .get(para_idx.saturating_sub(1))
+        .is_some_and(para_is_paper_page_square_empty_table_anchor)
+        && paragraphs
+            .get(para_idx + 1)
+            .is_some_and(para_has_visible_text)
+}
+
+fn columndef_separator_between_floating_overlays(
+    para_idx: usize,
+    paragraphs: &[Paragraph],
+) -> bool {
+    let prev_overlay = (0..para_idx).rev().find_map(|idx| {
+        let para = paragraphs.get(idx)?;
+        if para.text.trim().is_empty()
+            && (para.controls.is_empty() || para_is_columndef_only_separator(para))
+        {
+            return None;
+        }
+        Some(crate::renderer::layout::para_is_floating_overlay_anchor(
+            para,
+        ))
+    });
+    let next_overlay = paragraphs.iter().skip(para_idx + 1).find_map(|para| {
+        if para.text.trim().is_empty()
+            && (para.controls.is_empty() || para_is_columndef_only_separator(para))
+        {
+            return None;
+        }
+        Some(crate::renderer::layout::para_is_floating_overlay_anchor(
+            para,
+        ))
+    });
+
+    prev_overlay == Some(true) && next_overlay == Some(true)
+}
+
 fn non_tac_picture_or_shape_block_height_px(para: &Paragraph, dpi: f64) -> Option<f64> {
     let mut max_height = 0.0f64;
     let mut found = false;
@@ -2314,17 +2447,19 @@ impl TypesetEngine {
             // 나눈다. 이 구분자는 has_diff_col_def=false(단 수 불변)라 위 branch 를 타는데, 단일
             // 단에서 페이지 분할로 변환되어 폼마다 허위 페이지가 생긴다. 텍스트 없이 ColumnDef
             // 만 든 단일 단 단나누기도 억제한다(한글은 이 구분자로 쪽을 나누지 않음).
-            let empty_columndef_only_break = !has_diff_col_def
-                && st.col_count <= 1
-                && para.text.trim().is_empty()
-                && !para.controls.is_empty()
-                && para
-                    .controls
-                    .iter()
-                    .all(|c| matches!(c, Control::ColumnDef(_)));
+            let columndef_only_break = para_is_columndef_only_separator(para);
+            let empty_columndef_only_break =
+                !has_diff_col_def && st.col_count <= 1 && columndef_only_break;
+            // [#2019 v3] 별지 서식은 같은 2단 ColumnDef 를 중간중간 반복해 부동
+            // overlay 글상자 묶음을 구분한다. 앞뒤가 모두 부동 overlay 앵커이면
+            // 실제 텍스트 column advance 로 보지 않는다.
+            let overlay_columndef_separator_break = !has_diff_col_def
+                && columndef_only_break
+                && columndef_separator_between_floating_overlays(para_idx, paragraphs);
             let suppress_floating_anchor_column_break = !has_diff_col_def
                 && (crate::renderer::layout::para_is_floating_overlay_anchor(para)
-                    || empty_columndef_only_break);
+                    || empty_columndef_only_break
+                    || overlay_columndef_separator_break);
             if para.column_type == ColumnBreakType::Column && !suppress_floating_anchor_column_break
             {
                 if has_diff_col_def {
@@ -2547,6 +2682,16 @@ impl TypesetEngine {
             // 빈 셋(reflow hint 없음)이면 무동작 → 기존 출력 불변.
             if force_break_before.contains(&para_idx) && !st.current_items.is_empty() {
                 st.force_new_page();
+            }
+
+            if para_is_pre_paper_page_square_table_scaffold(para_idx, paragraphs)
+                || para_is_post_paper_page_square_table_scaffold(para_idx, paragraphs)
+            {
+                // [#2019 v3] Paper/Page 기준 Square 표를 둘러싼 빈 스캐폴드 문단.
+                // 쪽나누기/ColumnDef 효과는 위에서 적용하되, PDF 기준으로는 별도 빈 줄을
+                // 렌더하거나 본문 흐름 높이를 소비하지 않는다.
+                st.hidden_empty_paras.insert(para_idx);
+                continue;
             }
 
             // Task #321: 문단간 vpos-reset 기반 강제 분할
@@ -9727,10 +9872,11 @@ impl TypesetEngine {
             line_spacings[1] = 0.0;
         }
 
-        // [#2019 ①] 부동 개체 전용 빈 앵커 문단(별지 서식): 위 두 경로(composed/stored LINE_SEG)가
-        // 산출한 line_height 는 개체 높이를 담고 있어(글상자 51.3mm=14545HU) 흐름에 예약하면
-        // 이중 계상 → 과분할. 개체는 절대위치 별도 렌더이므로 흐름 높이는 빈 문단 fallback 으로
-        // 대체한다. 자리차지·tac=true 는 helper 에서 제외되어 예약 유지.
+        // [#2019 부분 완화] 부동 개체 전용 빈 앵커 문단(별지 서식): 이 경로는
+        // 81쪽 산란 재발을 막기 위해 stored line_height 를 빈 문단 fallback 으로 낮춘다.
+        // 다만 이것은 한글 2020/2022 정합 모델이 아니다. 일부 Paper 앵커 개체는 실제 렌더
+        // extent 를 page-local pagination 에 반영해야 하며, #2019 v3 에서 이 부분을 다시
+        // 풀어야 한다. 자리차지·tac=true 는 helper 에서 제외되어 예약 유지.
         if crate::renderer::layout::para_is_floating_overlay_anchor(para) {
             let (lh, ls) = empty_paragraph_fallback_line_metrics(para, styles, para_style)
                 .unwrap_or((hwpunit_to_px(400, self.dpi), 0.0));
@@ -12115,10 +12261,27 @@ impl TypesetEngine {
         // 위해 host paragraph 의 first_vpos 만큼 cur_h 를 미리 jump 하고 표 advance 를
         // 본문 라인 만큼으로 축소.
         use crate::model::shape::{TextWrap, VertRelTo};
-        let is_paper_topbottom_block = !table.common.treat_as_char
-            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+        // [#1994] Paper(용지)-앵커 부동 표는 절대 좌표로 그려지므로 flow 를 소비하지 않고 절대
+        // 배치해야 한다. 기존에는 자리차지(TopAndBottom)만 이 경로를 탔으나, 글뒤로/글앞으로
+        // (BehindText/InFrontOfText) Paper-앵커 표도 동일하게 절대 배치 대상이다. 특히
+        // RowBreak 속성이 붙은 글뒤로 Paper-앵커 표(20200830 교회주보 pi=34 예배 스케줄,
+        // vert=용지 134mm)가 이 경로를 놓치면 아래 RowBreak 분할로 빠져 흐름 상단에 컬럼분할
+        // 배치되어 앞선 글뒤로 표(pi=33 교역자 명단)와 겹친다(#1994).
+        let is_paper_floating_block = !table.common.treat_as_char
+            && matches!(
+                table.common.text_wrap,
+                TextWrap::TopAndBottom | TextWrap::BehindText | TextWrap::InFrontOfText
+            )
             && matches!(table.common.vert_rel_to, VertRelTo::Paper);
-        if is_paper_topbottom_block && st.current_column == 0 {
+        // 글뒤로/글앞으로는 본문 위/아래에 겹쳐 그려지며 본문 텍스트를 밀어내지 않는다
+        // (자리차지와 달리 current_height sync 로 후속 흐름을 끌어내리면 안 됨).
+        let is_paper_behind_infront = !table.common.treat_as_char
+            && matches!(
+                table.common.text_wrap,
+                TextWrap::BehindText | TextWrap::InFrontOfText
+            )
+            && matches!(table.common.vert_rel_to, VertRelTo::Paper);
+        if is_paper_floating_block && st.current_column == 0 {
             if let Some(first_seg) = para.line_segs.first() {
                 let target_y =
                     crate::renderer::hwpunit_to_px(first_seg.vertical_pos as i32, self.dpi);
@@ -12136,11 +12299,16 @@ impl TypesetEngine {
                 let has_preceding_paper_float = para.controls.iter().take(ctrl_idx).any(|c| {
                     matches!(c, Control::Table(t)
                         if !t.common.treat_as_char
-                            && matches!(t.common.text_wrap, TextWrap::TopAndBottom)
+                            && matches!(t.common.text_wrap,
+                                TextWrap::TopAndBottom
+                                    | TextWrap::BehindText
+                                    | TextWrap::InFrontOfText)
                             && matches!(t.common.vert_rel_to, VertRelTo::Paper))
                 });
-                if can_sync || has_preceding_paper_float {
-                    if can_sync {
+                // 글뒤로/글앞으로는 sync 없이도 절대배치(0 flow)한다 — RowBreak 분할·flow 배치를
+                // 막아 절대 좌표(vert=용지)에 통째로 그려지게 한다.
+                if can_sync || has_preceding_paper_float || is_paper_behind_infront {
+                    if can_sync && !is_paper_behind_infront {
                         st.current_height = target_y;
                     }
                     // table_total = 0: 표 자체는 cur_h advance 에 영향 없음 (Paper-absolute).
@@ -12349,8 +12517,29 @@ impl TypesetEngine {
             let measured_fits_current = st.current_height + table_total <= available;
             let declared_overflows_current =
                 st.current_height + declared_total > available + DECLARED_FLOAT_FIT_TOLERANCE_PX;
+            // 저장된 LineSeg와 객체 높이가 현재 쪽 본문 하단 안에 들어간다고 말하면,
+            // host 줄 간격/선언 높이의 근소 초과만으로 먼저 이월하지 않는다.
+            let saved_object_bottom_fits_current = para
+                .line_segs
+                .iter()
+                .find(|ls| !is_synthetic_line_seg(ls))
+                .is_some_and(|seg| {
+                    let base = st.vpos_page_base.unwrap_or(0);
+                    let v_off = signed_hwpunit(table.common.vertical_offset);
+                    let top_hu = seg
+                        .vertical_pos
+                        .saturating_add(v_off.max(0))
+                        .saturating_sub(base);
+                    let bottom_hu =
+                        top_hu.saturating_add(table.common.height.min(i32::MAX as u32) as i32);
+                    let top_px = hwpunit_to_px(top_hu, self.dpi);
+                    let bottom_px = hwpunit_to_px(bottom_hu, self.dpi);
+                    top_px + 16.0 >= st.current_height
+                        && bottom_px <= available + DECLARED_FLOAT_FIT_TOLERANCE_PX
+                });
             if !st.current_items.is_empty()
                 && declared_overflows_current
+                && !saved_object_bottom_fits_current
                 && !single_row_object_declared_fits_current
                 && (st.has_stored_line_segs || measured_fits_current)
                 && declared_total <= available
@@ -13609,13 +13798,11 @@ impl TypesetEngine {
                     break;
                 }
             }
-            // [#2019 ③] leaving zone 높이는 "이 페이지에서 콘텐츠가 내려간 높이"이므로 정상
-            // 문서에서는 page-상대 stored vpos(< 페이지 높이) 로 근사된다. 그러나 별지 서식처럼
-            // stored vpos 가 섹션 누적(절대) 좌표인 문서는 max_vpos_end 가 페이지 높이를 크게
-            // 넘어(74312: 2204px vs 1009px) candidate_offset 이 항상 페이지를 초과 → zone 전환
-            // (1단↔2단 71회)마다 새 페이지가 생긴다. 두 신호로 누적 vpos 를 식별해 흐름 누적값
-            // (st.current_height, page-상대)을 대신 쓴다: ⓐ 이전 문단이 부동 폼 앵커, 또는
-            // ⓑ max_vpos_end 가 본문 높이를 초과(zone 콘텐츠는 페이지보다 클 수 없음).
+            // [#2019 부분 완화] leaving zone 높이는 "이 페이지에서 콘텐츠가 내려간 높이"여야
+            // 한다. 별지 서식처럼 stored vpos 가 섹션 누적 좌표인 문서에서는 max_vpos_end 가
+            // 페이지 높이를 크게 넘어 zone 전환마다 새 페이지가 생기므로, 우선 흐름 누적값
+            // (st.current_height, page-상대)을 대신 쓴다. 이 역시 완전한 한글 모델은 아니며,
+            // Paper 앵커 object extent 기반 page-local 계산으로 교체되어야 한다.
             let max_vpos_px = hwpunit_to_px(max_vpos_end, self.dpi);
             if max_vpos_end > 0
                 && !prev_is_floating_anchor
@@ -13709,13 +13896,20 @@ impl TypesetEngine {
             + st.current_zone_design_spacing_px / 2.0
             + new_ds / 2.0
             + solo_zone_pad;
+        let paper_overlay_tail_overflows_page = paragraphs[para_idx].column_type
+            == ColumnBreakType::Column
+            && Self::upcoming_paper_overlay_tail_overflows_page(
+                para_idx, paragraphs, &st.layout, self.dpi,
+            );
 
         // [Task #853] 새 zone 이 현재 페이지 하단 가까이(여유 ≲ 헤더 띠 1개 높이)에서 시작하면
         // 그 zone 의 콘텐츠(헤더 띠 ~47px 또는 본문 줄들)가 body 하단을 넘어 렌더되므로 다음
         // 페이지로 넘긴다. (shortcut.hwp 3쪽~6쪽 — 다단 zone 다수 누적 시 잔여 콘텐츠가
         // 본문영역을 넘어 바닥 여백에 그려지던 결함)
         let one_line = hwpunit_to_px(1500, self.dpi);
-        if candidate_offset > st.layout.available_body_height() - 4.0 * one_line {
+        if paper_overlay_tail_overflows_page
+            || candidate_offset > st.layout.available_body_height() - 4.0 * one_line
+        {
             st.push_new_page();
             // 새 페이지 첫 zone: 새 zone 디자인 spacing /2 만 (이전 zone 은 이전 페이지).
             st.current_zone_y_offset = new_ds / 2.0;
@@ -13739,6 +13933,60 @@ impl TypesetEngine {
                 break;
             }
         }
+    }
+
+    /// [#2019 v3] 명시 단나누기 뒤에 이어지는 Paper-overlay footer band 가
+    /// body frame 하단을 넘고, 곧 명시 쪽나누기가 이어지면 그 band 는 현재 쪽
+    /// 꼬리에 억지로 붙이지 않고 다음 물리 쪽에 배치한다.
+    ///
+    /// 74312 별지 서식의 처리절차 하단 꼬리는 Paper 절대좌표(용지 기준)라
+    /// 흐름 높이를 거의 소비하지 않지만, 한컴 PDF 는 body 하단 아래쪽 항목
+    /// 일부를 다음 쪽 footer 로 넘긴다. 일반 텍스트/표 band 로 확장하지 않도록
+    /// "전부 빈 부동 overlay 앵커 + 직후 Page/Section break" 에만 한정한다.
+    fn upcoming_paper_overlay_tail_overflows_page(
+        para_idx: usize,
+        paragraphs: &[Paragraph],
+        layout: &PageLayoutInfo,
+        dpi: f64,
+    ) -> bool {
+        let body_bottom_abs = layout.body_area.y + layout.body_area.height;
+        let mut saw_overlay = false;
+        let mut overflows = false;
+        let mut idx = para_idx + 1;
+
+        while let Some(para) = paragraphs.get(idx) {
+            if idx > para_idx + 1
+                && (para.column_type != ColumnBreakType::None
+                    || para
+                        .controls
+                        .iter()
+                        .any(|ctrl| matches!(ctrl, Control::ColumnDef(_))))
+            {
+                let follows_explicit_page_break = matches!(
+                    para.column_type,
+                    ColumnBreakType::Page | ColumnBreakType::Section
+                );
+                return saw_overlay && overflows && follows_explicit_page_break;
+            }
+
+            if para.text.trim().is_empty() && para.controls.is_empty() {
+                idx += 1;
+                continue;
+            }
+            if !crate::renderer::layout::para_is_floating_overlay_anchor(para) {
+                return false;
+            }
+
+            saw_overlay = true;
+            if paper_overlay_object_bottom_abs_px(para, dpi)
+                .is_some_and(|bottom| bottom > body_bottom_abs + 1.0)
+            {
+                overflows = true;
+            }
+            idx += 1;
+        }
+
+        false
     }
 
     /// [Task #846] 마지막 단에서 명시적 단나누기(`ColumnBreakType::Column`, 새 ColumnDef 없음)

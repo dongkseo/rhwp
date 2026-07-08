@@ -107,9 +107,11 @@ PR 검토 초기에 변경 파일과 PR 설명을 보고 visual sweep 필요 여
 - HWP/HWPX 샘플, 기준 PDF, golden, visual regression fixture 가 추가되거나 갱신된다.
 
 `cargo test --profile release-test --tests`, `cargo clippy`, `cargo test --test svg_snapshot` 통과는 이 판정을
-대체하지 않는다. 위 조건에 해당하면 3.5 절과 `mydocs/manual/visual_sweep_guide.md` 에 따라 기준 PDF가 있는
-대표 샘플/페이지를 골라 시각 검증을 수행한다. 기준 PDF가 없으면 review 문서에 보류 사유만 적고 끝내지
-않고, PR 작성자 또는 reviewer 에게 한컴 2020/2024 등 실제 기준 프로그램에서 저장한 PDF 업로드를 요청한다.
+대체하지 않는다. 위 조건에 해당하면 3.5 절과 `mydocs/manual/visual_sweep_guide.md` 에 따라 첨부 기준 PDF
+또는 3.5.1 절의 HWP 2020 MCP 산출 PDF 를 사용해 대표 샘플/페이지 시각 검증을 수행한다. PR 작성자가
+검증 PDF 를 첨부하지 않았다는 이유만으로 보류 사유를 적고 끝내지 않는다. 먼저 MCP 로 기준 PDF 를 산출하고,
+MCP 변환이 실패하거나 원본 HWP/HWPX 가 없어서 산출할 수 없을 때만 PR 작성자 또는 reviewer 에게 한컴
+2020/2024 등 실제 기준 프로그램에서 저장한 PDF 업로드를 요청한다.
 
 ## 3. 리뷰 문서 작성
 
@@ -215,15 +217,107 @@ Codex 와 Claude 는 visual sweep 을 수행한 경우 `compare`, `overlay`, `re
 자동 후보 수, `pixel match`, `visual_accuracy_proxy_percent` 를 함께 제시하고, 검증 이미지를 확인한 뒤
 작업지시자 승인 없이 시각 판정을 최종 통과로 단정하지 않는다.
 
-시각 검증이 반드시 필요한 PR review 에 기준 PDF 가 첨부되어 있지 않으면, maintainer 또는 collaborator 에게
+시각 검증이 반드시 필요한 PR review 에 기준 PDF 가 첨부되어 있지 않으면, 먼저 3.5.1 절에 따라 HWP 2020
+MCP 변환 서버로 기준 PDF 를 산출한다. MCP 산출 PDF 는 Hancom Office 2020 변환 결과이므로, 원본 파일과
+변환 job 이 명확히 기록된 경우 visual sweep 의 기준 PDF 로 사용할 수 있다. MCP 변환이 실패하거나 원본
+HWP/HWPX 파일이 PR diff 또는 저장소에 없어 산출할 수 없는 경우에만 maintainer 또는 collaborator 에게
 한컴 2020/2024 등 실제 기준 프로그램에서 저장한 PDF 파일 업로드를 요청한다. 기준 PDF 없이 생성한 자동
 비교 결과는 임시 참고 자료로만 기록하고 최종 시각 판정 근거로 사용하지 않는다.
+
+PR 또는 관련 issue 본문/댓글에 첨부된 재현 문서는 review 시작 시 먼저 모두 내려받아 `samples/` 아래에
+보존한다. GitHub `user-attachments` 파일, 본문에 삽입된 스크린샷 PNG, 외부 사이트에서 추적한 HWP/HWPX/PDF,
+이슈 작성자가 올린 비교 보고서 PDF 모두 여기에 해당한다. 권장 경로는 `samples/issue{N}/` 또는 `samples/pr{N}/` 이며, 파일명은
+출처와 역할을 알 수 있게 안정적으로 정한다. 이 원본 첨부 파일을 `output/` 에만 두거나 기준 PDF 라는 이유로
+`pdf/` 에만 두지 않는다.
+
+본문 첨부 PDF 가 visual sweep 기준 PDF 로도 쓰이면, 원본 첨부는 `samples/` 에 보존하고 기준 PDF 사본은
+`pdf/` 아래에 둔다. review 문서나 사전 처리 판단 보고서(`pr_{N}_report.md`)에는 두 경로와 SHA-256 이
+같은지, 기준 PDF 로 사용했는지, 단순 비교 보고서/참고 자료인지 구분해서 기록한다. 이렇게 해야 후속
+fast-pass PR 에서 신규 `samples/**/*.hwp`, `samples/**/*.hwpx`, `samples/**/*.pdf`,
+`samples/**/*.png`, `pdf/**/*.pdf` 를 모두 GitHub 에 보존할 수 있다.
+
+#### 3.5.1 기준 PDF 미첨부 시 HWP 2020 MCP 산출 절차
+
+PR 작성자가 검증 PDF 를 첨부하지 않았지만 PR 안에 기준으로 삼을 HWP/HWPX 원본이 있으면, review 담당자는
+HWP 2020 MCP 의 `convert_local_document` 도구를 사용해 PDF 를 먼저 산출한다. 이 절차는 PDF 업로드 요청보다
+우선한다.
+
+최종 저장 위치:
+
+```text
+pdf/{원본 stem}-2020.pdf
+```
+
+HWP 2020 MCP 산출 PDF 는 GitHub 에 남는 기준 PDF 여야 하므로 `output/` 아래에만 저장하지 않는다. 현행
+GitHub Actions fast-pass 는 신규 `pdf/**/*.pdf` 를 review 기준 PDF 로 인정하므로, 50MB 미만 MCP 산출본은
+기본적으로 `pdf/` 아래에 `{원본 stem}-2020.pdf` 이름으로 저장한다. 원본 파일이 `samples/basic/` 처럼 하위
+디렉터리에 있으면 `pdf/basic/` 처럼 같은 하위 구조를 유지한다. 50MB 이상 PDF 는 `pdf-large/` 와 Git LFS
+정책을 따르되, fast-pass 여부는 별도로 확인한다.
+
+MCP 서버 IP 주소와 인증 토큰은 공개 issue, PR 본문, review 문서, 로그에 기록하지 않는다. 이 접근 정보는
+인증된 collaborator 에게만 별도 비공개 채널로 공유한다. PR review 중 MCP 접근 정보가 필요한 경우에는
+공개 GitHub 기록에는 "MCP 접근 정보는 인증된 collaborator 에게만 공유되며, 필요 시 @jangster77 에게 서버
+URL/IP 와 토큰을 요청한다" 라고 적는다.
+
+MCP 변환을 시작하기 전에 원본 파일 크기와 예상 페이지 수를 먼저 확인한다. 이미 PR 에 기준 PDF 가 있거나
+저장소에 대응 PDF 가 있으면 `pdfinfo` 로 페이지 수를 확인하고, 기준 PDF 가 없으면 PR 설명, 샘플명,
+기존 issue 기록, `rhwp dump-pages`/렌더 결과 등으로 대략적인 규모를 파악한다. 페이지 수가 많거나
+거대 표/중첩 표/성능 검증 샘플처럼 변환 시간이 길어질 수 있는 경우에는 기본 `timeout_seconds: 240` 을
+그대로 쓰지 않는다. MCP tool 이 허용하는 범위 안에서 900~1800초처럼 충분한 timeout 을 지정하고, Codex
+또는 별도 MCP 클라이언트로 직접 호출할 때는 클라이언트 요청 timeout 도 서버 timeout 보다 길게 잡는다.
+VS Code/stdio bridge 경로에서 `MCP error -32001: Request timed out` 이 나왔더라도 서버 job 이 성공해
+PDF 를 생성했을 수 있으므로 곧바로 변환 실패로 단정하지 않는다. 서버 job/log 를 확인하고, 필요하면
+요청 timeout 을 명시할 수 있는 직접 HTTP MCP 클라이언트로 같은 입력을 다시 호출해 로컬 PDF 수신까지
+검증한다.
+
+사전 확인 예:
+
+```bash
+ls -lh samples/example.hwp
+pdfinfo pdf/example-2024.pdf | rg '^Pages:'
+```
+
+MCP tool 인자 예:
+
+```json
+{
+  "input_path": "/Users/tsjang/rhwp/samples/example.hwp",
+  "target": "pdf",
+  "output_dir": "/Users/tsjang/rhwp/pdf",
+  "output_filename": "example-2020.pdf",
+  "timeout_seconds": 240
+}
+```
+
+성공 조건:
+
+- MCP tool result 가 `status: success` 이다.
+- 서버 결과의 `run_status` 가 `0` 이다.
+- 서버 결과의 `validation` 이 `ok` 이다.
+- 로컬 출력 PDF 가 `pdf/` 아래에 존재하고 `file` 또는 `pdfinfo` 로 PDF 임을 확인한다.
+
+review 문서에는 다음을 기록한다.
+
+- 원본 HWP/HWPX 경로와 가능하면 SHA-256
+- PR/issue 본문·댓글 첨부 파일의 원본 URL 또는 출처와 `samples/` 보존 경로
+- MCP 출력 PDF 경로와 SHA-256
+- MCP server job id
+- `run_status`, `validation`, PDF page count
+- 이 PDF 를 기준으로 실행한 visual sweep 산출물 경로와 지표
+
+MCP 산출 PDF 는 visual sweep 입력이면서 장기 재현용 기준 PDF 이므로 review 문서/asset 과 함께 커밋 대상에
+포함한다. 최종 PR/issue comment 에 보여주는 안정 증거는 3.5 절에 따라 선택한 `review_NNN.png` 를
+`mydocs/pr/assets/` 아래로 복사한 파일을 기본으로 하되, 해당 visual sweep 의 기준 PDF 경로도 함께 적는다.
 
 maintainer 또는 collaborator 가 PR review 검증을 위해 추가한 기준 PDF/HWP/HWPX 샘플이 untracked 로
 존재하면, 해당 파일은 임시 디버그 산출물이 아니라 검증 근거 샘플로 간주한다. PR review 문서, visual
 asset 과 함께 커밋 대상에 포함하고, review 문서에는 샘플 경로와 어떤 검증에 사용했는지 기록한다. 다만
 코드 PR 과 검증 기록을 분리해야 하는 경우에는 원 PR 에 섞지 않고, 아래 옵션 2처럼 merge 후 별도
 문서/자산 PR 에 포함한다.
+
+이 문단의 커밋 대상 기준 PDF 에는 3.5.1 절의 MCP 산출 PDF 도 포함된다. MCP 산출 PDF 를 `output/` 아래에만
+남기면 GitHub 에 검증 기준이 보존되지 않으므로, 최종 검증에 사용한 50MB 미만 파일은 반드시 `pdf/` 아래로
+저장한다.
 
 시각 검증 PNG 를 PR 기록 자산으로 남길 때는 먼저 PR review 문서에 visual sweep 산출물의 임시 경로
 (`output/.../review/review_NNN.png` 등), 페이지 수, 자동 후보 수, `pixel match`,
@@ -340,10 +434,10 @@ cargo test --test svg_snapshot
 단독 실행에서 실패하면 `UPDATE_GOLDEN=1` 으로 재생성이 필요한지 확인해야 하지만, **PR 머지 후가 아닌
 머지 전에도 확인 필요**하다. 실패하면 작업지시자와 상의한다. 의도된 렌더 변경인지 버그인지 먼저 구분한다.
 
-2.6 절에서 visual sweep 대상으로 판정한 PR 은 cargo 검증이 모두 통과해도 여기서 끝내지 않는다. 기준 PDF가
-있는 대표 샘플/페이지에 대해 visual sweep 을 실행하고, `review_NNN.png` 확인 결과, 페이지 수,
-자동 후보 수, `pixel match`, `visual_accuracy_proxy_percent` 를 review 문서에 기록한 뒤 merge 판단으로
-넘어간다.
+2.6 절에서 visual sweep 대상으로 판정한 PR 은 cargo 검증이 모두 통과해도 여기서 끝내지 않는다. 첨부 기준
+PDF 또는 3.5.1 절의 MCP 산출 PDF 를 사용해 대표 샘플/페이지에 대해 visual sweep 을 실행하고,
+`review_NNN.png` 확인 결과, 페이지 수, 자동 후보 수, `pixel match`, `visual_accuracy_proxy_percent` 를
+review 문서에 기록한 뒤 merge 판단으로 넘어간다.
 
 ### 4.4 정리
 
@@ -544,7 +638,7 @@ pN visual sweep:
 
 [관련 이슈를 close 하지 않는 경우] 이 PR은 https://github.com/edwardkim/rhwp/issues/ISSUE 의 일부 발현만 처리합니다. 남은 발현/후속 과제가 있으므로 해당 이슈는 open 상태로 유지합니다.
 
-다음에 페이지 수나 시각 검증이 필요한 PR을 올려주실 때는, 가능하면 한컴 2020/2024 등에서 저장한 기준 PDF도 함께 첨부해 주세요. 대조 기준이 있으면 review와 회귀 판단을 훨씬 빠르고 정확하게 진행할 수 있습니다.
+다음에 페이지 수나 시각 검증이 필요한 PR을 올려주실 때는, 가능하면 한컴 2020/2024 등에서 저장한 기준 PDF도 함께 첨부해 주세요. 첨부가 없으면 maintainer 측에서 HWP 2020 MCP 로 기준 PDF 를 산출해 검증하되, 원본 HWP/HWPX 와 기대 출력 의도를 함께 적어주시면 review와 회귀 판단을 더 빠르고 정확하게 진행할 수 있습니다.
 ```
 
 외부 contributor 의 원 코드 PR 이 최종 diff 상 문서-only / review-only fast-pass 로 판정된 경우에도 후속
@@ -864,6 +958,7 @@ PR 커밋 전에 archive 경로로 이동한다. archive 이동만을 위한 별
   - 신규 추가(`added`) 상태의 `samples/**/*.hwp`
   - 신규 추가(`added`) 상태의 `samples/**/*.hwpx`
   - 신규 추가(`added`) 상태의 `samples/**/*.pdf`
+  - 신규 추가(`added`) 상태의 `samples/**/*.png`
   - 신규 추가(`added`) 상태의 `pdf/**/*.pdf`
 - 기존 `samples/**` 또는 `pdf/**` 파일을 수정, 삭제, rename 한 경우 fast-pass 대상이 아니다.
 - 해당 후속 커밋들은 single-parent commit 이다.

@@ -291,6 +291,30 @@ impl Document {
             .any(|content| content.id == bin_data_id && !content.data.is_empty())
     }
 
+    /// 편집 중 신규 BinData 의 storage id 를 채번한다.
+    ///
+    /// `BinDataContent.id` / `BinData.storage_id` 는 저장 시 BIN%04X 스트림
+    /// 이름이 되므로 기존 값과 겹치면 안 된다. 순번(len+1) 채번은 storage id 에
+    /// 구멍이 있는 문서에서 기존 id 와 충돌해 저장 시 이미지가 뒤바뀌거나
+    /// 소실된다. 1-based 순번(위치) 의미인 `ImageAttr.bin_data_id` 와는 다른
+    /// 값이므로 분리해서 사용한다 (`renderer::layout::utils::find_bin_data` 참조).
+    pub(crate) fn next_bin_data_storage_id(&self) -> u16 {
+        let max_content = self
+            .bin_data_content
+            .iter()
+            .map(|c| c.id)
+            .max()
+            .unwrap_or(0);
+        let max_storage = self
+            .doc_info
+            .bin_data_list
+            .iter()
+            .map(|b| b.storage_id)
+            .max()
+            .unwrap_or(0);
+        max_content.max(max_storage).saturating_add(1)
+    }
+
     /// 외부 이미지 바이너리를 렌더러 조회 규칙에 맞는 위치에 주입한다.
     ///
     /// 반환값은 실제 주입 여부이다. 호출자는 true일 때 렌더 캐시를 무효화해야 한다.
