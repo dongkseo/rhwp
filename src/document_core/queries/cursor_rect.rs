@@ -1070,6 +1070,84 @@ impl DocumentCore {
             None
         }
 
+        fn is_non_inline_ole_control(para: &Paragraph, control_index: usize) -> bool {
+            if !para.text.is_empty() {
+                return false;
+            }
+            para.controls.get(control_index).is_some_and(|control| {
+                matches!(
+                    control,
+                    Control::Shape(shape)
+                        if matches!(shape.as_ref(), crate::model::shape::ShapeObject::Ole(_))
+                            && !shape.common().treat_as_char
+                )
+            })
+        }
+
+        fn find_ole_object_cursor_hit(
+            node: &RenderNode,
+            sec: usize,
+            para_idx: usize,
+            render_para: Option<&Paragraph>,
+            offset: usize,
+            page_index: u32,
+        ) -> Option<CursorHit> {
+            if offset != 0 {
+                return None;
+            }
+
+            let control_ref = match &node.node_type {
+                RenderNodeType::RawSvg(raw_node) => raw_node.control_ref.as_ref(),
+                RenderNodeType::Placeholder(placeholder_node) => {
+                    placeholder_node.control_ref.as_ref()
+                }
+                _ => None,
+            };
+            if let Some(control_ref) = control_ref.filter(|control_ref| control_ref.kind == "ole") {
+                if control_ref.section_index == sec
+                    && control_ref.para_index == para_idx
+                    && render_para.is_some_and(|para| {
+                        is_non_inline_ole_control(para, control_ref.control_index)
+                    })
+                {
+                    return Some(CursorHit {
+                        page_index,
+                        x: node.bbox.x + node.bbox.width,
+                        y: node.bbox.y,
+                        height: node.bbox.height.max(10.0),
+                    });
+                }
+            }
+
+            for child in &node.children {
+                if let Some(hit) = find_ole_object_cursor_hit(
+                    child,
+                    sec,
+                    para_idx,
+                    render_para,
+                    offset,
+                    page_index,
+                ) {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+
+        if let Some(hit) = find_ole_object_cursor_hit(
+            &tree.root,
+            section_idx,
+            para_idx,
+            self.get_render_paragraph_ref(section_idx, para_idx).ok(),
+            char_offset,
+            first_page,
+        ) {
+            return Ok(format!(
+                "{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}",
+                hit.page_index, hit.x, hit.y, hit.height
+            ));
+        }
+
         if let Some(line_hit) = find_para_line(
             &tree.root,
             section_idx,

@@ -113,11 +113,38 @@ fn push_placeholder_render_node(
     let node_id = tree.next_id();
     let node = RenderNode::new(
         node_id,
-        RenderNodeType::Placeholder(crate::renderer::render_tree::PlaceholderNode {
+        RenderNodeType::Placeholder(crate::renderer::render_tree::PlaceholderNode::new(
             fill_color,
             stroke_color,
             label,
-        }),
+        )),
+        bbox,
+    );
+    parent.children.push(node);
+}
+
+fn push_ole_placeholder_render_node(
+    tree: &mut PageRenderTree,
+    parent: &mut RenderNode,
+    bbox: BoundingBox,
+    fill_color: u32,
+    stroke_color: u32,
+    label: String,
+    section_index: usize,
+    para_index: usize,
+    control_index: usize,
+) {
+    let node_id = tree.next_id();
+    let node = RenderNode::new(
+        node_id,
+        RenderNodeType::Placeholder(crate::renderer::render_tree::PlaceholderNode::ole(
+            fill_color,
+            stroke_color,
+            label,
+            section_index,
+            para_index,
+            control_index,
+        )),
         bbox,
     );
     parent.children.push(node);
@@ -132,7 +159,30 @@ fn push_raw_svg_render_node(
     let node_id = tree.next_id();
     let node = RenderNode::new(
         node_id,
-        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode { svg }),
+        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode::new(svg)),
+        bbox,
+    );
+    parent.children.push(node);
+}
+
+fn push_ole_raw_svg_render_node(
+    tree: &mut PageRenderTree,
+    parent: &mut RenderNode,
+    bbox: BoundingBox,
+    svg: String,
+    section_index: usize,
+    para_index: usize,
+    control_index: usize,
+) {
+    let node_id = tree.next_id();
+    let node = RenderNode::new(
+        node_id,
+        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode::ole(
+            svg,
+            section_index,
+            para_index,
+            control_index,
+        )),
         bbox,
     );
     parent.children.push(node);
@@ -367,7 +417,7 @@ impl LayoutEngine {
         );
         let node = RenderNode::new(
             node_id,
-            RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode { svg }),
+            RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode::new(svg)),
             bbox,
         );
         parent.children.push(node);
@@ -1770,11 +1820,13 @@ impl LayoutEngine {
                 let node_id = tree.next_id();
                 let node = RenderNode::new(
                     node_id,
-                    RenderNodeType::Placeholder(crate::renderer::render_tree::PlaceholderNode {
-                        fill_color: 0xFFE8F0FE,
-                        stroke_color: 0xFF4A90E2,
-                        label: "차트 (Chart)".to_string(),
-                    }),
+                    RenderNodeType::Placeholder(
+                        crate::renderer::render_tree::PlaceholderNode::new(
+                            0xFFE8F0FE,
+                            0xFF4A90E2,
+                            "차트 (Chart)".to_string(),
+                        ),
+                    ),
                     BoundingBox::new(render_x, render_y, render_w, render_h),
                 );
                 parent.children.push(node);
@@ -1788,15 +1840,15 @@ impl LayoutEngine {
                         if let Some(chart) = crate::ooxml_chart::OoxmlChart::parse(&content.data) {
                             let svg_fragment =
                                 chart.render_svg(render_x, render_y, render_w, render_h);
-                            let node_id = tree.next_id();
-                            let node = RenderNode::new(
-                                node_id,
-                                RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode {
-                                    svg: svg_fragment,
-                                }),
+                            push_ole_raw_svg_render_node(
+                                tree,
+                                parent,
                                 BoundingBox::new(render_x, render_y, render_w, render_h),
+                                svg_fragment,
+                                section_index,
+                                para_index,
+                                control_index,
                             );
-                            parent.children.push(node);
                             rendered = true;
                         }
                     }
@@ -1810,11 +1862,14 @@ impl LayoutEngine {
                                 {
                                     let svg_fragment =
                                         chart.render_svg(render_x, render_y, render_w, render_h);
-                                    push_raw_svg_render_node(
+                                    push_ole_raw_svg_render_node(
                                         tree,
                                         parent,
                                         BoundingBox::new(render_x, render_y, render_w, render_h),
                                         svg_fragment,
+                                        section_index,
+                                        para_index,
+                                        control_index,
                                     );
                                     rendered = true;
                                 }
@@ -1834,18 +1889,21 @@ impl LayoutEngine {
                                                     render_h,
                                                     ole.bin_data_id,
                                                 );
-                                            push_raw_svg_render_node(
+                                            push_ole_raw_svg_render_node(
                                                 tree,
                                                 parent,
                                                 BoundingBox::new(
                                                     render_x, render_y, render_w, render_h,
                                                 ),
                                                 svg_fragment,
+                                                section_index,
+                                                para_index,
+                                                control_index,
                                             );
                                             rendered = true;
                                         }
                                         Err(error) => {
-                                            push_placeholder_render_node(
+                                            push_ole_placeholder_render_node(
                                                 tree,
                                                 parent,
                                                 BoundingBox::new(
@@ -1857,6 +1915,9 @@ impl LayoutEngine {
                                                     error.stable_message(),
                                                     ole.bin_data_id,
                                                 ),
+                                                section_index,
+                                                para_index,
+                                                control_index,
                                             );
                                             rendered = true;
                                         }
@@ -1876,19 +1937,17 @@ impl LayoutEngine {
                                     if let Ok(svg_fragment) =
                                         crate::emf::convert_to_svg(emf_bytes, render_rect)
                                     {
-                                        let node_id = tree.next_id();
-                                        let node = RenderNode::new(
-                                            node_id,
-                                            RenderNodeType::RawSvg(
-                                                crate::renderer::render_tree::RawSvgNode {
-                                                    svg: svg_fragment,
-                                                },
-                                            ),
+                                        push_ole_raw_svg_render_node(
+                                            tree,
+                                            parent,
                                             BoundingBox::new(
                                                 render_x, render_y, render_w, render_h,
                                             ),
+                                            svg_fragment,
+                                            section_index,
+                                            para_index,
+                                            control_index,
                                         );
-                                        parent.children.push(node);
                                         rendered = true;
                                     }
                                 }
@@ -1922,17 +1981,15 @@ impl LayoutEngine {
                                     "<image x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"{}\" href=\"{}\"/>",
                                     render_x, render_y, render_w, render_h, href, href
                                 );
-                                    let node_id = tree.next_id();
-                                    let node = RenderNode::new(
-                                        node_id,
-                                        RenderNodeType::RawSvg(
-                                            crate::renderer::render_tree::RawSvgNode {
-                                                svg: svg_fragment,
-                                            },
-                                        ),
+                                    push_ole_raw_svg_render_node(
+                                        tree,
+                                        parent,
                                         BoundingBox::new(render_x, render_y, render_w, render_h),
+                                        svg_fragment,
+                                        section_index,
+                                        para_index,
+                                        control_index,
                                     );
-                                    parent.children.push(node);
                                     rendered = true;
                                 }
                             }
@@ -1953,19 +2010,17 @@ impl LayoutEngine {
                 if !rendered {
                     // 폴백: placeholder
                     let label = format!("OLE 개체 (BinData #{})", ole.bin_data_id);
-                    let node_id = tree.next_id();
-                    let node = RenderNode::new(
-                        node_id,
-                        RenderNodeType::Placeholder(
-                            crate::renderer::render_tree::PlaceholderNode {
-                                fill_color: 0xFFF0F0F0,
-                                stroke_color: 0xFF707070,
-                                label,
-                            },
-                        ),
+                    push_ole_placeholder_render_node(
+                        tree,
+                        parent,
                         BoundingBox::new(render_x, render_y, render_w, render_h),
+                        0xFFF0F0F0,
+                        0xFF707070,
+                        label,
+                        section_index,
+                        para_index,
+                        control_index,
                     );
-                    parent.children.push(node);
                 }
             }
         }

@@ -71,7 +71,7 @@ export class PicturePropsDialog {
   private sec = 0;
   private para = 0;
   private ci = 0;
-  private objectType: 'image' | 'shape' | 'line' | 'group' = 'image';
+  private objectType: 'image' | 'shape' | 'line' | 'group' | 'ole' = 'image';
   /** [Task #825] 머리말/꼬리말 그림 marker (Some 일 때 신규 API 사용). */
   private headerFooter: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number } | undefined;
   /** [Task #1138] 표 셀 내 객체 marker (Some 일 때 by_path API 사용). */
@@ -234,7 +234,7 @@ export class PicturePropsDialog {
     sec: number,
     para: number,
     ci: number,
-    type: 'image' | 'shape' | 'line' | 'group' = 'image',
+    type: 'image' | 'shape' | 'line' | 'group' | 'ole' = 'image',
     headerFooter?: { kind: 'header' | 'footer'; outerParaIdx: number; outerControlIdx: number },
     cellPath?: CellPathLike,
     innerControlIdx?: number,
@@ -250,11 +250,11 @@ export class PicturePropsDialog {
     this.innerControlIdx = innerControlIdx ?? 0;
 
     // getter 분기:
-    // - shape/line/group: cellPath > 외부 (셀 안 도형은 by_path API)
+    // - shape/line/group/ole: cellPath > 외부 (셀 안 도형은 by_path API)
     // - picture: headerFooter > cellPath > 외부
     //   [Task #1151 v4] 셀 안 inline picture 는 getCellPicturePropertiesByPath
     //   wasm API 호출.
-    if (type === 'shape' || type === 'line' || type === 'group') {
+    if (type === 'shape' || type === 'line' || type === 'group' || type === 'ole') {
       if (cellPath) {
         this.shapeProps = this.wasm.getCellShapePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
       } else {
@@ -374,7 +374,7 @@ export class PicturePropsDialog {
     this.sizeLockControls = [];
 
     const tabNames = this.objectType === 'line' ? LINE_TAB_NAMES
-      : (this.objectType === 'shape' || this.objectType === 'group') ? SHAPE_TAB_NAMES
+      : (this.objectType === 'shape' || this.objectType === 'group' || this.objectType === 'ole') ? SHAPE_TAB_NAMES
       : PICTURE_TAB_NAMES;
     tabNames.forEach((name, i) => {
       const btn = document.createElement('button');
@@ -1974,7 +1974,7 @@ export class PicturePropsDialog {
     if (desc !== this.props.description) updated['description'] = desc;
 
     // Shape(글상자) 전용 속성
-    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') && this.shapeProps) {
+    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') && this.shapeProps) {
       // 글상자 여백
       const ml = mmToHwp(parseFloat(this.tbMarginLeftInput?.value) || 0);
       const mr = mmToHwp(parseFloat(this.tbMarginRightInput?.value) || 0);
@@ -2217,12 +2217,12 @@ export class PicturePropsDialog {
 
     if (Object.keys(updated).length > 0) {
       // setter 분기:
-      // - shape/line/group: cellPath > 외부
+      // - shape/line/group/ole: cellPath > 외부
       // - picture: headerFooter > cellPath > 외부
       //   [Task #1151 v4] 셀 안 inline picture 는 setCellPicturePropertiesByPath
       //   wasm API 호출. 본문 picture (cellPath 없음) 는 기존 setPictureProperties.
       const applyProps = () => {
-        if (this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') {
+        if (this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') {
           if (this.cellPath) {
             this.wasm.setCellShapePropertiesByPath(
               this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
@@ -2309,7 +2309,7 @@ export class PicturePropsDialog {
     this.updateOverlapOption();
 
     // Shape/Line 전용 필드
-    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group') && this.shapeProps) {
+    if ((this.objectType === 'shape' || this.objectType === 'line' || this.objectType === 'group' || this.objectType === 'ole') && this.shapeProps) {
       const sp = this.shapeProps;
 
       // 기본 탭 — 회전/대칭

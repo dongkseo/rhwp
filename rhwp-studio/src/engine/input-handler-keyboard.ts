@@ -127,7 +127,7 @@ type PictureDeleteRef = {
   sec: number;
   ppi: number;
   ci: number;
-  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole';
   cellPath?: CellPathLike;
 };
 

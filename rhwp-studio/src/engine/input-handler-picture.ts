@@ -10,7 +10,7 @@ type PictureObjectRef = {
   sec: number;
   ppi: number;
   ci: number;
-  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole';
   cellIdx?: number;
   cellParaIdx?: number;
   outerTableControlIdx?: number;
@@ -85,7 +85,7 @@ function controlToRef(ctrl: any): PictureObjectRef {
     cellPath: ctrl.cellPath, noteRef: ctrl.noteRef, headerFooter: ctrl.headerFooter };
 }
 
-/** 클릭 좌표에서 그림, 글상자, 수식 개체를 찾는다. */
+/** 클릭 좌표에서 그림, 글상자, 수식, OLE 개체를 찾는다. */
 /** 점과 선분 사이 최소 거리 (px) */
 function pointToSegmentDist(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1, dy = y2 - y1;
@@ -133,7 +133,7 @@ export function findPictureAtClick(this: any,
     const behindCtrls: any[] = [];
     let topHit: any = null;
     for (const ctrl of layout.controls) {
-      if (ctrl.type !== 'image' && ctrl.type !== 'shape' && ctrl.type !== 'equation' && ctrl.type !== 'group' && ctrl.type !== 'line') continue;
+      if (ctrl.type !== 'image' && ctrl.type !== 'shape' && ctrl.type !== 'equation' && ctrl.type !== 'group' && ctrl.type !== 'line' && ctrl.type !== 'ole') continue;
       if (ctrl.secIdx === undefined || ctrl.paraIdx === undefined || ctrl.controlIdx === undefined) continue;
       // [Task #825] 머리말/꼬리말 그림: headerFooter marker 가 함께 있어야 lookup 가능.
       // (없으면 본문 picture 동작 그대로.)
@@ -228,7 +228,7 @@ export function findPictureAtClick(this: any,
 
 /** 선택된 개체의 bbox를 페이지 레이아웃에서 찾는다. */
 export function findPictureBbox(this: any,
-  ref: { sec: number; ppi: number; ci: number; type?: 'image' | 'shape' | 'equation' | 'group' | 'line'; cellIdx?: number; cellParaIdx?: number; cellPath?: CellPathLike; noteRef?: any },
+  ref: { sec: number; ppi: number; ci: number; type?: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole'; cellIdx?: number; cellParaIdx?: number; cellPath?: CellPathLike; noteRef?: any },
 ): { pageIndex: number; x: number; y: number; w: number; h: number; x1?: number; y1?: number; x2?: number; y2?: number } | null {
   const matchType = ref.type ?? 'image';
   // line은 shape의 하위 타입 → layout에서 'line'으로 반환됨
@@ -412,7 +412,7 @@ export function isShapeBorderClick(this: any,
 
 /** 개체 속성을 타입에 따라 조회한다. */
 export function getObjectProperties(this: any, ref: PictureObjectRef): any {
-  if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
+  if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group' || ref.type === 'ole') {
     if (hasCellPath(ref)) {
       return this.wasm.getCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
     }
@@ -435,7 +435,7 @@ export function getObjectProperties(this: any, ref: PictureObjectRef): any {
 
 /** 개체 속성을 타입에 따라 변경한다. */
 export function setObjectProperties(this: any, ref: PictureObjectRef, props: Record<string, unknown>): void {
-  if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
+  if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group' || ref.type === 'ole') {
     if (hasCellPath(ref)) {
       this.wasm.setCellShapePropertiesByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci, props);
       return;
@@ -474,7 +474,7 @@ export function isObjectSizeProtected(this: any, ref: PictureObjectRef | null | 
 
 /** 개체를 타입에 따라 삭제한다. */
 export function deleteObjectControl(this: any, ref: PictureObjectRef): void {
-  if (ref.type === 'shape' || ref.type === 'group' || ref.type === 'line') {
+  if (ref.type === 'shape' || ref.type === 'group' || ref.type === 'line' || ref.type === 'ole') {
     this.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
   } else if (ref.type === 'equation') {
     this.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
@@ -974,7 +974,7 @@ export function finishPictureMoveDrag(this: any): void {
     if (totalDeltaH !== 0 || totalDeltaV !== 0) {
       const targets = multiRefs || [{ ...this.pictureMoveState.ref, origHorzOffset: this.pictureMoveState.origHorzOffset, origVertOffset: this.pictureMoveState.origVertOffset }];
       for (const r of targets) {
-        const CmdClass = (r.type === 'shape' || r.type === 'line' || r.type === 'group') ? MoveShapeCommand : MovePictureCommand;
+        const CmdClass = (r.type === 'shape' || r.type === 'line' || r.type === 'group' || r.type === 'ole') ? MoveShapeCommand : MovePictureCommand;
         this.executeOperation({
           kind: 'record',
           command: new CmdClass(
