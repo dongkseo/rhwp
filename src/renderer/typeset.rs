@@ -2331,6 +2331,278 @@ impl TypesetEngine {
         )
     }
 
+    /// [Task #2094] HWP3 변환본 vpos 리셋 쪽나눔 판정 — 소스분기(is_hwp3_variant)는
+    /// caller 유지, 본 함수는 판정 본체만 담당한다 (원본 무변경 이동).
+    #[allow(clippy::too_many_arguments)]
+    fn judge_hwp3_variant_vpos_reset_break(
+        &self,
+        para: &Paragraph,
+        paragraphs: &[Paragraph],
+        styles: &ResolvedStyleSet,
+        para_idx: usize,
+        body_height_hu_for_variant: i32,
+        variant_prev_para_idx: Option<usize>,
+    ) -> bool {
+        let mut variant_vpos_reset_break = false;
+        if body_height_hu_for_variant > 0 && !para.text.is_empty() {
+            let para_sb = styles
+                .para_styles
+                .get(para.para_shape_id as usize)
+                .map(|ps| ps.spacing_before)
+                .unwrap_or(0.0);
+            let para_sb_hu = (para_sb * 7200.0 / 96.0) as i32;
+            let prev_real_idx_and_ls = variant_prev_para_idx.and_then(|prev_pi| {
+                (0..=prev_pi).rev().find_map(|i| {
+                    paragraphs
+                        .get(i)
+                        .and_then(|p| p.line_segs.last())
+                        .filter(|ls| !is_synthetic_line_seg(ls))
+                        .map(|ls| (i, ls))
+                })
+            });
+            let curr_real = para
+                .line_segs
+                .first()
+                .filter(|ls| !is_synthetic_line_seg(ls));
+            if let Some((prev_real_idx, prev_last)) = prev_real_idx_and_ls {
+                let prev_end_vpos = prev_last.vertical_pos + prev_last.line_height;
+                let prev_positive_wrap_end = paragraphs
+                    .get(prev_real_idx)
+                    .and_then(positive_vpos_end_before_negative_wrap);
+                let prev_prev_end_vpos = if prev_real_idx > 0 {
+                    (0..prev_real_idx).rev().find_map(|i| {
+                        paragraphs.get(i).and_then(|p| {
+                            p.line_segs
+                                .last()
+                                .filter(|ls| !is_synthetic_line_seg(ls))
+                                .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
+                        })
+                    })
+                } else {
+                    None
+                };
+                let prev_top_content_reset = paragraphs.get(prev_real_idx).is_some_and(|p| {
+                    let prev_sb_hu = styles
+                        .para_styles
+                        .get(p.para_shape_id as usize)
+                        .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
+                        .unwrap_or(0);
+                    p.line_segs.len() == 1
+                        && p.line_segs
+                            .first()
+                            .is_some_and(|ls| !is_synthetic_line_seg(ls) && ls.vertical_pos == 0)
+                        && p.controls.is_empty()
+                        && para_has_visible_text(p)
+                        && prev_sb_hu < 250
+                });
+                let next_first_real_vpos = paragraphs
+                    .get(para_idx + 1)
+                    .and_then(|next_para| next_para.line_segs.first())
+                    .filter(|ls| !is_synthetic_line_seg(ls))
+                    .map(|ls| ls.vertical_pos);
+                let bridge_missing_count = (prev_real_idx + 1..para_idx)
+                    .filter(|&i| {
+                        paragraphs.get(i).is_some_and(|p| {
+                            p.line_segs.is_empty()
+                                && p.controls.is_empty()
+                                && para_has_visible_text(p)
+                        })
+                    })
+                    .count();
+                let high_threshold = body_height_hu_for_variant * 95 / 100;
+                let table_heading_reset = prev_real_idx + 1 == para_idx
+                    && para.line_segs.is_empty()
+                    && para.controls.is_empty()
+                    && para_has_visible_text(para)
+                    && para_sb_hu >= 500
+                    && prev_end_vpos > body_height_hu_for_variant * 85 / 100
+                    && paragraphs.get(prev_real_idx).is_some_and(|prev_para| {
+                        prev_para
+                            .controls
+                            .iter()
+                            .any(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
+                    })
+                    && paragraphs
+                        .get(para_idx + 1)
+                        .and_then(|next_para| next_para.line_segs.first())
+                        .filter(|ls| !is_synthetic_line_seg(ls))
+                        .is_some_and(|ls| ls.vertical_pos <= 4000);
+                let empty_bridge_heading_reset = para.line_segs.is_empty()
+                    && para.controls.is_empty()
+                    && para_has_visible_text(para)
+                    && para_sb_hu >= 500
+                    && bridge_missing_count == 1
+                    && prev_end_vpos > body_height_hu_for_variant * 80 / 100
+                    && prev_end_vpos <= body_height_hu_for_variant * 85 / 100;
+
+                let real_heading_or_bridge_reset = curr_real.is_some_and(|curr_first| {
+                    let curr_first_vpos = curr_first.vertical_pos;
+                    let strict_heading_reset = para_sb_hu >= 500
+                        && prev_end_vpos > high_threshold
+                        && curr_first_vpos < 1500;
+                    let delayed_heading_after_top_content_reset = prev_real_idx + 1 == para_idx
+                        && para.line_segs.len() >= 2
+                        && para_sb_hu >= 500
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && curr_first_vpos > 0
+                        && curr_first_vpos <= 2500
+                        && prev_top_content_reset
+                        && prev_prev_end_vpos
+                            .is_some_and(|end| end > body_height_hu_for_variant * 70 / 100);
+                    let bridged_reset = bridge_missing_count >= 2
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && curr_first_vpos <= 1500
+                        && prev_end_vpos > body_height_hu_for_variant * 75 / 100;
+                    let negative_wrap_heading_reset = prev_real_idx + 1 == para_idx
+                        && para.line_segs.len() == 1
+                        && para_sb_hu >= 250
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && curr_first_vpos < 0
+                        && prev_positive_wrap_end
+                            .is_some_and(|end| end > body_height_hu_for_variant * 75 / 100);
+                    let bottom_heading_before_next_reset = prev_real_idx + 1 == para_idx
+                        && para.line_segs.len() == 1
+                        && para_sb_hu >= 250
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && curr_first_vpos > body_height_hu_for_variant * 75 / 100
+                        && next_first_real_vpos.is_some_and(|next_vpos| {
+                            next_vpos > 0 && next_vpos <= 4000 && curr_first_vpos > next_vpos
+                        });
+                    strict_heading_reset
+                        || delayed_heading_after_top_content_reset
+                        || bridged_reset
+                        || negative_wrap_heading_reset
+                        || bottom_heading_before_next_reset
+                });
+
+                if table_heading_reset || empty_bridge_heading_reset || real_heading_or_bridge_reset
+                {
+                    variant_vpos_reset_break = true;
+                }
+            }
+        }
+        variant_vpos_reset_break
+    }
+
+    /// [Task #2094] 표 없는 문단의 배치 마무리 국면 — 원본 무변경 통이동 (st 변이만).
+    #[allow(clippy::too_many_arguments)]
+    fn typeset_no_table_paragraph_tail(
+        &self,
+        st: &mut TypesetState,
+        page_def: &PageDef,
+        para: &Paragraph,
+        paragraphs: &[Paragraph],
+        composed: &[ComposedParagraph],
+        styles: &ResolvedStyleSet,
+        para_idx: usize,
+        has_table: bool,
+    ) {
+        if !has_table {
+            let has_non_tac_pic_square = para.controls.iter().any(|c| {
+                let cm = match c {
+                    Control::Picture(p) => Some(&p.common),
+                    Control::Shape(s) => {
+                        if let crate::model::shape::ShapeObject::Picture(p) = s.as_ref() {
+                            Some(&p.common)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                cm.map(|cm| {
+                    !cm.treat_as_char
+                        && matches!(cm.text_wrap, crate::model::shape::TextWrap::Square)
+                })
+                .unwrap_or(false)
+            });
+            if has_non_tac_pic_square {
+                let anchor_cs = para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
+                let anchor_sw = para
+                    .line_segs
+                    .first()
+                    .map(|s| s.segment_width as i32)
+                    .unwrap_or(0);
+                // [#1956] 전체 폭 밴드 가드 — 옆 공간이 없으면 arming 하지 않는다.
+                let col_w_hu = st.layout.column_width_hu();
+                let band_full_width = anchor_sw > 0 && (anchor_sw - col_w_hu).abs() < 3000;
+                if (anchor_cs > 0 || anchor_sw > 0) && !band_full_width {
+                    st.wrap_around_cs = anchor_cs;
+                    st.wrap_around_sw = anchor_sw;
+                    st.wrap_around_table_para = para_idx;
+                    st.wrap_around_any_seg = true;
+                    // [Task #722] anchor host paragraph 자체도 wrap_anchors 등록.
+                    // LINE_SEG cs/sw 가 wrap zone 으로 인코딩되어 있으면 host paragraph 의
+                    // 줄도 image 우측 wrap zone 에 layout 되어야 한다 (한컴 PDF 권위 정합).
+                    // 미등록 시 paragraph_layout 의 wrap_anchor 분기 미진입 → col_area
+                    // 전체 폭 layout → image 영역 침범 → image z-order 후 그려져 가려짐.
+                    //
+                    // Case 가드 (Stage 3~5 진단):
+                    //   - LINE_SEG ≥ 2 → wrap zone (multi-line)
+                    //   - LINE_SEG 1 + caption_room ≤ line_height → wrap zone (image 가
+                    //     body_top 자체에 위치 → image 위 caption 영역 없음, 강제 wrap)
+                    //   - LINE_SEG 1 + caption_room > line_height → caption-style (자기
+                    //     미등록 → col_area 전체 폭 layout, image 위 자유 영역 표시)
+                    let body_top_hu = page_def.margin_top as i32;
+                    let line_height_hu = para
+                        .line_segs
+                        .first()
+                        .map(|s| s.line_height as i32)
+                        .unwrap_or(900);
+                    let (image_voff_hu, image_margin_right_hu) = para
+                        .controls
+                        .iter()
+                        .find_map(|c| {
+                            let cm = match c {
+                                Control::Picture(p) => Some(&p.common),
+                                Control::Shape(s) => {
+                                    if let crate::model::shape::ShapeObject::Picture(p) = s.as_ref()
+                                    {
+                                        Some(&p.common)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                _ => None,
+                            };
+                            cm.filter(|cm| {
+                                !cm.treat_as_char
+                                    && matches!(cm.text_wrap, crate::model::shape::TextWrap::Square)
+                            })
+                            .map(|cm| (cm.vertical_offset as i32, cm.margin.right as i32))
+                        })
+                        .unwrap_or((0, 0));
+                    let caption_room_hu = image_voff_hu - body_top_hu;
+                    let is_caption_style =
+                        para.line_segs.len() == 1 && caption_room_hu > line_height_hu;
+                    // [PR #732 후속 — exam_science 회귀 가드] image_mr=0 (margin 부재) 이면
+                    // 본 환경 OLD 동작 보존 — Task #722 host_self register skip.
+                    // 본질: image_mr > 0 인 경우 (한컴 viewer 가 inter-image-text gap 으로
+                    // margin 적용) 만 host_self register 가 의미. exam_science p.21/37/60 의
+                    // Square wrap picture 는 image_mr=0 (호스트 margin 부재) 이므로 OLD 의
+                    // col_area-full-width layout 정합 (line_seg cs=0/sw=실제 wrap zone 인코딩
+                    // 으로 한컴 정합 이미 유지). hwp3-sample5.hwp 의 page 8/27/48 (Task #722
+                    // 본질 영역) 은 image_mr > 0 으로 가드 통과 → 정합 유지.
+                    if !is_caption_style && image_margin_right_hu > 0 {
+                        st.current_column_wrap_anchors.insert(
+                            para_idx,
+                            crate::renderer::pagination::WrapAnchorRef {
+                                anchor_para_index: para_idx,
+                                anchor_cs,
+                                anchor_sw,
+                                anchor_image_margin_right: image_margin_right_hu,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// [Task #1007] HWP3 → HWP5 변환본 인지 typeset.
     /// 변환본 시 cross-paragraph vpos reset (이전 last vpos > body/2 + 현재 first vpos < body/4)
     /// 감지하여 page break 트리거 (한컴 인코딩 page break 시그널).
@@ -2557,150 +2829,15 @@ impl TypesetEngine {
             // sample16-2022 pi=87 (빈 문단, text_len=0) skip ✓
             // sample16-2022 pi=118 (content, sb=284) skip ✓
             // sample16-2022 pi=316 (content, sb=0) skip ✓
-            let mut variant_vpos_reset_break = false;
-            if is_hwp3_variant && body_height_hu_for_variant > 0 && !para.text.is_empty() {
-                let para_sb = styles
-                    .para_styles
-                    .get(para.para_shape_id as usize)
-                    .map(|ps| ps.spacing_before)
-                    .unwrap_or(0.0);
-                let para_sb_hu = (para_sb * 7200.0 / 96.0) as i32;
-                let prev_real_idx_and_ls = variant_prev_para_idx.and_then(|prev_pi| {
-                    (0..=prev_pi).rev().find_map(|i| {
-                        paragraphs
-                            .get(i)
-                            .and_then(|p| p.line_segs.last())
-                            .filter(|ls| !is_synthetic_line_seg(ls))
-                            .map(|ls| (i, ls))
-                    })
-                });
-                let curr_real = para
-                    .line_segs
-                    .first()
-                    .filter(|ls| !is_synthetic_line_seg(ls));
-                if let Some((prev_real_idx, prev_last)) = prev_real_idx_and_ls {
-                    let prev_end_vpos = prev_last.vertical_pos + prev_last.line_height;
-                    let prev_positive_wrap_end = paragraphs
-                        .get(prev_real_idx)
-                        .and_then(positive_vpos_end_before_negative_wrap);
-                    let prev_prev_end_vpos = if prev_real_idx > 0 {
-                        (0..prev_real_idx).rev().find_map(|i| {
-                            paragraphs.get(i).and_then(|p| {
-                                p.line_segs
-                                    .last()
-                                    .filter(|ls| !is_synthetic_line_seg(ls))
-                                    .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
-                            })
-                        })
-                    } else {
-                        None
-                    };
-                    let prev_top_content_reset = paragraphs.get(prev_real_idx).is_some_and(|p| {
-                        let prev_sb_hu = styles
-                            .para_styles
-                            .get(p.para_shape_id as usize)
-                            .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
-                            .unwrap_or(0);
-                        p.line_segs.len() == 1
-                            && p.line_segs.first().is_some_and(|ls| {
-                                !is_synthetic_line_seg(ls) && ls.vertical_pos == 0
-                            })
-                            && p.controls.is_empty()
-                            && para_has_visible_text(p)
-                            && prev_sb_hu < 250
-                    });
-                    let next_first_real_vpos = paragraphs
-                        .get(para_idx + 1)
-                        .and_then(|next_para| next_para.line_segs.first())
-                        .filter(|ls| !is_synthetic_line_seg(ls))
-                        .map(|ls| ls.vertical_pos);
-                    let bridge_missing_count = (prev_real_idx + 1..para_idx)
-                        .filter(|&i| {
-                            paragraphs.get(i).is_some_and(|p| {
-                                p.line_segs.is_empty()
-                                    && p.controls.is_empty()
-                                    && para_has_visible_text(p)
-                            })
-                        })
-                        .count();
-                    let high_threshold = body_height_hu_for_variant * 95 / 100;
-                    let table_heading_reset = prev_real_idx + 1 == para_idx
-                        && para.line_segs.is_empty()
-                        && para.controls.is_empty()
-                        && para_has_visible_text(para)
-                        && para_sb_hu >= 500
-                        && prev_end_vpos > body_height_hu_for_variant * 85 / 100
-                        && paragraphs.get(prev_real_idx).is_some_and(|prev_para| {
-                            prev_para
-                                .controls
-                                .iter()
-                                .any(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
-                        })
-                        && paragraphs
-                            .get(para_idx + 1)
-                            .and_then(|next_para| next_para.line_segs.first())
-                            .filter(|ls| !is_synthetic_line_seg(ls))
-                            .is_some_and(|ls| ls.vertical_pos <= 4000);
-                    let empty_bridge_heading_reset = para.line_segs.is_empty()
-                        && para.controls.is_empty()
-                        && para_has_visible_text(para)
-                        && para_sb_hu >= 500
-                        && bridge_missing_count == 1
-                        && prev_end_vpos > body_height_hu_for_variant * 80 / 100
-                        && prev_end_vpos <= body_height_hu_for_variant * 85 / 100;
-
-                    let real_heading_or_bridge_reset = curr_real.is_some_and(|curr_first| {
-                        let curr_first_vpos = curr_first.vertical_pos;
-                        let strict_heading_reset = para_sb_hu >= 500
-                            && prev_end_vpos > high_threshold
-                            && curr_first_vpos < 1500;
-                        let delayed_heading_after_top_content_reset = prev_real_idx + 1 == para_idx
-                            && para.line_segs.len() >= 2
-                            && para_sb_hu >= 500
-                            && para.controls.is_empty()
-                            && para_has_visible_text(para)
-                            && curr_first_vpos > 0
-                            && curr_first_vpos <= 2500
-                            && prev_top_content_reset
-                            && prev_prev_end_vpos
-                                .is_some_and(|end| end > body_height_hu_for_variant * 70 / 100);
-                        let bridged_reset = bridge_missing_count >= 2
-                            && para.controls.is_empty()
-                            && para_has_visible_text(para)
-                            && curr_first_vpos <= 1500
-                            && prev_end_vpos > body_height_hu_for_variant * 75 / 100;
-                        let negative_wrap_heading_reset = prev_real_idx + 1 == para_idx
-                            && para.line_segs.len() == 1
-                            && para_sb_hu >= 250
-                            && para.controls.is_empty()
-                            && para_has_visible_text(para)
-                            && curr_first_vpos < 0
-                            && prev_positive_wrap_end
-                                .is_some_and(|end| end > body_height_hu_for_variant * 75 / 100);
-                        let bottom_heading_before_next_reset = prev_real_idx + 1 == para_idx
-                            && para.line_segs.len() == 1
-                            && para_sb_hu >= 250
-                            && para.controls.is_empty()
-                            && para_has_visible_text(para)
-                            && curr_first_vpos > body_height_hu_for_variant * 75 / 100
-                            && next_first_real_vpos.is_some_and(|next_vpos| {
-                                next_vpos > 0 && next_vpos <= 4000 && curr_first_vpos > next_vpos
-                            });
-                        strict_heading_reset
-                            || delayed_heading_after_top_content_reset
-                            || bridged_reset
-                            || negative_wrap_heading_reset
-                            || bottom_heading_before_next_reset
-                    });
-
-                    if table_heading_reset
-                        || empty_bridge_heading_reset
-                        || real_heading_or_bridge_reset
-                    {
-                        variant_vpos_reset_break = true;
-                    }
-                }
-            }
+            let variant_vpos_reset_break = is_hwp3_variant
+                && self.judge_hwp3_variant_vpos_reset_break(
+                    para,
+                    paragraphs,
+                    styles,
+                    para_idx,
+                    body_height_hu_for_variant,
+                    variant_prev_para_idx,
+                );
 
             // [#1956] 명시적 쪽나누기 문단부터는 wrap 밴드 무효 — 새 쪽에는 anchor
             // 개체가 없으므로 후속 문단을 옆에 흡수하면 안 된다. current_items 가 비어
@@ -3677,110 +3814,9 @@ impl TypesetEngine {
             }
             // 비-TAC Picture/Shape Square wrap: engine.rs:380-397 동일 시멘틱.
             // 그림의 첫 lineseg cs가 0일 수 있어 any_seg_matches 허용 플래그 활성화.
-            if !has_table {
-                let has_non_tac_pic_square = para.controls.iter().any(|c| {
-                    let cm = match c {
-                        Control::Picture(p) => Some(&p.common),
-                        Control::Shape(s) => {
-                            if let crate::model::shape::ShapeObject::Picture(p) = s.as_ref() {
-                                Some(&p.common)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-                    cm.map(|cm| {
-                        !cm.treat_as_char
-                            && matches!(cm.text_wrap, crate::model::shape::TextWrap::Square)
-                    })
-                    .unwrap_or(false)
-                });
-                if has_non_tac_pic_square {
-                    let anchor_cs = para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
-                    let anchor_sw = para
-                        .line_segs
-                        .first()
-                        .map(|s| s.segment_width as i32)
-                        .unwrap_or(0);
-                    // [#1956] 전체 폭 밴드 가드 — 옆 공간이 없으면 arming 하지 않는다.
-                    let col_w_hu = st.layout.column_width_hu();
-                    let band_full_width = anchor_sw > 0 && (anchor_sw - col_w_hu).abs() < 3000;
-                    if (anchor_cs > 0 || anchor_sw > 0) && !band_full_width {
-                        st.wrap_around_cs = anchor_cs;
-                        st.wrap_around_sw = anchor_sw;
-                        st.wrap_around_table_para = para_idx;
-                        st.wrap_around_any_seg = true;
-                        // [Task #722] anchor host paragraph 자체도 wrap_anchors 등록.
-                        // LINE_SEG cs/sw 가 wrap zone 으로 인코딩되어 있으면 host paragraph 의
-                        // 줄도 image 우측 wrap zone 에 layout 되어야 한다 (한컴 PDF 권위 정합).
-                        // 미등록 시 paragraph_layout 의 wrap_anchor 분기 미진입 → col_area
-                        // 전체 폭 layout → image 영역 침범 → image z-order 후 그려져 가려짐.
-                        //
-                        // Case 가드 (Stage 3~5 진단):
-                        //   - LINE_SEG ≥ 2 → wrap zone (multi-line)
-                        //   - LINE_SEG 1 + caption_room ≤ line_height → wrap zone (image 가
-                        //     body_top 자체에 위치 → image 위 caption 영역 없음, 강제 wrap)
-                        //   - LINE_SEG 1 + caption_room > line_height → caption-style (자기
-                        //     미등록 → col_area 전체 폭 layout, image 위 자유 영역 표시)
-                        let body_top_hu = page_def.margin_top as i32;
-                        let line_height_hu = para
-                            .line_segs
-                            .first()
-                            .map(|s| s.line_height as i32)
-                            .unwrap_or(900);
-                        let (image_voff_hu, image_margin_right_hu) = para
-                            .controls
-                            .iter()
-                            .find_map(|c| {
-                                let cm = match c {
-                                    Control::Picture(p) => Some(&p.common),
-                                    Control::Shape(s) => {
-                                        if let crate::model::shape::ShapeObject::Picture(p) =
-                                            s.as_ref()
-                                        {
-                                            Some(&p.common)
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                    _ => None,
-                                };
-                                cm.filter(|cm| {
-                                    !cm.treat_as_char
-                                        && matches!(
-                                            cm.text_wrap,
-                                            crate::model::shape::TextWrap::Square
-                                        )
-                                })
-                                .map(|cm| (cm.vertical_offset as i32, cm.margin.right as i32))
-                            })
-                            .unwrap_or((0, 0));
-                        let caption_room_hu = image_voff_hu - body_top_hu;
-                        let is_caption_style =
-                            para.line_segs.len() == 1 && caption_room_hu > line_height_hu;
-                        // [PR #732 후속 — exam_science 회귀 가드] image_mr=0 (margin 부재) 이면
-                        // 본 환경 OLD 동작 보존 — Task #722 host_self register skip.
-                        // 본질: image_mr > 0 인 경우 (한컴 viewer 가 inter-image-text gap 으로
-                        // margin 적용) 만 host_self register 가 의미. exam_science p.21/37/60 의
-                        // Square wrap picture 는 image_mr=0 (호스트 margin 부재) 이므로 OLD 의
-                        // col_area-full-width layout 정합 (line_seg cs=0/sw=실제 wrap zone 인코딩
-                        // 으로 한컴 정합 이미 유지). hwp3-sample5.hwp 의 page 8/27/48 (Task #722
-                        // 본질 영역) 은 image_mr > 0 으로 가드 통과 → 정합 유지.
-                        if !is_caption_style && image_margin_right_hu > 0 {
-                            st.current_column_wrap_anchors.insert(
-                                para_idx,
-                                crate::renderer::pagination::WrapAnchorRef {
-                                    anchor_para_index: para_idx,
-                                    anchor_cs,
-                                    anchor_sw,
-                                    anchor_image_margin_right: image_margin_right_hu,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
+            self.typeset_no_table_paragraph_tail(
+                &mut st, page_def, para, paragraphs, composed, styles, para_idx, has_table,
+            );
 
             // Task #321: col 0 처리 중 body-wide TopAndBottom 표/도형이 발견되면
             // col 1+ advance 시 적용할 current_height 시작값을 미리 등록.
