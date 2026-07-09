@@ -8,14 +8,45 @@ import {
   assert,
 } from './helpers.mjs';
 
-runTest('Issue #2069 OLE 개체 선택', async ({ page }) => {
-  await loadHwpFile(page, '한셀OLE.hwp');
-
+async function showParagraphMarks(page) {
   await page.evaluate(() => {
     window.__wasm.setShowParagraphMarks(true);
     window.__canvasView.loadDocument();
   });
+}
 
+async function clickOleRightCaret(page) {
+  await page.evaluate(() => {
+    window.__inputHandler.exitPictureObjectSelectionAndAfterEdit?.();
+    window.__inputHandler.moveCursorTo?.({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 });
+  });
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
+
+  const clickPoint = await page.evaluate(() => {
+    const layout = window.__wasm.getPageControlLayout(0);
+    const ole = layout.controls.find(c => c.type === 'ole');
+    if (!ole) throw new Error('OLE layout not found');
+
+    const scrollContent = document.querySelector('#scroll-content');
+    const rect = scrollContent.getBoundingClientRect();
+    const zoom = window.__inputHandler.viewportManager.getZoom();
+    const pageIdx = 0;
+    const pageOffset = window.__inputHandler.virtualScroll.getPageOffset(pageIdx);
+    const pageLeft = window.__inputHandler.virtualScroll.getPageLeftResolved(
+      pageIdx,
+      scrollContent.clientWidth,
+    );
+
+    return {
+      x: rect.left + pageLeft + (ole.x + ole.w + 3) * zoom,
+      y: rect.top + pageOffset + (ole.y + 5) * zoom,
+    };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+}
+
+async function clickOlePreview(page) {
   const clickPoint = await page.evaluate(() => {
     const layout = window.__wasm.getPageControlLayout(0);
     const ole = layout.controls.find(c => c.type === 'ole');
@@ -37,9 +68,134 @@ runTest('Issue #2069 OLE 개체 선택', async ({ page }) => {
       ole,
     };
   });
-
   await page.mouse.click(clickPoint.x, clickPoint.y);
   await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 300)));
+  return clickPoint;
+}
+
+async function readOleKeyboardState(page) {
+  return await page.evaluate(() => {
+    const cursor = window.__inputHandler.cursor;
+    const ole = window.__wasm.getPageControlLayout(0).controls.find(c => c.type === 'ole');
+    const pos = cursor.getPosition?.() ?? null;
+    const activeRect = pos
+      ? window.__wasm.getCursorRect(pos.sectionIndex, pos.paragraphIndex, pos.charOffset)
+      : null;
+    return {
+      ole,
+      pos,
+      paraCount: window.__wasm.getParagraphCount(0),
+      activeRect,
+      isCell: cursor.isInCell?.() ?? false,
+      isPictureSelection: cursor.isInPictureObjectSelection?.() ?? false,
+      selected: cursor.getSelectedPictureRef?.() ?? null,
+    };
+  });
+}
+
+async function exerciseEnterBackspaceReenter(page) {
+  await clickOleRightCaret(page);
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+  await page.keyboard.press('Backspace');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 150)));
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 300)));
+  return await readOleKeyboardState(page);
+}
+
+async function setOleCaptionAndReadBack(page) {
+  await clickOlePreview(page);
+  const selection = await page.evaluate(() => {
+    const cursor = window.__inputHandler.cursor;
+    const selected = cursor.getSelectedPictureRef?.() ?? null;
+    const isPictureSelection = cursor.isInPictureObjectSelection?.() ?? false;
+    if (!isPictureSelection || selected?.type !== 'ole') {
+      return { selected, isPictureSelection, opened: false };
+    }
+    window.__inputHandler.dispatcher.dispatch('format:object-properties');
+    return { selected, isPictureSelection, opened: true };
+  });
+
+  await page.waitForSelector('.dialog-wrap', { timeout: 5000 });
+  const dialogState = await page.evaluate(() => {
+    const marginTab = [...document.querySelectorAll('.dialog-tab')]
+      .find(el => el.textContent?.trim() === '여백/캡션');
+    if (!marginTab) throw new Error('여백/캡션 tab not found');
+    marginTab.click();
+
+    const captionBtns = [...document.querySelectorAll('.pp-caption-btn')];
+    if (captionBtns.length !== 9) {
+      throw new Error(`caption button count mismatch: ${captionBtns.length}`);
+    }
+    captionBtns[8].click();
+
+    const expandLabel = [...document.querySelectorAll('label')]
+      .find(el => el.textContent?.includes('여백 부분까지 너비 확대'));
+    if (expandLabel) expandLabel.click();
+
+    const ok = [...document.querySelectorAll('button')]
+      .find(el => el.textContent?.trim() === '설정(D)');
+    if (!ok) throw new Error('설정(D) button not found');
+    const state = {
+      tabTexts: [...document.querySelectorAll('.dialog-tab')].map(el => el.textContent?.trim()),
+      captionCount: captionBtns.length,
+      captionDisabled: captionBtns.map(el => el.disabled),
+      values: [...document.querySelectorAll('.pp-caption-attrs input')]
+        .map(el => ({ type: el.type, value: el.value, checked: el.checked, disabled: el.disabled })),
+    };
+    ok.click();
+    return state;
+  });
+
+  await page.waitForSelector('.dialog-wrap', { hidden: true, timeout: 5000 }).catch(() => {});
+  const after = await page.evaluate(() => {
+    const props = window.__wasm.getShapeProperties(0, 0, 2);
+    return {
+      hasCaption: props.hasCaption,
+      captionDirection: props.captionDirection,
+      captionVertAlign: props.captionVertAlign,
+      captionWidth: props.captionWidth,
+      captionSpacing: props.captionSpacing,
+      captionIncludeMargin: props.captionIncludeMargin,
+    };
+  });
+  return { selection, dialogState, after };
+}
+
+runTest('Issue #2069 OLE 개체 선택', async ({ page }) => {
+  await loadHwpFile(page, '한셀OLE.hwp');
+  await showParagraphMarks(page);
+
+  const captionState = await setOleCaptionAndReadBack(page);
+  assert(captionState.selection.opened === true, `OLE 개체 속성 대화상자를 열 수 있어야 함: ${JSON.stringify(captionState.selection)}`);
+  assert(captionState.dialogState.captionCount === 9, `OLE 캡션 위치 버튼 9개 확인: ${JSON.stringify(captionState.dialogState)}`);
+  assert(captionState.dialogState.captionDisabled.every(v => v === false), `OLE 캡션 컨트롤은 활성화되어야 함: ${JSON.stringify(captionState.dialogState)}`);
+  assert(captionState.after.hasCaption === true, `OLE 캡션 설정이 반영되어야 함: ${JSON.stringify(captionState.after)}`);
+  assert(captionState.after.captionDirection === 'Right', `OLE 캡션 방향 확인: ${JSON.stringify(captionState.after)}`);
+  assert(captionState.after.captionVertAlign === 'Bottom', `OLE 캡션 세로 위치 확인: ${JSON.stringify(captionState.after)}`);
+  assert(captionState.after.captionWidth === Math.round(30 * 283.46), `OLE 캡션 크기 확인: ${JSON.stringify(captionState.after)}`);
+  assert(captionState.after.captionSpacing === Math.round(3 * 283.46), `OLE 캡션 간격 확인: ${JSON.stringify(captionState.after)}`);
+  assert(captionState.after.captionIncludeMargin === true, `OLE 캡션 여백 확장 확인: ${JSON.stringify(captionState.after)}`);
+
+  await loadHwpFile(page, '한셀OLE.hwp');
+  await showParagraphMarks(page);
+
+  const reenterState = await exerciseEnterBackspaceReenter(page);
+  assert(reenterState.paraCount === 2, `Enter→Backspace→Enter 후 문단 수 확인: ${reenterState.paraCount}`);
+  assert(reenterState.ole?.paraIdx === 0, `Backspace 후 재진입 Enter에서도 OLE는 원래 문단에 남아야 함: ${JSON.stringify(reenterState.ole)}`);
+  assert(reenterState.pos?.paragraphIndex === 1, `Backspace 후 재진입 Enter 커서는 뒤 문단으로 이동해야 함: ${JSON.stringify(reenterState.pos)}`);
+  assert(reenterState.isCell === false, 'Backspace 후 재진입 Enter가 OLE 내부 표 셀 편집으로 들어가면 안 됨');
+  assert(
+    Math.abs(reenterState.activeRect.x - (reenterState.ole.x + reenterState.ole.w)) <= 1.0,
+    `Backspace 후 재진입 Enter caret은 OLE 오른쪽 wrap-zone에 있어야 함: rect=${JSON.stringify(reenterState.activeRect)}, ole=${JSON.stringify(reenterState.ole)}`,
+  );
+  await screenshot(page, 'ole-enter-backspace-reenter');
+
+  await loadHwpFile(page, '한셀OLE.hwp');
+  await showParagraphMarks(page);
+
+  await clickOlePreview(page);
 
   const state = await page.evaluate(() => {
     const cursor = window.__inputHandler.cursor;

@@ -149,6 +149,10 @@ fn is_empty_stored_square_wrap_line_for_enter(para: &Paragraph) -> bool {
             .is_some_and(|seg| seg.column_start > 0 && seg.segment_width > 0)
 }
 
+fn is_contentless_empty_paragraph_for_merge(para: &Paragraph) -> bool {
+    para.text.is_empty() && para.char_offsets.is_empty() && para.controls.is_empty()
+}
+
 fn has_same_stored_wrap_line(lhs: &Paragraph, rhs: &Paragraph) -> bool {
     match (lhs.line_segs.first(), rhs.line_segs.first()) {
         (Some(a), Some(b)) => {
@@ -1671,6 +1675,13 @@ impl DocumentCore {
         // 편집 시 raw 스트림 무효화 (재직렬화 유도)
         self.document.sections[section_idx].raw_stream = None;
 
+        let preserve_square_ole_wrap_line = {
+            let paragraphs = &self.document.sections[section_idx].paragraphs;
+            let prev_idx = para_idx - 1;
+            is_contentless_empty_paragraph_for_merge(&paragraphs[para_idx])
+                && square_ole_wrap_chain_for_enter(paragraphs, prev_idx).is_some()
+        };
+
         // 현재 문단을 이전 문단에 병합
         let current_para = self.document.sections[section_idx]
             .paragraphs
@@ -1678,6 +1689,25 @@ impl DocumentCore {
         let prev_idx = para_idx - 1;
         let merge_point =
             self.document.sections[section_idx].paragraphs[prev_idx].merge_from(&current_para);
+
+        if preserve_square_ole_wrap_line {
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                prev_idx,
+            );
+            self.remove_composed_paragraph(section_idx, para_idx);
+            self.recompose_paragraph(section_idx, prev_idx);
+            self.paginate_if_needed();
+
+            self.event_log.push(DocumentEvent::ParagraphMerged {
+                section: section_idx,
+                para: para_idx,
+            });
+            return Ok(super::super::helpers::json_ok_with(&format!(
+                "\"paraIdx\":{},\"charOffset\":{}",
+                prev_idx, merge_point
+            )));
+        }
 
         // 병합된 문단 리플로우 → vpos 재계산 → 재구성 → 재페이지네이션 + 다단 수렴 루프
         let old_col = self

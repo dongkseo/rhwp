@@ -7,9 +7,129 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
-use crate::model::shape::{common_obj_offsets, ShapeObject};
+use crate::model::shape::{
+    common_obj_offsets, Caption, CaptionDirection, CaptionVertAlign, ShapeObject,
+};
 
 impl DocumentCore {
+    fn shape_caption_ref(shape: &ShapeObject) -> Option<&Caption> {
+        match shape {
+            ShapeObject::Line(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Rectangle(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Ellipse(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Arc(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Polygon(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Curve(s) => s.drawing.caption.as_ref(),
+            ShapeObject::Group(s) => s.caption.as_ref(),
+            ShapeObject::Picture(s) => s.caption.as_ref(),
+            ShapeObject::Chart(s) => s.caption.as_ref(),
+            ShapeObject::Ole(s) => s.caption.as_ref(),
+        }
+    }
+
+    fn shape_caption_mut(shape: &mut ShapeObject) -> &mut Option<Caption> {
+        match shape {
+            ShapeObject::Line(s) => &mut s.drawing.caption,
+            ShapeObject::Rectangle(s) => &mut s.drawing.caption,
+            ShapeObject::Ellipse(s) => &mut s.drawing.caption,
+            ShapeObject::Arc(s) => &mut s.drawing.caption,
+            ShapeObject::Polygon(s) => &mut s.drawing.caption,
+            ShapeObject::Curve(s) => &mut s.drawing.caption,
+            ShapeObject::Group(s) => &mut s.caption,
+            ShapeObject::Picture(s) => &mut s.caption,
+            ShapeObject::Chart(s) => &mut s.caption,
+            ShapeObject::Ole(s) => &mut s.caption,
+        }
+    }
+
+    fn format_shape_caption_props_json(shape: &ShapeObject) -> String {
+        let caption = Self::shape_caption_ref(shape);
+        format!(
+            ",\"hasCaption\":{},\"captionDirection\":\"{}\",\"captionVertAlign\":\"{}\",\"captionWidth\":{},\"captionSpacing\":{},\"captionMaxWidth\":{},\"captionIncludeMargin\":{}",
+            caption.is_some(),
+            caption.map_or("Bottom", |cap| match cap.direction {
+                CaptionDirection::Left => "Left",
+                CaptionDirection::Right => "Right",
+                CaptionDirection::Top => "Top",
+                CaptionDirection::Bottom => "Bottom",
+            }),
+            caption.map_or("Top", |cap| match cap.vert_align {
+                CaptionVertAlign::Top => "Top",
+                CaptionVertAlign::Center => "Center",
+                CaptionVertAlign::Bottom => "Bottom",
+            }),
+            caption.map_or(0u32, |cap| cap.width),
+            caption.map_or(0i16, |cap| cap.spacing),
+            caption.map_or(0u32, |cap| cap.max_width),
+            caption.map_or(false, |cap| cap.include_margin),
+        )
+    }
+
+    fn apply_shape_caption_props(shape: &mut ShapeObject, props_json: &str) {
+        use crate::document_core::helpers::{json_bool, json_i16, json_str, json_u32};
+
+        let Some(has_caption) = json_bool(props_json, "hasCaption") else {
+            return;
+        };
+        if !has_caption {
+            // 기존 Picture 속성 경로와 동일하게 캡션 삭제는 아직 보존한다.
+            return;
+        }
+
+        let default_max_width = shape.common().width;
+        let mut created = false;
+        {
+            let caption_slot = Self::shape_caption_mut(shape);
+            if caption_slot.is_none() {
+                let mut caption = Caption {
+                    max_width: default_max_width,
+                    ..Default::default()
+                };
+                let auto_number = crate::model::control::AutoNumber {
+                    number_type: crate::model::control::AutoNumberType::Picture,
+                    ..Default::default()
+                };
+                let mut para = Paragraph::default();
+                para.controls
+                    .push(crate::model::control::Control::AutoNumber(auto_number));
+                caption.paragraphs.push(para);
+                *caption_slot = Some(caption);
+                created = true;
+            }
+
+            if let Some(caption) = caption_slot.as_mut() {
+                if let Some(v) = json_str(props_json, "captionDirection") {
+                    caption.direction = match v.as_str() {
+                        "Left" => CaptionDirection::Left,
+                        "Right" => CaptionDirection::Right,
+                        "Top" => CaptionDirection::Top,
+                        _ => CaptionDirection::Bottom,
+                    };
+                }
+                if let Some(v) = json_str(props_json, "captionVertAlign") {
+                    caption.vert_align = match v.as_str() {
+                        "Center" => CaptionVertAlign::Center,
+                        "Bottom" => CaptionVertAlign::Bottom,
+                        _ => CaptionVertAlign::Top,
+                    };
+                }
+                if let Some(v) = json_u32(props_json, "captionWidth") {
+                    caption.width = v;
+                }
+                if let Some(v) = json_i16(props_json, "captionSpacing") {
+                    caption.spacing = v;
+                }
+                if let Some(v) = json_bool(props_json, "captionIncludeMargin") {
+                    caption.include_margin = v;
+                }
+            }
+        }
+
+        if created {
+            shape.common_mut().attr |= 1 << 29;
+        }
+    }
+
     fn resolve_shape_control_ref(
         &self,
         section_idx: usize,
@@ -216,9 +336,10 @@ impl DocumentCore {
             String::new()
         };
 
+        let caption_json = Self::format_shape_caption_props_json(shape);
         Ok(format!(
-            "{{{}{}{}{}{}}}",
-            common_json, tb_json, extra_json, round_json, connector_json
+            "{{{}{}{}{}{}{}}}",
+            common_json, tb_json, extra_json, round_json, connector_json, caption_json
         ))
     }
     /// 글상자(Shape) 속성 변경 (네이티브).
@@ -444,6 +565,8 @@ impl DocumentCore {
             rect.y_coords = [0, 0, h, h];
         }
 
+        Self::apply_shape_caption_props(shape, props_json);
+
         // Polygon/Curve: original_width/height 복원 (생성 시 값 유지 → 렌더러 스케일 팩터 정상화)
         if let Some(d) = shape.drawing_mut() {
             if let Some(w) = saved_orig_w {
@@ -592,9 +715,10 @@ impl DocumentCore {
             String::new()
         };
 
+        let caption_json = Self::format_shape_caption_props_json(shape);
         Ok(format!(
-            "{{{}{}{}{}{}}}",
-            common_json, tb_json, extra_json, round_json, connector_json
+            "{{{}{}{}{}{}{}}}",
+            common_json, tb_json, extra_json, round_json, connector_json, caption_json
         ))
     }
     /// [Task #1138] Shape 속성 JSON 적용 (mutation only). 후처리 (recompose /
@@ -794,6 +918,8 @@ impl DocumentCore {
             rect.x_coords = [0, w, w, 0];
             rect.y_coords = [0, 0, h, h];
         }
+
+        Self::apply_shape_caption_props(shape, props_json);
 
         if let Some(d) = shape.drawing_mut() {
             if let Some(w) = saved_orig_w {

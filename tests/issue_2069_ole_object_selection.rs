@@ -534,6 +534,257 @@ fn assert_enter_after_square_ole_keeps_wrap_zone(rel: &str) {
     );
 }
 
+fn assert_enter_backspace_reenter_after_square_ole(rel: &str) {
+    let mut core = load_core(rel);
+    let original_line_seg = core.document().sections[0].paragraphs[0].line_segs[0].clone();
+    assert!(
+        original_line_seg.column_start > 0 && original_line_seg.segment_width > 0,
+        "{} should start from an OLE-side wrap-zone line: {:?}",
+        rel,
+        original_line_seg
+    );
+    let expected_line_pitch_px = hwpunit_to_px(
+        original_line_seg.line_height + original_line_seg.line_spacing,
+        96.0,
+    );
+
+    core.split_paragraph_native(0, 0, 0)
+        .unwrap_or_else(|e| panic!("initial split after OLE {}: {:?}", rel, e));
+    core.merge_paragraph_native(0, 1)
+        .unwrap_or_else(|e| panic!("Backspace merge after OLE {}: {:?}", rel, e));
+
+    let section = &core.document().sections[0];
+    assert_eq!(
+        section.paragraphs.len(),
+        1,
+        "Backspace should remove the Enter-created paragraph for {}",
+        rel
+    );
+    assert!(
+        matches!(
+            section.paragraphs[0].controls.get(2),
+            Some(Control::Shape(shape))
+                if matches!(shape.as_ref(), ShapeObject::Ole(_))
+                    && matches!(shape.common().text_wrap, TextWrap::Square)
+                    && !shape.common().treat_as_char
+        ),
+        "Square OLE should remain anchored to paragraph 0 after Backspace for {}",
+        rel
+    );
+    assert_eq!(
+        section.paragraphs[0].line_segs[0].column_start, original_line_seg.column_start,
+        "Backspace should preserve the original OLE wrap-zone x for {}",
+        rel
+    );
+    assert_eq!(
+        section.paragraphs[0].line_segs[0].segment_width, original_line_seg.segment_width,
+        "Backspace should preserve the original OLE wrap-zone width for {}",
+        rel
+    );
+
+    core.split_paragraph_native(0, 0, 0)
+        .unwrap_or_else(|e| panic!("re-enter split after Backspace {}: {:?}", rel, e));
+
+    let section = &core.document().sections[0];
+    assert_eq!(
+        section.paragraphs.len(),
+        2,
+        "re-enter Enter after Backspace should recreate one following paragraph for {}",
+        rel
+    );
+    assert!(
+        matches!(
+            section.paragraphs[0].controls.get(2),
+            Some(Control::Shape(shape))
+                if matches!(shape.as_ref(), ShapeObject::Ole(_))
+                    && matches!(shape.common().text_wrap, TextWrap::Square)
+                    && !shape.common().treat_as_char
+        ),
+        "re-enter Enter should keep OLE in paragraph 0 for {}",
+        rel
+    );
+    assert!(
+        section.paragraphs[1].controls.is_empty(),
+        "re-enter Enter should create an empty following paragraph for {}",
+        rel
+    );
+    assert_eq!(
+        section.paragraphs[1].line_segs[0].column_start, original_line_seg.column_start,
+        "re-enter Enter should preserve OLE-side wrap-zone x for {}",
+        rel
+    );
+    assert_eq!(
+        section.paragraphs[1].line_segs[0].segment_width, original_line_seg.segment_width,
+        "re-enter Enter should preserve OLE-side wrap-zone width for {}",
+        rel
+    );
+
+    let layout_json = core
+        .get_page_control_layout_native(0)
+        .unwrap_or_else(|e| panic!("layout after re-enter Enter {}: {:?}", rel, e));
+    let layout: Value = serde_json::from_str(&layout_json)
+        .unwrap_or_else(|e| panic!("parse layout {} `{}`: {}", rel, layout_json, e));
+    let controls = layout["controls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("layout controls missing after re-enter Enter for {}", rel));
+    let ole = controls
+        .iter()
+        .find(|control| control["type"] == "ole")
+        .unwrap_or_else(|| panic!("OLE control missing after re-enter Enter for {}", rel));
+    assert_eq!(
+        ole["paraIdx"], 0,
+        "OLE should not move to the Enter-created paragraph after Backspace for {}",
+        rel
+    );
+
+    let ole_left = ole["x"].as_f64().unwrap();
+    let expected_x = ole_left + ole["w"].as_f64().unwrap();
+    let tree = core
+        .build_page_render_tree(0)
+        .unwrap_or_else(|e| panic!("render tree after re-enter Enter {}: {:?}", rel, e));
+    let mut anchors = Vec::new();
+    collect_para_end_anchors(&tree.root, &mut anchors);
+    let para0_anchor = anchors
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.node_type,
+                RenderNodeType::TextRun(run)
+                    if run.para_index == Some(0) && run.char_start == Some(0)
+            )
+        })
+        .unwrap_or_else(|| panic!("original paragraph mark missing after re-enter {}", rel));
+    let para1_anchor = anchors
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.node_type,
+                RenderNodeType::TextRun(run)
+                    if run.para_index == Some(1) && run.char_start == Some(0)
+            )
+        })
+        .unwrap_or_else(|| panic!("following paragraph mark missing after re-enter {}", rel));
+
+    assert!(
+        (para0_anchor.bbox.x - expected_x).abs() <= 0.6,
+        "original mark after re-enter should stay at OLE right edge for {}: anchor={:?}, ole={}",
+        rel,
+        para0_anchor.bbox,
+        ole
+    );
+    assert!(
+        (para1_anchor.bbox.x - expected_x).abs() <= 0.6,
+        "following mark after re-enter should stay in OLE-side wrap zone for {}: anchor={:?}, ole={}",
+        rel,
+        para1_anchor.bbox,
+        ole
+    );
+    assert!(
+        (para1_anchor.bbox.y - para0_anchor.bbox.y - expected_line_pitch_px).abs() <= 1.0,
+        "following mark after re-enter should match initial Enter line pitch for {}: para0={:?}, para1={:?}, pitch={:.2}",
+        rel,
+        para0_anchor.bbox,
+        para1_anchor.bbox,
+        expected_line_pitch_px
+    );
+
+    let cursor_json = core
+        .get_cursor_rect_native(0, 1, 0)
+        .unwrap_or_else(|e| panic!("cursor after re-enter Enter {}: {:?}", rel, e));
+    let cursor: Value = serde_json::from_str(&cursor_json).unwrap_or_else(|e| {
+        panic!(
+            "parse cursor after re-enter Enter {} `{}`: {}",
+            rel, cursor_json, e
+        )
+    });
+    assert!(
+        (cursor["x"].as_f64().unwrap() - expected_x).abs() <= 0.6,
+        "active caret after re-enter should stay in OLE-side wrap zone for {}: cursor={}, ole={}",
+        rel,
+        cursor,
+        ole
+    );
+}
+
+fn assert_ole_caption_properties_roundtrip(rel: &str) {
+    let mut core = load_core(rel);
+    let before_json = core
+        .get_shape_properties_native(0, 0, 2)
+        .unwrap_or_else(|e| panic!("get OLE props before caption {}: {:?}", rel, e));
+    let before: Value = serde_json::from_str(&before_json).unwrap_or_else(|e| {
+        panic!(
+            "parse OLE props before caption {} `{}`: {}",
+            rel, before_json, e
+        )
+    });
+    assert_eq!(
+        before["hasCaption"], false,
+        "{} should start without an OLE caption",
+        rel
+    );
+
+    core.set_shape_properties_native(
+        0,
+        0,
+        2,
+        r#"{"hasCaption":true,"captionDirection":"Right","captionVertAlign":"Bottom","captionWidth":8504,"captionSpacing":850,"captionIncludeMargin":true}"#,
+    )
+    .unwrap_or_else(|e| panic!("set OLE caption props {}: {:?}", rel, e));
+
+    let after_json = core
+        .get_shape_properties_native(0, 0, 2)
+        .unwrap_or_else(|e| panic!("get OLE props after caption {}: {:?}", rel, e));
+    let after: Value = serde_json::from_str(&after_json).unwrap_or_else(|e| {
+        panic!(
+            "parse OLE props after caption {} `{}`: {}",
+            rel, after_json, e
+        )
+    });
+    assert_eq!(after["hasCaption"], true, "OLE caption should be created");
+    assert_eq!(
+        after["captionDirection"], "Right",
+        "OLE caption direction should persist"
+    );
+    assert_eq!(
+        after["captionVertAlign"], "Bottom",
+        "OLE caption vertical alignment should persist"
+    );
+    assert_eq!(
+        after["captionWidth"], 8504,
+        "OLE caption width should persist"
+    );
+    assert_eq!(
+        after["captionSpacing"], 850,
+        "OLE caption spacing should persist"
+    );
+    assert_eq!(
+        after["captionIncludeMargin"], true,
+        "OLE caption include-margin should persist"
+    );
+
+    let section = &core.document().sections[0];
+    let Some(Control::Shape(shape)) = section.paragraphs[0].controls.get(2) else {
+        panic!("OLE shape missing after caption set for {}", rel);
+    };
+    let ShapeObject::Ole(ole) = shape.as_ref() else {
+        panic!("control 2 should remain OLE after caption set for {}", rel);
+    };
+    let caption = ole
+        .caption
+        .as_ref()
+        .unwrap_or_else(|| panic!("OLE caption model missing for {}", rel));
+    assert!(
+        caption
+            .paragraphs
+            .first()
+            .is_some_and(|para| para.controls.iter().any(|ctrl| {
+                matches!(ctrl, Control::AutoNumber(auto) if matches!(auto.number_type, rhwp::model::control::AutoNumberType::Picture))
+            })),
+        "new OLE caption should contain a picture AutoNumber control for {}",
+        rel
+    );
+}
+
 #[test]
 fn hwp_ole_preview_is_selectable_and_drives_empty_para_caret() {
     assert_ole_layout_and_caret("samples/한셀OLE.hwp");
@@ -552,4 +803,24 @@ fn hwp_enter_after_square_ole_respects_height_boundary() {
 #[test]
 fn hwpx_enter_after_square_ole_respects_height_boundary() {
     assert_enter_after_square_ole_keeps_wrap_zone("samples/한셀OLE.hwpx");
+}
+
+#[test]
+fn hwp_enter_backspace_reenter_keeps_ole_anchor_flow() {
+    assert_enter_backspace_reenter_after_square_ole("samples/한셀OLE.hwp");
+}
+
+#[test]
+fn hwpx_enter_backspace_reenter_keeps_ole_anchor_flow() {
+    assert_enter_backspace_reenter_after_square_ole("samples/한셀OLE.hwpx");
+}
+
+#[test]
+fn hwp_ole_caption_properties_roundtrip() {
+    assert_ole_caption_properties_roundtrip("samples/한셀OLE.hwp");
+}
+
+#[test]
+fn hwpx_ole_caption_properties_roundtrip() {
+    assert_ole_caption_properties_roundtrip("samples/한셀OLE.hwpx");
 }
