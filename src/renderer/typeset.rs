@@ -36,6 +36,32 @@ use super::pagination::{
     FootnoteRef, FootnoteSource, HeaderFooterRef, PageContent, PageItem, PaginationResult,
 };
 
+/// [#2085] 표 행-스캔 분할점 캐리 (값 왕복). split_end_cut 은 move.
+struct BlockTableRowScan {
+    consumed: f64,
+    end_row: usize,
+    split_block_start: Option<usize>,
+    split_end_cut: Vec<usize>,
+    split_end_limit: f64,
+}
+
+/// [#2085] 표 행-스캔의 조각-스코프 읽기 스칼라 묶음.
+#[derive(Clone, Copy)]
+struct BlockRowScanVars {
+    cursor_row: usize,
+    row_count: usize,
+    cs: f64,
+    can_intra_split: bool,
+    is_continuation: bool,
+    avail_for_rows: f64,
+    header_overhead: f64,
+    landscape_rowbreak_bleed: bool,
+    landscape_whole_row_tolerance: f64,
+    landscape_short_row_tolerance: f64,
+    landscape_short_row_max_height: f64,
+    rowbreak_split_row_overflow_tolerance: f64,
+}
+
 /// [#2064] `compute_endnote_metrics` 의 호출-시점 입력 묶음 — 라운드 5 클로저의 캡처를
 /// 명시화한 것 (두 호출부 사이 값 변화를 보존하기 위해 호출부마다 신선하게 구성).
 #[derive(Clone, Copy)]
@@ -336,6 +362,9 @@ pub struct TypesetEngine {
 /// over-fill 한 경우에도 tail 을 현재 페이지에 유지해 near-empty 페이지 over-pagination 을 막는다.
 const TAIL_BREAK_OVERFLOW_TOLERANCE_PX: f64 = 20.0;
 const HWPX_ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 64.0;
+/// [Task #2085] 표 분할 첫 조각에 남길 최소 상단 높이 / RowBreak 말미 빈 행 허용 오버플로.
+const MIN_TOP_KEEP_PX: f64 = 25.0;
+const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
 /// [Task #1733] 저장 LINE_SEG 좌표가 현재 쪽 하단 안에 tail 을 두었다는 증거가 있을 때
 /// 제한된 tail 경로에만 허용하는 누적 높이 drift 완화값.
 const SAVED_TAIL_VPOS_OVERFLOW_TOLERANCE_PX: f64 = 128.0;
@@ -12683,6 +12712,392 @@ impl TypesetEngine {
         }
     }
 
+    /// [Task #2085] 표 분할점 행-스캔: cursor_row 부터 이번 조각(가용 높이
+    /// avail_for_rows)에 들어가는 행/블록/셀-컷을 결정한다. 원본 무변경 통이동 —
+    /// landscape/rowbreak 허용치의 소스분기(is_hwpx_source)는 caller 에 잔류.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_block_table_split_rows(
+        &self,
+        st: &TypesetState,
+        layout_engine: &crate::renderer::layout::LayoutEngine,
+        mt: &MeasuredTable,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        cut_row_h: &[f64],
+        rowspan_touched: &[bool],
+        start_cut: &[usize],
+        v: BlockRowScanVars,
+        scan: BlockTableRowScan,
+    ) -> BlockTableRowScan {
+        let BlockRowScanVars {
+            cursor_row,
+            row_count,
+            cs,
+            can_intra_split,
+            is_continuation,
+            avail_for_rows,
+            header_overhead,
+            landscape_rowbreak_bleed,
+            landscape_whole_row_tolerance,
+            landscape_short_row_tolerance,
+            landscape_short_row_max_height,
+            rowbreak_split_row_overflow_tolerance,
+        } = v;
+        let BlockTableRowScan {
+            mut consumed,
+            mut end_row,
+            mut split_block_start,
+            mut split_end_cut,
+            mut split_end_limit,
+        } = scan;
+        let mut r = cursor_row;
+        while r < row_count {
+            let cs_before = if r > cursor_row { cs } else { 0.0 };
+            // rowspan 보호 블록 — 블록 전체를 분할 없이 한 단위로.
+            let (b_start, b_end, _) = mt.row_block_for(r);
+            let block_size = b_end.saturating_sub(b_start);
+            let block_has_any_rowspan = block_size >= 2
+                && (b_start..b_end).any(|x| rowspan_touched.get(x).copied().unwrap_or(false));
+            let block_has_protectable_rowspan = block_has_any_rowspan
+                && block_size <= crate::renderer::height_measurer::BLOCK_UNIT_MAX_ROWS;
+            let rowbreak_hard_break_row =
+                if mt.allows_row_break_split() && b_start == r && block_has_protectable_rowspan {
+                    layout_engine
+                        .row_block_first_internal_hard_break_row(table, b_start, b_end, styles)
+                } else {
+                    None
+                };
+            let rowbreak_has_internal_hard_break = rowbreak_hard_break_row.is_some();
+            let protected = block_has_protectable_rowspan
+                && (!mt.allows_row_break_split() || !rowbreak_has_internal_hard_break);
+            // [Task #1086] RowBreak 표는 행 경계 분할 정책이라 보호 블록
+            // snap 은 피하지만, rowspan label 이 걸친 블록 안의 큰 row_span==1
+            // 셀은 셀 내부 hard-break(vpos reset) 기준으로 쪼갤 수 있어야 한다.
+            // 이때는 기존 블록 컷 경로를 재사용해 rowspan 셀과 일반 셀의 cut
+            // 인덱스를 같은 정의로 렌더러까지 전달한다.
+            let rowbreak_block_content_exceeds_row_sum = if mt.allows_row_break_split()
+                && b_start == r
+                && block_has_any_rowspan
+            {
+                let row_sum = (b_start..b_end).map(|x| cut_row_h[x]).sum::<f64>()
+                    + cs * block_size.saturating_sub(1) as f64;
+                let block_content =
+                    layout_engine.row_block_content_height(table, b_start, b_end, &[], &[], styles)
+                        + cs * block_size.saturating_sub(1) as f64;
+                block_content > row_sum + 0.5
+            } else {
+                false
+            };
+            let rowbreak_rowspan_block = mt.allows_row_break_split()
+                && b_start == r
+                && block_has_any_rowspan
+                && (rowbreak_has_internal_hard_break || rowbreak_block_content_exceeds_row_sum);
+            // #1486: hard-break가 rowspan 블록 첫 행의 큰 셀 안에 있을 때만
+            // 행 시작 y offset을 빼서 아래 행 셀을 다음 조각에 남긴다.
+            // #1105처럼 hard-break가 뒤 행 셀 안에 있는 블록은 기존 블록 컷을
+            // 유지해야 첫 조각의 `end_cut`이 한컴 기준과 맞는다.
+            let rowbreak_use_row_offsets =
+                rowbreak_rowspan_block && rowbreak_hard_break_row == Some(b_start);
+            if (protected || rowbreak_rowspan_block) && b_start == r {
+                // [Task #1025] 연속분 커서가 블록 중간이면 블록 시작 컷을 적용.
+                let blk_start_cut: &[usize] = if r == cursor_row { &start_cut } else { &[] };
+                let block_row_offsets: Vec<f64> = if rowbreak_use_row_offsets {
+                    let mut offsets = Vec::with_capacity(block_size);
+                    let mut top = 0.0;
+                    for br in b_start..b_end {
+                        offsets.push(top);
+                        top += cut_row_h[br] + if br + 1 < b_end { cs } else { 0.0 };
+                    }
+                    offsets
+                } else {
+                    Vec::new()
+                };
+                let block_fragment_height =
+                    |row_end: usize, block_start_cut: &[usize], block_end_cut: &[usize]| -> f64 {
+                        if block_start_cut.is_empty() && block_end_cut.is_empty() {
+                            return (b_start..row_end).map(|x| cut_row_h[x]).sum::<f64>()
+                                + cs * row_end.saturating_sub(b_start + 1) as f64;
+                        }
+
+                        let mut total = 0.0;
+                        let mut has_row = false;
+                        for br in b_start..row_end {
+                            let row_h = layout_engine.row_block_cut_row_content_height(
+                                table,
+                                b_start,
+                                b_end,
+                                br,
+                                block_start_cut,
+                                block_end_cut,
+                                styles,
+                            );
+                            if row_h > 0.0 {
+                                if has_row {
+                                    total += cs;
+                                }
+                                total += row_h;
+                                has_row = true;
+                            }
+                        }
+                        total
+                    };
+                let block_h: f64 =
+                    if blk_start_cut.is_empty() && !rowbreak_block_content_exceeds_row_sum {
+                        (b_start..b_end).map(|x| cut_row_h[x]).sum::<f64>()
+                            + cs * block_size.saturating_sub(1) as f64
+                    } else if rowbreak_use_row_offsets {
+                        block_fragment_height(b_end, blk_start_cut, &[])
+                    } else {
+                        layout_engine.row_block_content_height(
+                            table,
+                            b_start,
+                            b_end,
+                            blk_start_cut,
+                            &[],
+                            styles,
+                        ) + cs * block_size.saturating_sub(1) as f64
+                    };
+                if consumed + cs_before + block_h <= avail_for_rows {
+                    consumed += cs_before + block_h;
+                    r = b_end;
+                    end_row = r;
+                    continue;
+                }
+                // [Task #1025/#1086] 블록이 가용 초과 — 거대 row_span==1 셀을
+                // 줄 단위로 분할 시도(블록 컷). 보호 블록은 기존처럼 fresh
+                // page 에도 안 들어가는 경우만 페이지 중간에서 쪼갠다. RowBreak
+                // rowspan 블록은 hard-break(vpos reset)를 만난 경우에만 중간
+                // 분할을 허용해 일반 RowBreak 행 경계 정책의 blast radius 를 줄인다.
+                let budget = (avail_for_rows - consumed - cs_before).max(0.0);
+                let res = if rowbreak_use_row_offsets {
+                    layout_engine.advance_row_block_cut_with_row_offsets(
+                        table,
+                        b_start,
+                        b_end,
+                        blk_start_cut,
+                        budget,
+                        &block_row_offsets,
+                        styles,
+                    )
+                } else {
+                    layout_engine.advance_row_block_cut(
+                        table,
+                        b_start,
+                        b_end,
+                        blk_start_cut,
+                        budget,
+                        styles,
+                    )
+                };
+                // [Task #1025] 블록이 fresh 페이지에도 안 들어가야(진짜 page-larger)
+                // 페이지 중간에서 분할한다. fresh 페이지엔 들어가면(잔여 공간만
+                // 부족) 통째로 다음 페이지로 미뤄 잔여 overflow 를 피한다(기존 동작).
+                // 페이지 시작 행(r==cursor_row)은 더 미룰 수 없으므로 무조건 분할.
+                let genuinely_page_larger = block_h > st.base_available_height();
+                let allow_block_split = if rowbreak_rowspan_block {
+                    r == cursor_row
+                        || (res.hit_hard_break && res.consumed_height >= MIN_TOP_KEEP_PX)
+                } else {
+                    r == cursor_row
+                        || (genuinely_page_larger && res.consumed_height >= MIN_TOP_KEEP_PX)
+                };
+                if can_intra_split && !res.fully_consumed && allow_block_split {
+                    end_row = if rowbreak_use_row_offsets {
+                        let mut render_end = b_start + 1;
+                        for (idx, row_top) in block_row_offsets.iter().enumerate() {
+                            if *row_top < res.consumed_height - 0.1 {
+                                render_end = b_start + idx + 1;
+                            }
+                        }
+                        render_end.min(b_end).max(b_start + 1)
+                    } else {
+                        b_end
+                    };
+                    split_end_cut = res.end_cut.clone();
+                    split_end_limit = res.consumed_height;
+                    split_block_start = Some(b_start);
+                    let split_total = if rowbreak_use_row_offsets {
+                        block_fragment_height(end_row, blk_start_cut, &res.end_cut)
+                    } else {
+                        layout_engine.row_block_content_height(
+                            table,
+                            b_start,
+                            b_end,
+                            blk_start_cut,
+                            &res.end_cut,
+                            styles,
+                        )
+                    };
+                    consumed += cs_before + split_total;
+                    break;
+                }
+                if r == cursor_row {
+                    // 분할 불가 — 강제 통째 배치(기존 overflow 동작 유지).
+                    consumed += cs_before + block_h;
+                    r = b_end;
+                    end_row = r;
+                    continue;
+                }
+                end_row = r;
+                break;
+            }
+
+            // rowspan 셀이 걸친 행 — 기본은 MeasuredTable 높이로 통째 배치한다.
+            //
+            // 다만 RowBreak 표의 큰 rowspan 블록 안에 있는 일반 내용 행은 한컴처럼
+            // 해당 행의 row_span==1 셀을 기준으로 내부 분할을 허용한다. 작은 보호
+            // 블록은 위의 block path 에서 이미 처리되며, 여기서는 block path 대상이
+            // 아닌 큰 블록의 과도한 이월만 줄인다.
+            let rowbreak_rowspan_row_splittable =
+                mt.allows_row_break_split() && can_intra_split && mt.is_row_splittable(r);
+            if rowspan_touched[r] && !rowbreak_rowspan_row_splittable {
+                let h = cut_row_h[r];
+                if r == cursor_row || consumed + cs_before + h <= avail_for_rows {
+                    consumed += cs_before + h;
+                    r += 1;
+                    end_row = r;
+                    continue;
+                }
+                end_row = r;
+                break;
+            }
+
+            // [Task #1022] 일반 행 r — 배치 높이는 row_cut_content_height
+            // (=cut_row_h)로, 분할 컷 산정만 advance_row_cut 으로 수행한다.
+            let row_start_cut: &[usize] = if r == cursor_row { &start_cut } else { &[] };
+            let row_total = if row_start_cut.is_empty() {
+                cut_row_h[r]
+            } else {
+                // 연속분 cursor_row — 시작 컷 적용. row_cut_content_height 가
+                // 셀별 (content+pad) 행 max 를 반환(분할 행이므로 cell.height
+                // 강제 없음).
+                layout_engine.row_cut_content_height(table, r, row_start_cut, &[], styles)
+            };
+            if consumed + cs_before + row_total <= avail_for_rows {
+                // 행 전체가 예산 안에 들어감.
+                consumed += cs_before + row_total;
+                r += 1;
+                end_row = r;
+                continue;
+            }
+            // RowBreak 표의 마지막 빈 spacer 행은 한컴이 직전 조각 하단에 붙여
+            // 그리는 경우가 많다. 이 행 하나만 몇 px 넘친다고 별도 빈 꼬리
+            // 페이지를 만들면 Q&A 표처럼 작은 잔여 조각 페이지가 반복된다.
+            if mt.allows_row_break_split()
+                && r + 1 == row_count
+                && Self::row_is_empty_trailing_spacer(table, r)
+                && consumed > 0.0
+                && consumed + cs_before + row_total
+                    <= avail_for_rows + ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX
+            {
+                consumed += cs_before + row_total;
+                r += 1;
+                end_row = r;
+                continue;
+            }
+            if landscape_rowbreak_bleed
+                && mt.allows_row_break_split()
+                && is_continuation
+                && header_overhead > 0.5
+                && row_start_cut.is_empty()
+                && r > cursor_row
+                && consumed + cs_before + row_total
+                    <= avail_for_rows + landscape_whole_row_tolerance
+            {
+                consumed += cs_before + row_total;
+                r += 1;
+                end_row = r;
+                continue;
+            }
+            if landscape_rowbreak_bleed
+                && mt.allows_row_break_split()
+                && is_continuation
+                && header_overhead > 0.5
+                && row_start_cut.is_empty()
+                && r > cursor_row
+                && row_total <= landscape_short_row_max_height
+                && consumed + cs_before + row_total
+                    <= avail_for_rows + landscape_short_row_tolerance
+            {
+                consumed += cs_before + row_total;
+                r += 1;
+                end_row = r;
+                continue;
+            }
+            // 행 r 이 예산 초과 — 인트라-분할 시도.
+            // [Task #77] 분할 불가 행(이미지 셀 등)은 통째 배치 / 다음 페이지.
+            let splittable = can_intra_split && mt.is_row_splittable(r);
+            if !splittable {
+                if r == cursor_row {
+                    // 페이지 시작 행 — 강제 통째 배치(오버플로 감수).
+                    consumed += cs_before + row_total;
+                    end_row = r + 1;
+                } else {
+                    end_row = r;
+                }
+                break;
+            }
+            let padding = if mt.allows_row_break_split() {
+                layout_engine.row_remaining_visible_padding_height(table, r, row_start_cut, styles)
+            } else {
+                mt.max_padding_for_row(r)
+            };
+            let budget = (avail_for_rows - consumed - cs_before - padding).max(0.0);
+            let res = layout_engine.advance_row_cut(table, r, row_start_cut, budget, styles);
+            if res.fully_consumed {
+                // 단일 유닛 행 — 분할 불가, 페이지 시작이면 강제, 아니면 다음으로.
+                if r == cursor_row {
+                    consumed += cs_before + row_total;
+                    end_row = r + 1;
+                } else {
+                    end_row = r;
+                }
+                break;
+            }
+            // [Task #713] sliver(orphan) 회피 — 페이지 시작 행이 아니면서
+            // 너무 적게 들어가면 행 전체를 다음 페이지로 미룬다.
+            if r > cursor_row && res.consumed_height < MIN_TOP_KEEP_PX {
+                end_row = r;
+            } else {
+                // 분할 행의 행 총 높이(per-cell content+pad) 를 consumed 에 가산.
+                let split_total = layout_engine.row_cut_content_height(
+                    table,
+                    r,
+                    row_start_cut,
+                    &res.end_cut,
+                    styles,
+                );
+                let split_candidate_rows_height = consumed + cs_before + split_total;
+                let split_row_overflow_tolerance = if mt.allows_row_break_split() {
+                    rowbreak_split_row_overflow_tolerance
+                } else {
+                    0.1
+                };
+                if r > cursor_row
+                    && split_candidate_rows_height > avail_for_rows + split_row_overflow_tolerance
+                {
+                    // 보이는 조각은 orphan 기준을 통과해도 row-area 예산은 넘을 수 있다.
+                    // 마지막으로 온전히 들어간 행까지만 유지하고 이 행은 다음 쪽에서
+                    // 계속한다. avail_for_rows 는 이미 반복 제목행 높이를 제외한 값이다.
+                    end_row = r;
+                } else {
+                    end_row = r + 1;
+                    split_end_cut = res.end_cut.clone();
+                    split_end_limit = res.consumed_height;
+                    consumed += cs_before + split_total;
+                }
+            }
+            break;
+        }
+        BlockTableRowScan {
+            consumed,
+            end_row,
+            split_block_start,
+            split_end_cut,
+            split_end_limit,
+        }
+    }
+
     fn typeset_block_table(
         &self,
         st: &mut TypesetState,
@@ -13724,8 +14139,6 @@ impl TypesetEngine {
             // 된다. rowspan 보호 블록(#398/#474)은 블록 전체를 한 단위로 다룬다.
             // 측정 공간이 advance_row_cut/cell_units 로 단일화되어 렌더러와
             // 정의상 일치한다(px content_offset·MeasuredTable 누적 제거).
-            const MIN_TOP_KEEP_PX: f64 = 25.0;
-            const ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX: f64 = 40.0;
             const ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 2.0;
             const LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX: f64 = 36.0;
             const LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 260.0;
@@ -13756,371 +14169,44 @@ impl TypesetEngine {
                     ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX
                 };
 
-            let mut end_row = cursor_row;
-            let mut split_end_cut: Vec<usize> = Vec::new();
-            let mut split_end_limit: f64 = 0.0;
-            // [Task #1025] 블록 분할 시 연속분 커서가 블록 시작 행으로 복귀하도록 기록.
-            let mut split_block_start: Option<usize> = None;
-            let mut consumed: f64 = 0.0; // 완전 배치된 행들의 누적 높이
-            {
-                let mut r = cursor_row;
-                while r < row_count {
-                    let cs_before = if r > cursor_row { cs } else { 0.0 };
-                    // rowspan 보호 블록 — 블록 전체를 분할 없이 한 단위로.
-                    let (b_start, b_end, _) = mt.row_block_for(r);
-                    let block_size = b_end.saturating_sub(b_start);
-                    let block_has_any_rowspan = block_size >= 2
-                        && (b_start..b_end)
-                            .any(|x| rowspan_touched.get(x).copied().unwrap_or(false));
-                    let block_has_protectable_rowspan = block_has_any_rowspan
-                        && block_size <= crate::renderer::height_measurer::BLOCK_UNIT_MAX_ROWS;
-                    let rowbreak_hard_break_row = if mt.allows_row_break_split()
-                        && b_start == r
-                        && block_has_protectable_rowspan
-                    {
-                        layout_engine
-                            .row_block_first_internal_hard_break_row(table, b_start, b_end, styles)
-                    } else {
-                        None
-                    };
-                    let rowbreak_has_internal_hard_break = rowbreak_hard_break_row.is_some();
-                    let protected = block_has_protectable_rowspan
-                        && (!mt.allows_row_break_split() || !rowbreak_has_internal_hard_break);
-                    // [Task #1086] RowBreak 표는 행 경계 분할 정책이라 보호 블록
-                    // snap 은 피하지만, rowspan label 이 걸친 블록 안의 큰 row_span==1
-                    // 셀은 셀 내부 hard-break(vpos reset) 기준으로 쪼갤 수 있어야 한다.
-                    // 이때는 기존 블록 컷 경로를 재사용해 rowspan 셀과 일반 셀의 cut
-                    // 인덱스를 같은 정의로 렌더러까지 전달한다.
-                    let rowbreak_block_content_exceeds_row_sum =
-                        if mt.allows_row_break_split() && b_start == r && block_has_any_rowspan {
-                            let row_sum = (b_start..b_end).map(|x| cut_row_h[x]).sum::<f64>()
-                                + cs * block_size.saturating_sub(1) as f64;
-                            let block_content = layout_engine.row_block_content_height(
-                                table,
-                                b_start,
-                                b_end,
-                                &[],
-                                &[],
-                                styles,
-                            ) + cs * block_size.saturating_sub(1) as f64;
-                            block_content > row_sum + 0.5
-                        } else {
-                            false
-                        };
-                    let rowbreak_rowspan_block = mt.allows_row_break_split()
-                        && b_start == r
-                        && block_has_any_rowspan
-                        && (rowbreak_has_internal_hard_break
-                            || rowbreak_block_content_exceeds_row_sum);
-                    // #1486: hard-break가 rowspan 블록 첫 행의 큰 셀 안에 있을 때만
-                    // 행 시작 y offset을 빼서 아래 행 셀을 다음 조각에 남긴다.
-                    // #1105처럼 hard-break가 뒤 행 셀 안에 있는 블록은 기존 블록 컷을
-                    // 유지해야 첫 조각의 `end_cut`이 한컴 기준과 맞는다.
-                    let rowbreak_use_row_offsets =
-                        rowbreak_rowspan_block && rowbreak_hard_break_row == Some(b_start);
-                    if (protected || rowbreak_rowspan_block) && b_start == r {
-                        // [Task #1025] 연속분 커서가 블록 중간이면 블록 시작 컷을 적용.
-                        let blk_start_cut: &[usize] =
-                            if r == cursor_row { &start_cut } else { &[] };
-                        let block_row_offsets: Vec<f64> = if rowbreak_use_row_offsets {
-                            let mut offsets = Vec::with_capacity(block_size);
-                            let mut top = 0.0;
-                            for br in b_start..b_end {
-                                offsets.push(top);
-                                top += cut_row_h[br] + if br + 1 < b_end { cs } else { 0.0 };
-                            }
-                            offsets
-                        } else {
-                            Vec::new()
-                        };
-                        let block_fragment_height = |row_end: usize,
-                                                     block_start_cut: &[usize],
-                                                     block_end_cut: &[usize]|
-                         -> f64 {
-                            if block_start_cut.is_empty() && block_end_cut.is_empty() {
-                                return (b_start..row_end).map(|x| cut_row_h[x]).sum::<f64>()
-                                    + cs * row_end.saturating_sub(b_start + 1) as f64;
-                            }
-
-                            let mut total = 0.0;
-                            let mut has_row = false;
-                            for br in b_start..row_end {
-                                let row_h = layout_engine.row_block_cut_row_content_height(
-                                    table,
-                                    b_start,
-                                    b_end,
-                                    br,
-                                    block_start_cut,
-                                    block_end_cut,
-                                    styles,
-                                );
-                                if row_h > 0.0 {
-                                    if has_row {
-                                        total += cs;
-                                    }
-                                    total += row_h;
-                                    has_row = true;
-                                }
-                            }
-                            total
-                        };
-                        let block_h: f64 = if blk_start_cut.is_empty()
-                            && !rowbreak_block_content_exceeds_row_sum
-                        {
-                            (b_start..b_end).map(|x| cut_row_h[x]).sum::<f64>()
-                                + cs * block_size.saturating_sub(1) as f64
-                        } else if rowbreak_use_row_offsets {
-                            block_fragment_height(b_end, blk_start_cut, &[])
-                        } else {
-                            layout_engine.row_block_content_height(
-                                table,
-                                b_start,
-                                b_end,
-                                blk_start_cut,
-                                &[],
-                                styles,
-                            ) + cs * block_size.saturating_sub(1) as f64
-                        };
-                        if consumed + cs_before + block_h <= avail_for_rows {
-                            consumed += cs_before + block_h;
-                            r = b_end;
-                            end_row = r;
-                            continue;
-                        }
-                        // [Task #1025/#1086] 블록이 가용 초과 — 거대 row_span==1 셀을
-                        // 줄 단위로 분할 시도(블록 컷). 보호 블록은 기존처럼 fresh
-                        // page 에도 안 들어가는 경우만 페이지 중간에서 쪼갠다. RowBreak
-                        // rowspan 블록은 hard-break(vpos reset)를 만난 경우에만 중간
-                        // 분할을 허용해 일반 RowBreak 행 경계 정책의 blast radius 를 줄인다.
-                        let budget = (avail_for_rows - consumed - cs_before).max(0.0);
-                        let res = if rowbreak_use_row_offsets {
-                            layout_engine.advance_row_block_cut_with_row_offsets(
-                                table,
-                                b_start,
-                                b_end,
-                                blk_start_cut,
-                                budget,
-                                &block_row_offsets,
-                                styles,
-                            )
-                        } else {
-                            layout_engine.advance_row_block_cut(
-                                table,
-                                b_start,
-                                b_end,
-                                blk_start_cut,
-                                budget,
-                                styles,
-                            )
-                        };
-                        // [Task #1025] 블록이 fresh 페이지에도 안 들어가야(진짜 page-larger)
-                        // 페이지 중간에서 분할한다. fresh 페이지엔 들어가면(잔여 공간만
-                        // 부족) 통째로 다음 페이지로 미뤄 잔여 overflow 를 피한다(기존 동작).
-                        // 페이지 시작 행(r==cursor_row)은 더 미룰 수 없으므로 무조건 분할.
-                        let genuinely_page_larger = block_h > st.base_available_height();
-                        let allow_block_split = if rowbreak_rowspan_block {
-                            r == cursor_row
-                                || (res.hit_hard_break && res.consumed_height >= MIN_TOP_KEEP_PX)
-                        } else {
-                            r == cursor_row
-                                || (genuinely_page_larger && res.consumed_height >= MIN_TOP_KEEP_PX)
-                        };
-                        if can_intra_split && !res.fully_consumed && allow_block_split {
-                            end_row = if rowbreak_use_row_offsets {
-                                let mut render_end = b_start + 1;
-                                for (idx, row_top) in block_row_offsets.iter().enumerate() {
-                                    if *row_top < res.consumed_height - 0.1 {
-                                        render_end = b_start + idx + 1;
-                                    }
-                                }
-                                render_end.min(b_end).max(b_start + 1)
-                            } else {
-                                b_end
-                            };
-                            split_end_cut = res.end_cut.clone();
-                            split_end_limit = res.consumed_height;
-                            split_block_start = Some(b_start);
-                            let split_total = if rowbreak_use_row_offsets {
-                                block_fragment_height(end_row, blk_start_cut, &res.end_cut)
-                            } else {
-                                layout_engine.row_block_content_height(
-                                    table,
-                                    b_start,
-                                    b_end,
-                                    blk_start_cut,
-                                    &res.end_cut,
-                                    styles,
-                                )
-                            };
-                            consumed += cs_before + split_total;
-                            break;
-                        }
-                        if r == cursor_row {
-                            // 분할 불가 — 강제 통째 배치(기존 overflow 동작 유지).
-                            consumed += cs_before + block_h;
-                            r = b_end;
-                            end_row = r;
-                            continue;
-                        }
-                        end_row = r;
-                        break;
-                    }
-
-                    // rowspan 셀이 걸친 행 — 기본은 MeasuredTable 높이로 통째 배치한다.
-                    //
-                    // 다만 RowBreak 표의 큰 rowspan 블록 안에 있는 일반 내용 행은 한컴처럼
-                    // 해당 행의 row_span==1 셀을 기준으로 내부 분할을 허용한다. 작은 보호
-                    // 블록은 위의 block path 에서 이미 처리되며, 여기서는 block path 대상이
-                    // 아닌 큰 블록의 과도한 이월만 줄인다.
-                    let rowbreak_rowspan_row_splittable =
-                        mt.allows_row_break_split() && can_intra_split && mt.is_row_splittable(r);
-                    if rowspan_touched[r] && !rowbreak_rowspan_row_splittable {
-                        let h = cut_row_h[r];
-                        if r == cursor_row || consumed + cs_before + h <= avail_for_rows {
-                            consumed += cs_before + h;
-                            r += 1;
-                            end_row = r;
-                            continue;
-                        }
-                        end_row = r;
-                        break;
-                    }
-
-                    // [Task #1022] 일반 행 r — 배치 높이는 row_cut_content_height
-                    // (=cut_row_h)로, 분할 컷 산정만 advance_row_cut 으로 수행한다.
-                    let row_start_cut: &[usize] = if r == cursor_row { &start_cut } else { &[] };
-                    let row_total = if row_start_cut.is_empty() {
-                        cut_row_h[r]
-                    } else {
-                        // 연속분 cursor_row — 시작 컷 적용. row_cut_content_height 가
-                        // 셀별 (content+pad) 행 max 를 반환(분할 행이므로 cell.height
-                        // 강제 없음).
-                        layout_engine.row_cut_content_height(table, r, row_start_cut, &[], styles)
-                    };
-                    if consumed + cs_before + row_total <= avail_for_rows {
-                        // 행 전체가 예산 안에 들어감.
-                        consumed += cs_before + row_total;
-                        r += 1;
-                        end_row = r;
-                        continue;
-                    }
-                    // RowBreak 표의 마지막 빈 spacer 행은 한컴이 직전 조각 하단에 붙여
-                    // 그리는 경우가 많다. 이 행 하나만 몇 px 넘친다고 별도 빈 꼬리
-                    // 페이지를 만들면 Q&A 표처럼 작은 잔여 조각 페이지가 반복된다.
-                    if mt.allows_row_break_split()
-                        && r + 1 == row_count
-                        && Self::row_is_empty_trailing_spacer(table, r)
-                        && consumed > 0.0
-                        && consumed + cs_before + row_total
-                            <= avail_for_rows + ROWBREAK_TRAILING_EMPTY_ROW_OVERFLOW_TOLERANCE_PX
-                    {
-                        consumed += cs_before + row_total;
-                        r += 1;
-                        end_row = r;
-                        continue;
-                    }
-                    if landscape_rowbreak_bleed
-                        && mt.allows_row_break_split()
-                        && is_continuation
-                        && header_overhead > 0.5
-                        && row_start_cut.is_empty()
-                        && r > cursor_row
-                        && consumed + cs_before + row_total
-                            <= avail_for_rows + landscape_whole_row_tolerance
-                    {
-                        consumed += cs_before + row_total;
-                        r += 1;
-                        end_row = r;
-                        continue;
-                    }
-                    if landscape_rowbreak_bleed
-                        && mt.allows_row_break_split()
-                        && is_continuation
-                        && header_overhead > 0.5
-                        && row_start_cut.is_empty()
-                        && r > cursor_row
-                        && row_total <= landscape_short_row_max_height
-                        && consumed + cs_before + row_total
-                            <= avail_for_rows + landscape_short_row_tolerance
-                    {
-                        consumed += cs_before + row_total;
-                        r += 1;
-                        end_row = r;
-                        continue;
-                    }
-                    // 행 r 이 예산 초과 — 인트라-분할 시도.
-                    // [Task #77] 분할 불가 행(이미지 셀 등)은 통째 배치 / 다음 페이지.
-                    let splittable = can_intra_split && mt.is_row_splittable(r);
-                    if !splittable {
-                        if r == cursor_row {
-                            // 페이지 시작 행 — 강제 통째 배치(오버플로 감수).
-                            consumed += cs_before + row_total;
-                            end_row = r + 1;
-                        } else {
-                            end_row = r;
-                        }
-                        break;
-                    }
-                    let padding = if mt.allows_row_break_split() {
-                        layout_engine.row_remaining_visible_padding_height(
-                            table,
-                            r,
-                            row_start_cut,
-                            styles,
-                        )
-                    } else {
-                        mt.max_padding_for_row(r)
-                    };
-                    let budget = (avail_for_rows - consumed - cs_before - padding).max(0.0);
-                    let res =
-                        layout_engine.advance_row_cut(table, r, row_start_cut, budget, styles);
-                    if res.fully_consumed {
-                        // 단일 유닛 행 — 분할 불가, 페이지 시작이면 강제, 아니면 다음으로.
-                        if r == cursor_row {
-                            consumed += cs_before + row_total;
-                            end_row = r + 1;
-                        } else {
-                            end_row = r;
-                        }
-                        break;
-                    }
-                    // [Task #713] sliver(orphan) 회피 — 페이지 시작 행이 아니면서
-                    // 너무 적게 들어가면 행 전체를 다음 페이지로 미룬다.
-                    if r > cursor_row && res.consumed_height < MIN_TOP_KEEP_PX {
-                        end_row = r;
-                    } else {
-                        // 분할 행의 행 총 높이(per-cell content+pad) 를 consumed 에 가산.
-                        let split_total = layout_engine.row_cut_content_height(
-                            table,
-                            r,
-                            row_start_cut,
-                            &res.end_cut,
-                            styles,
-                        );
-                        let split_candidate_rows_height = consumed + cs_before + split_total;
-                        let split_row_overflow_tolerance = if mt.allows_row_break_split() {
-                            rowbreak_split_row_overflow_tolerance
-                        } else {
-                            0.1
-                        };
-                        if r > cursor_row
-                            && split_candidate_rows_height
-                                > avail_for_rows + split_row_overflow_tolerance
-                        {
-                            // 보이는 조각은 orphan 기준을 통과해도 row-area 예산은 넘을 수 있다.
-                            // 마지막으로 온전히 들어간 행까지만 유지하고 이 행은 다음 쪽에서
-                            // 계속한다. avail_for_rows 는 이미 반복 제목행 높이를 제외한 값이다.
-                            end_row = r;
-                        } else {
-                            end_row = r + 1;
-                            split_end_cut = res.end_cut.clone();
-                            split_end_limit = res.consumed_height;
-                            consumed += cs_before + split_total;
-                        }
-                    }
-                    break;
-                }
-            }
+            // [Task #1025] split_block_start: 블록 분할 시 연속분 커서 복귀 기록.
+            let BlockTableRowScan {
+                mut consumed,
+                mut end_row,
+                mut split_block_start,
+                mut split_end_cut,
+                mut split_end_limit,
+            } = self.scan_block_table_split_rows(
+                st,
+                &layout_engine,
+                mt,
+                table,
+                styles,
+                &cut_row_h,
+                &rowspan_touched,
+                &start_cut,
+                BlockRowScanVars {
+                    cursor_row,
+                    row_count,
+                    cs,
+                    can_intra_split,
+                    is_continuation,
+                    avail_for_rows,
+                    header_overhead,
+                    landscape_rowbreak_bleed,
+                    landscape_whole_row_tolerance,
+                    landscape_short_row_tolerance,
+                    landscape_short_row_max_height,
+                    rowbreak_split_row_overflow_tolerance,
+                },
+                BlockTableRowScan {
+                    consumed: 0.0,
+                    end_row: cursor_row,
+                    split_block_start: None,
+                    split_end_cut: Vec::new(),
+                    split_end_limit: 0.0,
+                },
+            );
             if end_row <= cursor_row {
                 end_row = cursor_row + 1;
             }
