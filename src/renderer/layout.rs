@@ -1312,8 +1312,10 @@ pub struct LayoutEngine {
     /// 반복 재계산해 O(pages×cell) 로 폭증한다. cell_units 는 (cell,table,styles)의 순수
     /// 함수이고 셀 폭·콘텐츠는 렌더 중 불변이므로 셀 포인터를 키로 캐시한다. 문서
     /// 재조판(paginate) 경계에서 clear 하여 다른 IR 의 포인터 재사용을 방지한다.
+    /// `Rc` 가 아니라 `Arc` 인 이유: `LayoutEngine` 은 `DocumentCore` 의 필드이고
+    /// `DocumentCore` 는 `Send` 여야 한다(native 소비자가 스레드 경계 너머로 소유).
     cell_units_cache: std::cell::RefCell<
-        std::collections::HashMap<usize, std::rc::Rc<Vec<table_layout::CellUnit>>>,
+        std::collections::HashMap<usize, std::sync::Arc<Vec<table_layout::CellUnit>>>,
     >,
     /// [Issue #2063] 표 단위 불변량 `has_visible_text_with_nested_table` 를 표 포인터로
     /// 캐시한다. 이 값은 (측정 대상 셀과 무관한) 표 전체 스캔 결과인데 셀별

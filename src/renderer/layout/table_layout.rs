@@ -4612,15 +4612,15 @@ impl LayoutEngine {
         cell: &crate::model::table::Cell,
         table: &crate::model::table::Table,
         styles: &ResolvedStyleSet,
-    ) -> std::rc::Rc<Vec<CellUnit>> {
+    ) -> std::sync::Arc<Vec<CellUnit>> {
         let key = cell as *const crate::model::table::Cell as usize;
         if let Some(cached) = self.cell_units_cache.borrow().get(&key) {
-            return std::rc::Rc::clone(cached);
+            return std::sync::Arc::clone(cached);
         }
-        let units = std::rc::Rc::new(self.cell_units_uncached(cell, table, styles));
+        let units = std::sync::Arc::new(self.cell_units_uncached(cell, table, styles));
         self.cell_units_cache
             .borrow_mut()
-            .insert(key, std::rc::Rc::clone(&units));
+            .insert(key, std::sync::Arc::clone(&units));
         units
     }
 
