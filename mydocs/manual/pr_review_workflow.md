@@ -248,12 +248,12 @@ fast-pass PR 에서 신규 `samples/**/*.hwp`, `samples/**/*.hwpx`, `samples/**/
 #### 3.5.1 기준 PDF 미첨부 시 HWP 2020 MCP 산출 절차
 
 PR 작성자가 검증 PDF 를 첨부하지 않았지만 PR 안에 기준으로 삼을 HWP/HWPX 원본이 있으면, review 담당자는
-HWP 2020 MCP 의 `convert_local_document` 도구를 사용해 PDF 를 먼저 산출한다. 이 절차는 PDF 업로드 요청보다
-우선한다.
+`hwp2020-mcp-convert` CLI 로 PDF 를 먼저 산출한다. 이 절차는 PDF 업로드 요청보다 우선한다.
 
-MCP 클라이언트 설치, VS Code `hwp2020Convert` 등록, `npx --package=file:...` help 확인, tool 인자 세부값은
-`mydocs/manual/mcp_hwp2020Convert_usage.md` 를 함께 참고한다. 이 절은 PR review 에서의 저장 위치, 검증
-증거 보존, review 문서 기록 기준을 정의한다.
+MCP client tarball 위치, `.env.local` 준비, `npx --package=file:...` help 확인, CLI 인자 세부값은
+`mydocs/manual/mcp_hwp2020Convert_usage.md` 를 함께 참고한다. VS Code `hwp2020Convert` 등록은 Chat 에서
+tool 로 호출하고 싶을 때만 선택적으로 사용한다. 이 절은 PR review 에서의 저장 위치, 검증 증거 보존,
+review 문서 기록 기준을 정의한다.
 
 최종 저장 위치:
 
@@ -275,13 +275,11 @@ URL/IP 와 토큰을 요청한다" 라고 적는다.
 MCP 변환을 시작하기 전에 원본 파일 크기와 예상 페이지 수를 먼저 확인한다. 이미 PR 에 기준 PDF 가 있거나
 저장소에 대응 PDF 가 있으면 `pdfinfo` 로 페이지 수를 확인하고, 기준 PDF 가 없으면 PR 설명, 샘플명,
 기존 issue 기록, `rhwp dump-pages`/렌더 결과 등으로 대략적인 규모를 파악한다. 페이지 수가 많거나
-거대 표/중첩 표/성능 검증 샘플처럼 변환 시간이 길어질 수 있는 경우에는 기본 `timeout_seconds: 240` 을
-그대로 쓰지 않는다. MCP tool 이 허용하는 범위 안에서 900~1800초처럼 충분한 timeout 을 지정하고, Codex
-또는 별도 MCP 클라이언트로 직접 호출할 때는 클라이언트 요청 timeout 도 서버 timeout 보다 길게 잡는다.
-VS Code/stdio bridge 경로에서 `MCP error -32001: Request timed out` 이 나왔더라도 서버 job 이 성공해
-PDF 를 생성했을 수 있으므로 곧바로 변환 실패로 단정하지 않는다. 서버 job/log 를 확인하고, 필요하면
-요청 timeout 을 명시할 수 있는 직접 HTTP MCP 클라이언트로 같은 입력을 다시 호출해 로컬 PDF 수신까지
-검증한다.
+거대 표/중첩 표/성능 검증 샘플처럼 변환 시간이 길어질 수 있는 경우에는 기본 `--timeout-seconds 240` 을
+그대로 쓰지 않는다. CLI 의 `--timeout-seconds` 를 900~1800초처럼 충분히 크게 지정한다. VS Code MCP
+tool 경로에서 `MCP error -32001: Request timed out` 이 나왔더라도 서버 job 이 성공해 PDF 를 생성했을 수
+있으므로 곧바로 변환 실패로 단정하지 않는다. 이 경우 같은 입력을 `hwp2020-mcp-convert` CLI 로 다시
+호출해 로컬 PDF 수신까지 검증한다.
 
 사전 확인 예:
 
@@ -290,21 +288,24 @@ ls -lh samples/example.hwp
 pdfinfo pdf/example-2024.pdf | rg '^Pages:'
 ```
 
-MCP tool 인자 예:
+CLI 변환 예:
 
-```json
-{
-  "input_path": "/Users/me/rhwp/samples/example.hwp",
-  "target": "pdf",
-  "output_dir": "/Users/me/rhwp/pdf",
-  "output_filename": "example-2020.pdf",
-  "timeout_seconds": 240
-}
+```bash
+/opt/homebrew/bin/npx -y \
+  --package=file:/Users/me/rhwp/tools/hwp-convert-mcp-client-20260709-231800.tar.gz \
+  -- \
+  hwp2020-mcp-convert \
+  --env-file /Users/me/Devel/hwp-convert/.env.local \
+  --input /Users/me/rhwp/samples/example.hwp \
+  --target pdf \
+  --output-dir /Users/me/rhwp/pdf \
+  --output-filename example-2020.pdf \
+  --timeout-seconds 240
 ```
 
 성공 조건:
 
-- MCP tool result 가 `status: success` 이다.
+- CLI result 가 `status: success` 이다.
 - 서버 결과의 `run_status` 가 `0` 이다.
 - 서버 결과의 `validation` 이 `ok` 이다.
 - 로컬 출력 PDF 가 `pdf/` 아래에 존재하고 `file` 또는 `pdfinfo` 로 PDF 임을 확인한다.
