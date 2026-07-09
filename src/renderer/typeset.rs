@@ -1368,6 +1368,32 @@ fn internal_vpos_page_break_line(
     let sample16_tail = is_sample16_integrated_db_cluster_tail_paragraph(para);
     let hwp3_text_rewind =
         hwp3_lineseg_source && para.controls.is_empty() && para_has_visible_text(para);
+
+    // [Issue #2006] 빈-텍스트 문단에 전면(full-page) tac 이미지가 다수 스택된 경우
+    // (예: 1790387 PrEP 보고서 pi=367, tac 그림 2장 각 lh≈900px, vpos=0..0), 한글은
+    // 각 전면 이미지를 쪽당 1장으로 배치한다. rhwp 는 한 쪽에 겹쳐(2×본문 높이) 두어
+    // 과소 페이지가 된다(−16). 연속한 두 라인이 모두 전면급 tac 이미지면 그 경계에서
+    // 강제 분할한다(캐스케이드는 잔여 재처리로). sample16/hwp3 vpos-reset 과 독립 —
+    // 본 케이스는 vpos 가 0 이라 아래 first.vertical_pos>0 가드에 걸린다.
+    if para_is_treat_as_char_picture_only(para) {
+        let full_page_px = body_height_px * 0.8;
+        let break_line = para.line_segs[..line_count]
+            .windows(2)
+            .enumerate()
+            .find_map(|(prev_idx, pair)| {
+                let (prev, cur) = (&pair[0], &pair[1]);
+                if is_synthetic_line_seg(prev) || is_synthetic_line_seg(cur) {
+                    return None;
+                }
+                (hwpunit_to_px(prev.line_height, dpi) >= full_page_px
+                    && hwpunit_to_px(cur.line_height, dpi) >= full_page_px)
+                    .then_some(prev_idx + 1)
+            });
+        if break_line.is_some() {
+            return break_line;
+        }
+    }
+
     if !sample16_tail && !hwp3_text_rewind {
         return None;
     }
@@ -11209,11 +11235,13 @@ impl TypesetEngine {
         let saved_single_line_bottom_fits = forced_page_break_line.is_none()
             && st.col_count == 1
             && fmt.line_heights.len() == 1
-            && fmt.spacing_after <= 0.5
             && para.controls.is_empty()
             && !st.current_items.is_empty()
             // [Task #1749] 저장 flow 가 이 줄을 페이지 마지막으로 인코딩한 경우에만
             // bounds 신뢰 — 누적좌표 문서의 쪽 경계 overfill 차단.
+            // [#2093] spacing_after 게이트(#1733) 제거: 신뢰 판정은 저장 줄의 시각
+            // 경계(vpos~vpos+lh)로 하며, 한글은 쪽 마지막 줄의 아래 간격을 쪽 하단에서
+            // 소비하지 않으므로 sa 는 배제 사유가 아니다 (1192000 해양수산 17→16쪽).
             && saved_flow_marks_page_last(paragraphs, para_idx)
             && current_page_vpos_base
                 .and_then(|base| single_line_visible_bounds_px(para, base, self.dpi))
@@ -14009,9 +14037,21 @@ impl TypesetEngine {
                 .all(|item| matches!(item, PageItem::Shape { .. }));
         let fits_after_overlay_shapes =
             current_column_has_only_overlay_shapes && table_total <= available + 12.0;
+        // [#2097] 쪽나눔=None(나누지 않음) 표는 한글이 행 컷하지 않으며, 한글의 실제
+        // 행높이 합은 저장 선언 높이와 일치한다(1730000 새만금 COM 3자 비교: 저장
+        // 910.5px = 한글 910.6px vs rhwp 실측 954.1px). 셀 내용 실측 팽창으로 측정
+        // fit 이 실패해도 선언 높이가 현재 쪽에 들어가면 통째 배치해 마지막 행
+        // sliver 여분 페이지를 막는다. advance 는 측정 table_total 을 유지해 같은 쪽
+        // 후속 겹침을 차단한다.
+        let declared_none_table_whole_fits =
+            matches!(table.page_break, crate::model::table::TablePageBreak::None)
+                && !table.common.treat_as_char
+                && declared_object_total > host_spacing_total
+                && st.current_height + declared_object_total <= available;
         if st.current_height + table_total <= available
             || fits_after_overlay_shapes
             || single_row_object_height_advance.is_some()
+            || declared_none_table_whole_fits
         {
             self.place_table_with_text(
                 st,
