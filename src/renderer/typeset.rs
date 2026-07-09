@@ -13719,10 +13719,11 @@ impl TypesetEngine {
                 None => (f64::NAN, 0, 0.0),
             };
             eprintln!(
-                "TABLE_DRIFT: pi={} sec={} eff_h={:.1} host_sp={:.1} table_total={:.1} mt_sum={:.1} mt_rows={} cs={:.1} cur_h={:.1} tac={} rows={} avail={:.1} base={:.1} fn={:.1} zone={:.1}",
+                "TABLE_DRIFT: pi={} sec={} eff_h={:.1} host_sp={:.1} table_total={:.1} mt_sum={:.1} mt_rows={} cs={:.1} cur_h={:.1} tac={} rows={} avail={:.1} base={:.1} fn={:.1} zone={:.1} declared={:.1} pb={:?}",
                 para_idx, st.section_index, ft.effective_height, host_spacing_total, table_total,
                 mt_sum, mt_rows, mt_cs, st.current_height, table.common.treat_as_char, table.row_count,
                 available, st.base_available_height(), total_footnote, st.current_zone_y_offset,
+                declared_object_total, table.page_break,
             );
         }
         // [Task #1027 Stage E1] treat_as_char 인라인 표 advance 정합.
@@ -14068,21 +14069,62 @@ impl TypesetEngine {
                 .all(|item| matches!(item, PageItem::Shape { .. }));
         let fits_after_overlay_shapes =
             current_column_has_only_overlay_shapes && table_total <= available + 12.0;
-        // [#2097] 쪽나눔=None(나누지 않음) 표는 한글이 행 컷하지 않으며, 한글의 실제
-        // 행높이 합은 저장 선언 높이와 일치한다(1730000 새만금 COM 3자 비교: 저장
-        // 910.5px = 한글 910.6px vs rhwp 실측 954.1px). 셀 내용 실측 팽창으로 측정
-        // fit 이 실패해도 선언 높이가 현재 쪽에 들어가면 통째 배치해 마지막 행
-        // sliver 여분 페이지를 막는다. advance 는 측정 table_total 을 유지해 같은 쪽
-        // 후속 겹침을 차단한다.
-        let declared_none_table_whole_fits =
-            matches!(table.page_break, crate::model::table::TablePageBreak::None)
-                && !table.common.treat_as_char
-                && declared_object_total > host_spacing_total
-                && st.current_height + declared_object_total <= available;
+        // [#2097/#2105] 한글의 실제 행높이 합은 저장 선언 높이와 일치한다(1730000
+        // 새만금 COM 3자 비교: 저장 910.5px = 한글 910.6px vs rhwp 실측 954.1px).
+        // 셀 내용 실측 팽창으로 측정 fit 이 실패해도 선언 높이가 현재 쪽에 들어가면
+        // 통째 배치해 마지막 행 sliver 여분 페이지를 막는다. 쪽나눔=None(#2097)은
+        // 한글이 행 컷하지 않는 표, RowBreak(#2105, 19378753 밀양시 907.7px 선언
+        // vs 955.9px 실측)는 "나눔 허용"이지 강제가 아니라 선언 fit 시 한글도 나누지
+        // 않는다 — 선언이 fit 하지 않는 다쪽 표의 분할 의미론은 불변. CellBreak 는
+        // 셀 중간 컷 의미론이 별개라 비대상. advance 는 측정 table_total 을 유지해
+        // 같은 쪽 후속 겹침을 차단한다.
+        // RowBreak 중간-쪽 확대(#2097 잔존 백로그): 쪽 상단(current_height≈0) 한정
+        // (#2105)을 넘어, 두 초과량이 모두 측정 노이즈 수준일 때만 선언을 신뢰한다.
+        //   overshoot(cur_h+실측-available) ≤ 16px — 한글도 자기 실측이 쪽을 넘치면
+        //     분할하므로, 크면 한글의 실측(폰트 대체 등으로 저장 선언보다 팽창)도
+        //     넘쳤을 개연성이 높다. 10k A/B: 완전-MATCH 문서 회귀 3건(17445525 등)이
+        //     overshoot 17.7~52.6px, 해소 계열(별지서식류 3080901 2→1쪽 등)은 ≤13.9px.
+        //   excess(실측-선언) ≤ 20px — 상대 한도(10%)만으로는 선언이 큰 표에서 실측
+        //     팽창 27~35px(6%)까지 통과해 per-pi 오라클 악화(1690000: nmis 210→864)를
+        //     냈다. 해소 계열의 중간-쪽 팽창은 ≤17.6px.
+        //   저위험 티어: overshoot ≤ 4px(실측 자체가 반올림 수준으로 fit)이면 실측이
+        //     쪽을 사실상 넘지 않으므로 더 큰 선언 팽창(≤48px)까지 허용 — 55965
+        //     규제영향분석서(overshoot 1.3px, excess 42.3px)가 per-pi 완전 MATCH
+        //     (nmis 1147→0)로 해소되는 축. 1690000(overshoot ≥6.4px)은 양 티어 밖.
+        // 쪽 상단은 available 이 정확해 기존(#2105) 드리프트 한도만 유지.
+        const MIDPAGE_ROWBREAK_DECLARED_TRUST_OVERSHOOT_TOLERANCE_PX: f64 = 16.0;
+        const MIDPAGE_ROWBREAK_DECLARED_TRUST_EXCESS_TOLERANCE_PX: f64 = 20.0;
+        const MIDPAGE_ROWBREAK_NEAR_FIT_OVERSHOOT_TOLERANCE_PX: f64 = 4.0;
+        const MIDPAGE_ROWBREAK_NEAR_FIT_EXCESS_TOLERANCE_PX: f64 = 48.0;
+        let midpage_overshoot = st.current_height + table_total - available;
+        let midpage_excess = table_total - declared_object_total;
+        let declared_fit_scope_ok = match table.page_break {
+            crate::model::table::TablePageBreak::None => true,
+            crate::model::table::TablePageBreak::RowBreak => {
+                st.current_height <= 0.5
+                    || (midpage_overshoot <= MIDPAGE_ROWBREAK_DECLARED_TRUST_OVERSHOOT_TOLERANCE_PX
+                        && midpage_excess <= MIDPAGE_ROWBREAK_DECLARED_TRUST_EXCESS_TOLERANCE_PX)
+                    || (midpage_overshoot <= MIDPAGE_ROWBREAK_NEAR_FIT_OVERSHOOT_TOLERANCE_PX
+                        && midpage_excess <= MIDPAGE_ROWBREAK_NEAR_FIT_EXCESS_TOLERANCE_PX)
+            }
+            crate::model::table::TablePageBreak::CellBreak => false,
+        };
+        // 실측 초과가 드리프트 수준일 때만 선언을 신뢰한다 — 셀 저장 높이는 최소값
+        // 의미라 내용이 진짜로 크면 한글도 행을 팽창·분할한다 (17712219 남극서식:
+        // 선언 882.7px vs 실측 1758.6px, 한글 2쪽). #2097/#2105 대상 계열의 실측
+        // 초과는 +17~48px(≤5%) 수준.
+        let measured_excess = table_total - declared_object_total;
+        let declared_excess_within_drift =
+            measured_excess <= (declared_object_total * 0.10).min(64.0);
+        let declared_table_whole_fits = declared_fit_scope_ok
+            && declared_excess_within_drift
+            && !table.common.treat_as_char
+            && declared_object_total > host_spacing_total
+            && st.current_height + declared_object_total <= available;
         if st.current_height + table_total <= available
             || fits_after_overlay_shapes
             || single_row_object_height_advance.is_some()
-            || declared_none_table_whole_fits
+            || declared_table_whole_fits
         {
             self.place_table_with_text(
                 st,
