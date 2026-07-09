@@ -234,7 +234,12 @@ impl DocumentCore {
             ..Default::default()
         }
     }
-    fn endnote_style_defaults(&self, section_idx: usize, para_idx: usize) -> (u32, u16, u8) {
+    fn endnote_style_defaults(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+    ) -> (u32, u16, u8) {
         let section = &self.document.sections[section_idx];
 
         for para in &section.paragraphs {
@@ -262,13 +267,10 @@ impl DocumentCore {
             }
         }
 
+        // 폴백 — 커서 offset 의 글자모양 기준 (첫 엔트리 아님).
         let current_para = &section.paragraphs[para_idx];
         (
-            current_para
-                .char_shapes
-                .first()
-                .map(|cs| cs.char_shape_id)
-                .unwrap_or(0),
+            current_para.char_shape_id_at(char_offset).unwrap_or(0),
             current_para.para_shape_id,
             current_para.style_id,
         )
@@ -400,13 +402,10 @@ impl DocumentCore {
                 }
             }
             found.unwrap_or_else(|| {
+                // 폴백 — 커서 offset 의 글자모양 기준 (첫 엔트리 아님).
                 let current_para = &section.paragraphs[para_idx];
                 (
-                    current_para
-                        .char_shapes
-                        .first()
-                        .map(|cs| cs.char_shape_id)
-                        .unwrap_or(0),
+                    current_para.char_shape_id_at(char_offset).unwrap_or(0),
                     current_para.para_shape_id,
                 )
             })
@@ -673,7 +672,7 @@ impl DocumentCore {
         };
 
         let (default_char_shape_id, para_shape_id, style_id) =
-            self.endnote_style_defaults(section_idx, para_idx);
+            self.endnote_style_defaults(section_idx, para_idx, char_offset);
         let prefix_char = if shape.prefix_char == '\0' {
             '\0'
         } else {
@@ -776,5 +775,81 @@ impl DocumentCore {
             "{{\"ok\":true,\"paraIdx\":{},\"controlIdx\":{},\"endnoteNumber\":{}}}",
             para_idx, insert_idx, endnote_number
         ))
+    }
+}
+
+#[cfg(test)]
+mod char_shape_inherit_tests {
+    use crate::document_core::DocumentCore;
+    use crate::model::control::Control;
+    use crate::model::paragraph::CharShapeRef;
+
+    /// 혼합 글자모양 문단: 텍스트 20자, 글자 인덱스 0~9 는 34, 10~ 는 37.
+    fn core_with_mixed_shape_paragraph() -> DocumentCore {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.insert_text_native(0, 0, 0, "0123456789abcdefghij")
+            .unwrap();
+        let para = &mut core.document.sections[0].paragraphs[0];
+        // 컨트롤(SectionDef 등)이 UTF-16 앞자리를 차지하므로 경계는 char_offsets 로 계산.
+        let boundary = para.char_offsets[10];
+        para.char_shapes = vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 34,
+            },
+            CharShapeRef {
+                start_pos: boundary,
+                char_shape_id: 37,
+            },
+        ];
+        core
+    }
+
+    /// 기존 각주가 없는 문서의 폴백 — 커서 offset 글자모양(37) 상속.
+    #[test]
+    fn insert_footnote_fallback_inherits_char_shape_at_cursor_offset() {
+        let mut core = core_with_mixed_shape_paragraph();
+        core.insert_footnote_native(0, 0, 10).unwrap();
+
+        let inner = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .find_map(|p| {
+                p.controls.iter().find_map(|c| match c {
+                    Control::Footnote(f) => f.paragraphs.first(),
+                    _ => None,
+                })
+            })
+            .expect("각주 내부 문단");
+        assert_eq!(
+            inner.char_shapes.first().map(|cs| cs.char_shape_id),
+            Some(37),
+            "각주 내부 문단이 커서 offset 글자모양(37)이 아닌 값을 상속"
+        );
+    }
+
+    /// 기존 미주도 미주 스타일도 없는 문서의 폴백 — 커서 offset 글자모양(37) 상속.
+    #[test]
+    fn insert_endnote_fallback_inherits_char_shape_at_cursor_offset() {
+        let mut core = core_with_mixed_shape_paragraph();
+        core.document.doc_info.styles.clear();
+        core.insert_endnote_native(0, 0, 10).unwrap();
+
+        let inner = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .find_map(|p| {
+                p.controls.iter().find_map(|c| match c {
+                    Control::Endnote(e) => e.paragraphs.first(),
+                    _ => None,
+                })
+            })
+            .expect("미주 내부 문단");
+        assert_eq!(
+            inner.char_shapes.first().map(|cs| cs.char_shape_id),
+            Some(37),
+            "미주 내부 문단이 커서 offset 글자모양(37)이 아닌 값을 상속"
+        );
     }
 }

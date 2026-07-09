@@ -426,15 +426,17 @@ impl Paragraph {
 
     /// `template` 의 서식을 상속한 빈 문단을 생성한다.
     ///
-    /// 문단모양(`para_shape_id`), 스타일(`style_id`), 첫 글자모양(`char_shapes[0]`)
-    /// 만 가져온다. 텍스트·컨트롤·필드는 상속하지 않는다.
+    /// 문단모양(`para_shape_id`), 스타일(`style_id`), 끝 글자모양(마지막
+    /// `char_shapes` 엔트리)만 가져온다. 텍스트·컨트롤·필드는 상속하지 않는다.
+    /// 새 문단은 템플릿 문단 *뒤에* 이어지므로(문단 끝 Enter), 혼합 글자모양
+    /// 문단에서는 첫 엔트리가 아니라 문단 끝의 글자모양이 상속 기준이다.
     pub fn new_empty_like(template: &Paragraph) -> Self {
         Paragraph {
             para_shape_id: template.para_shape_id,
             style_id: template.style_id,
             char_shapes: template
                 .char_shapes
-                .first()
+                .last()
                 .map(|cs| CharShapeRef {
                     start_pos: 0,
                     char_shape_id: cs.char_shape_id,

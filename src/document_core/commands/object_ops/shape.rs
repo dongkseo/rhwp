@@ -1139,13 +1139,9 @@ impl DocumentCore {
             _ => TextWrap::InFrontOfText,
         };
 
-        // 커서 위치 문단의 속성 상속
+        // 커서 위치 문단의 속성 상속 — 혼합 글자모양 문단에서는 커서 offset 의 글자모양이 기준.
         let current_para = &self.document.sections[section_idx].paragraphs[para_idx];
-        let default_char_shape_id: u32 = current_para
-            .char_shapes
-            .first()
-            .map(|cs| cs.char_shape_id)
-            .unwrap_or(0);
+        let default_char_shape_id: u32 = current_para.char_shape_id_at(char_offset).unwrap_or(0);
         let default_para_shape_id: u16 = current_para.para_shape_id;
 
         // 편집 영역 폭
@@ -2752,5 +2748,73 @@ mod resize_clamp_tests {
         let common = shape_common(&core, para, ctrl);
         assert_eq!(common.width, 12000);
         assert_eq!(common.height, 8000);
+    }
+}
+
+#[cfg(test)]
+mod char_shape_inherit_tests {
+    use super::*;
+    use crate::model::control::Control;
+    use crate::model::paragraph::CharShapeRef;
+
+    /// 혼합 글자모양 문단: 텍스트 20자, 글자 인덱스 0~9 는 34, 10~ 는 37.
+    /// 커서 offset 10 의 글자모양(37)은 첫 엔트리(34)와 다르다.
+    fn core_with_mixed_shape_paragraph() -> DocumentCore {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.insert_text_native(0, 0, 0, "0123456789abcdefghij")
+            .unwrap();
+        let para = &mut core.document.sections[0].paragraphs[0];
+        // 컨트롤(SectionDef 등)이 UTF-16 앞자리를 차지하므로 경계는 char_offsets 로 계산.
+        let boundary = para.char_offsets[10];
+        para.char_shapes = vec![
+            CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 34,
+            },
+            CharShapeRef {
+                start_pos: boundary,
+                char_shape_id: 37,
+            },
+        ];
+        core
+    }
+
+    #[test]
+    fn create_textbox_inherits_char_shape_at_cursor_offset() {
+        let mut core = core_with_mixed_shape_paragraph();
+        core.create_shape_control_native(
+            0,
+            0,
+            10,
+            9000,
+            6750,
+            0,
+            0,
+            false,
+            "InFrontOfText",
+            "textbox",
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+
+        let tb_para = core.document.sections[0]
+            .paragraphs
+            .iter()
+            .find_map(|p| {
+                p.controls.iter().find_map(|c| match c {
+                    Control::Shape(s) => crate::document_core::helpers::get_textbox_from_shape(s)
+                        .map(|tb| &tb.paragraphs[0]),
+                    _ => None,
+                })
+            })
+            .expect("글상자 내부 문단");
+        assert_eq!(
+            tb_para.char_shapes.first().map(|cs| cs.char_shape_id),
+            Some(37),
+            "글상자 내부 문단이 커서 offset 글자모양(37)이 아닌 값을 상속"
+        );
     }
 }

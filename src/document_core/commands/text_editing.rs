@@ -3224,9 +3224,11 @@ mod tests {
         );
     }
 
-    /// new_empty_like 는 첫 글자모양만, start_pos 를 0 으로 정규화해 가져온다.
+    /// new_empty_like 는 템플릿 문단 *끝* 글자모양만, start_pos 를 0 으로
+    /// 정규화해 가져온다 — 새 문단은 템플릿 뒤에 이어지므로(문단 끝 Enter)
+    /// 혼합 글자모양 문단에서 첫 엔트리(7)가 아니라 끝 엔트리(9)가 기준이다.
     #[test]
-    fn new_empty_like_takes_only_first_char_shape_at_pos_zero() {
+    fn new_empty_like_takes_last_char_shape_at_pos_zero() {
         let mut template = Paragraph::new_empty();
         template.text = "가나다".to_string();
         template.char_shapes = vec![
@@ -3241,9 +3243,9 @@ mod tests {
         ];
 
         let para = Paragraph::new_empty_like(&template);
-        assert_eq!(para.char_shapes.len(), 1, "첫 글자모양만 상속");
+        assert_eq!(para.char_shapes.len(), 1, "끝 글자모양만 상속");
         assert_eq!(para.char_shapes[0].start_pos, 0);
-        assert_eq!(para.char_shapes[0].char_shape_id, 7);
+        assert_eq!(para.char_shapes[0].char_shape_id, 9);
         assert!(para.text.is_empty(), "텍스트는 상속하지 않는다");
     }
 
