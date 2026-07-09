@@ -336,7 +336,7 @@ export const insertCommands: CommandDef[] = [
           ref.cellIdx !== undefined &&
           ref.cellParaIdx !== undefined &&
           (ref as any).outerTableControlIdx !== undefined &&
-          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image')
+          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image' || ref.type === 'ole')
         )
           ? [{
               controlIdx: (ref as any).outerTableControlIdx as number,
