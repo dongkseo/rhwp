@@ -93,11 +93,17 @@ def scan_duplicates(files):
                     dup_lines.update(range(i, i + WINDOW))
         if not dup_lines:
             continue
+        # [c2r1 보정] 중복 소거의 CC 소득은 중복부의 분기 밀도에 비례 (#2132 실증:
+        # 분기-희박 워크 132줄 소거 → CC 총합 −2). 중복 줄수에 분기 밀도를 곱한다.
+        branch_re = re.compile(r"\bif\b|\bmatch\b|&&|\|\||\bfor\b|\bwhile\b")
         spans = fn_spans(lines)
         for name, s, e in spans:
-            n = len([x for x in dup_lines if s <= x <= e])
+            in_fn = [x for x in dup_lines if s <= x <= e]
+            n = len(in_fn)
             if n >= WINDOW:
-                result[(str(p), name)] += n
+                br = sum(len(branch_re.findall(norm[x])) for x in in_fn if x < len(norm))
+                density = br / max(n, 1)
+                result[(str(p), name)] += int(n * min(1.0, 0.2 + density))
     return result
 
 
