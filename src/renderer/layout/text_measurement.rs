@@ -288,6 +288,148 @@ pub fn extract_tab_leaders_with_extended(
 /// font_metrics_data의 582개 폰트 메트릭을 사용하여 문자 폭을 측정한다.
 /// 메트릭이 없는 폰트는 CJK=font_size, Latin=font_size×0.5 휴리스틱을 사용한다.
 /// 모든 플랫폼에서 동일하게 동작한다 (WASM 포함).
+/// [#2132] 공용 글자-워크 — Embedded/Wasm measurer 의 compute_char_positions 중복 소거.
+/// 폭 산출원(char_px_raw)과 인라인 탭 divergent 경로(inline_tab_x)만 measurer 별 훅.
+/// 나머지(특수문자, dash leader, 자간 클램프, 공백, 커스텀/기본 탭)는 1벌.
+fn compute_char_positions_walk(
+    text: &str,
+    style: &TextStyle,
+    char_px_raw: &dyn Fn(usize, char, &[char], &[u8]) -> f64,
+    inline_tab_x: &dyn Fn(usize, f64, &[u16; 7], &[char], &[u8], &dyn Fn(usize) -> f64) -> f64,
+) -> Vec<f64> {
+    let (font_size, ratio, tab_w) = style_params(style);
+    let chars: Vec<char> = text.chars().collect();
+    let char_count = chars.len();
+    let mut positions = Vec::with_capacity(char_count + 1);
+    let mut x = 0.0;
+    positions.push(x);
+
+    let cluster_len = build_cluster_len(&chars);
+    let has_custom_tabs = !style.tab_stops.is_empty() || style.auto_tab_right;
+
+    let char_width = |i: usize| -> f64 {
+        let c = chars[i];
+        if c == '\u{2007}' {
+            return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
+        }
+        // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
+        if c == '\u{FFFC}' {
+            return 0.0;
+        }
+        // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0 (한컴 PDF 정합).
+        if c == '\u{F081C}' {
+            return 0.0;
+        }
+        let char_px_raw = char_px_raw(i, c, &chars, &cluster_len);
+        // Task #352: dash leader 좁은 base 0.3 em + extra_dash_advance.
+        let is_leader = is_dash_leader_run(&chars, i);
+        let char_px = if is_leader {
+            char_px_raw.min(font_size * 0.3)
+        } else {
+            char_px_raw
+        };
+        let mut w = char_px * ratio + style.letter_spacing + style.extra_char_spacing;
+        if c == ' ' {
+            w += style.extra_word_spacing;
+        }
+        if is_leader {
+            w += style.extra_dash_advance;
+        }
+        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
+        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
+        if style.letter_spacing + style.extra_char_spacing < 0.0 {
+            let min_w = char_px * ratio * 0.5;
+            w = w.max(min_w);
+        }
+        w
+    };
+
+    let mut tab_char_idx = 0usize; // inline_tabs 인덱스
+    for i in 0..char_count {
+        let c = chars[i];
+        if cluster_len[i] == 0 {
+            positions.push(x);
+            continue;
+        }
+        if c == '\t' {
+            if tab_char_idx < style.inline_tabs.len() {
+                let ext = &style.inline_tabs[tab_char_idx];
+                x = inline_tab_x(i, x, ext, &chars, &cluster_len, &char_width);
+                tab_char_idx += 1;
+            } else if has_custom_tabs {
+                let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+                if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                    if let Some(target_rel) = right_leader_body_target_rel(style) {
+                        let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                        x = (target_rel - seg_w).max(x);
+                        tab_char_idx += 1;
+                        positions.push(x);
+                        continue;
+                    }
+                }
+                let abs_x = style.line_x_offset + x;
+                let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
+                    abs_x,
+                    &style.tab_stops,
+                    tab_w,
+                    style.auto_tab_right,
+                    style.available_width,
+                );
+                let rel_tab = tab_pos - style.line_x_offset;
+                // [Task #874] auto_tab_right / leader RIGHT 탭은 col-relative 우측 끝
+                // (= text_start_offset + available_width) 까지 정렬.
+                let effective_rel_tab = if tab_type == 1
+                    && style.available_width > 0.0
+                    && (fill_type != 0 || style.auto_tab_right)
+                {
+                    style.text_start_offset + style.available_width - style.line_x_offset
+                } else {
+                    rel_tab
+                };
+                match tab_type {
+                    1 => {
+                        // 오른쪽
+                        let seg_start = if fill_type != 0 {
+                            i + 1
+                        } else {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let seg_w =
+                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
+                        x = (effective_rel_tab - seg_w).max(x);
+                    }
+                    2 => {
+                        // 가운데
+                        let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                        x = (rel_tab - seg_w / 2.0).max(x);
+                    }
+                    _ => {
+                        // 왼쪽(0), 소수점(3)
+                        x = rel_tab.max(x);
+                    }
+                }
+                tab_char_idx += 1;
+            } else {
+                // 기본 등간격 탭: 라인 절대 위치(line_x_offset + x) 기준으로 계산.
+                let abs_x = style.line_x_offset + x;
+                let next_abs = ((abs_x / tab_w).floor() + 1.0) * tab_w;
+                x = (next_abs - style.line_x_offset).max(x);
+                tab_char_idx += 1;
+            }
+            positions.push(x);
+            continue;
+        }
+        x += char_width(i);
+        positions.push(x);
+    }
+
+    positions
+}
+
 pub struct EmbeddedTextMeasurer;
 
 impl TextMeasurer for EmbeddedTextMeasurer {
@@ -505,34 +647,11 @@ impl TextMeasurer for EmbeddedTextMeasurer {
     }
 
     fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
-        let (font_size, ratio, tab_w) = style_params(style);
-        let chars: Vec<char> = text.chars().collect();
-        let char_count = chars.len();
-        let mut positions = Vec::with_capacity(char_count + 1);
-        let mut x = 0.0;
-        positions.push(x);
-
-        let cluster_len = build_cluster_len(&chars);
-        let has_custom_tabs = !style.tab_stops.is_empty() || style.auto_tab_right;
-
-        let char_width = |i: usize| -> f64 {
-            let c = chars[i];
-            if c == '\u{2007}' {
-                return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
-            }
-            // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-            if c == '\u{FFFC}' {
-                return 0.0;
-            }
-            // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0
-            // 한컴이 인라인 TAC 표/도형 앞에 삽입하는 placeholder 채움 문자.
-            // 한컴 PDF 정합 — 폭 0 으로 라인 inline x 에 영향 없음. fillers 가
-            // 표 너비만큼 (≈97 chars × 1 char width = table width) 채워져
-            // 표가 fillers 영역 위에 시각적으로 겹쳐 column-left 출력 패턴.
-            if c == '\u{F081C}' {
-                return 0.0;
-            }
-            let base_w_raw = if let Some(w) = measure_char_width_embedded(
+        let (font_size, _ratio, _tab_w) = style_params(style);
+        // [#2132] 폭 산출원 훅 — embedded 메트릭 lookup + 폴백 사다리 (Task #257 포함).
+        let char_px_raw = |_i: usize, c: char, _chars: &[char], cluster_len: &[u8]| -> f64 {
+            let i = _i;
+            if let Some(w) = measure_char_width_embedded(
                 &style.font_family,
                 style.bold,
                 style.italic,
@@ -547,277 +666,157 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size * 0.3
             } else {
                 font_size * 0.5
-            };
-            // Task #352: 3+ 연속 dash leader 좁은 base 0.3 em + 라인 슬랙
-            // 분배(extra_dash_advance) 로 PDF elastic leader 모방.
-            let is_leader = is_dash_leader_run(&chars, i);
-            let base_w = if is_leader {
-                base_w_raw.min(font_size * 0.3)
-            } else {
-                base_w_raw
-            };
-            let mut w = base_w * ratio + style.letter_spacing + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
             }
-            if is_leader {
-                w += style.extra_dash_advance;
-            }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시 per-char 최소
-            // advance 를 base_w*ratio*0.5 로 클램프하여 narrow glyph(콤마/마침표 등)
-            // 이 뒷 글자와 역진 겹침되는 것을 방지한다. 문서 CharShape 의 음수 자간
-            // 및 paragraph_layout 의 overflow/Justify/Distribute 압축 모두 포함.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = base_w * ratio * 0.5;
-                w = w.max(min_w);
-            }
-            w
         };
-
-        let mut tab_char_idx = 0usize; // inline_tabs 인덱스
-        for i in 0..char_count {
-            let c = chars[i];
-            if cluster_len[i] == 0 {
-                positions.push(x);
-                continue;
-            }
-            if c == '\t' {
-                // HWPX 인라인 탭: inline_tabs에서 width/type 사용
-                // 네이티브 경로의 ext[2] 인코딩: (tab_type << 8) | fill_type.
-                // 상위 바이트가 tab_type (1=LEFT, 2=RIGHT, 3=CENTER, 4=DECIMAL).
-                // [Issue #630 Stage 4 검증] HWP5 의 `ext[0]` 가 이미 right-tab 결과 위치
-                // (= 우측 끝 - 한컴_seg_w) 로 저장되어 있어 LEFT fallback 이 인코딩 의도와
-                // 정합. estimate_text_width 와 동일한 raw u16 해석 유지.
-                if tab_char_idx < style.inline_tabs.len() {
-                    let ext = &style.inline_tabs[tab_char_idx];
-                    let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
-                    let tab_type_raw = ext[2];
-                    let tab_target = x + tab_width_px;
-                    // [Task #874] auto_tab_right paragraph + 단일 tab: ext[0] = Hancom의
-                    // right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w). 우리 폰트의 seg_w 와 차이
-                    // 가 있으면 좌측 이탈. col-relative right edge - our_seg_w 로 override.
-                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
-                    // [Task #874 #10] ext[2] high-byte 가 명시적 LEFT(1)/DECIMAL(4) 면
-                    // auto_tab_right paragraph 라도 override 금지 — exam_math.hwp p7
-                    // item 18 (Task #290) 의 inline LEFT tab 회귀 차단.
-                    let inline_type_hi = ((tab_type_raw >> 8) & 0xFF) as u8;
-                    let inline_is_explicit_left = inline_type_hi == 1 || inline_type_hi == 4;
-                    let override_to_right = style.auto_tab_right
-                        && !has_more_tabs_after
-                        && style.available_width > 0.0
-                        && !inline_is_explicit_left;
-                    // [Issue #630 Stage 6] HWP5 inline tab `ext[2]` 인코딩 = `(enum+1)<<8 | fill`
-                    // 이므로 high-byte 추출이 정확. 단, RIGHT(high-byte=2) + leader(fill≠0)
-                    // 의 경우 한컴 ext[0] 가 이미 "(우측 끝 - 한컴_seg_w)" 까지의 거리로
-                    // 저장 (Stage 4 검증).
-                    let body_right_text_rel = if style.available_width > 0.0 {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        f64::INFINITY
-                    };
-                    let body_right_legacy = if style.available_width > 0.0 {
-                        style.available_width - style.line_x_offset
-                    } else {
-                        f64::INFINITY
-                    };
-                    if override_to_right {
-                        // [Task #874 #2] lang split 후속 run 합산 override.
-                        let seg_w = if let Some(w) = style.right_tab_block_width_override {
-                            w
-                        } else {
-                            let seg_start = {
-                                let mut s = i + 1;
-                                while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
-                                    s += 1;
-                                }
-                                s
-                            };
-                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
-                        };
-                        x = (body_right_text_rel - seg_w).max(x);
-                    } else if inline_type_hi == 0
-                        && !has_more_tabs_after
-                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
-                    {
-                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (target_rel - seg_w).max(x);
-                        } else {
-                            x = tab_target.max(x);
-                        }
-                    } else {
-                        let high_byte = (tab_type_raw >> 8) & 0xFF;
-                        let fill_low = tab_type_raw & 0xFF;
-                        match (high_byte, tab_type_raw) {
-                            (_, 1) => {
-                                // 기존 raw 1 (LEFT 또는 잘못된 RIGHT 1) — 호환 유지
-                                let seg_start = {
-                                    let mut s = i + 1;
-                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
-                                    {
-                                        s += 1;
-                                    }
-                                    s
-                                };
-                                let seg_w = measure_segment_from(
-                                    &chars,
-                                    &cluster_len,
-                                    seg_start,
-                                    &char_width,
-                                );
-                                x = (tab_target - seg_w).max(x);
-                            }
-                            (_, 2) => {
-                                // 기존 raw 2 — 호환 유지
-                                let seg_w =
-                                    measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                                x = (tab_target - seg_w / 2.0).max(x);
-                            }
-                            (2, _) if fill_low != 0 => {
-                                // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호) —
-                                // Task #874 는 cross-run RIGHT+leader 의 text_start_offset
-                                // 미포함 본질을 fix (body_right_text_rel +
-                                // right_tab_block_width_override). 단일-run 케이스는
-                                // 여전히 body_right_legacy (= available_width - line_x_offset)
-                                // 사용 → text_start_offset 미포함 으로 cell right inner
-                                // (= text_start_offset + available_width) 미달. 또한 leading
-                                // space skip 으로 seg_w 가 space 폭만큼 과소 → digit right
-                                // edge 가 cell right inner 보다 좌측에 위치 (정렬 미달).
-                                //
-                                // Fix: \t 뒤 content 가 있는 단일-run 은 cell_right_run_rel
-                                // (= text_start_offset + available_width - line_x_offset) 정렬
-                                // + seg_w_full (i+1 부터, leading space 포함). content 없는
-                                // trailing space / 끝 케이스 (= cross-run 직전) 는 원본 path
-                                // 유지 (다음 run 의 pending_right_tab 분기가 처리).
-                                let seg_start_skipped = {
-                                    let mut s = i + 1;
-                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
-                                    {
-                                        s += 1;
-                                    }
-                                    s
-                                };
-                                let has_content_after = seg_start_skipped < chars.len();
-                                if has_content_after {
-                                    let seg_w_full = measure_segment_from(
-                                        &chars,
-                                        &cluster_len,
-                                        i + 1,
-                                        &char_width,
-                                    );
-                                    let cell_right_run_rel = style.text_start_offset
-                                        + style.available_width
-                                        - style.line_x_offset;
-                                    x = (cell_right_run_rel - seg_w_full).max(x);
-                                } else {
-                                    let seg_w = measure_segment_from(
-                                        &chars,
-                                        &cluster_len,
-                                        seg_start_skipped,
-                                        &char_width,
-                                    );
-                                    x = (body_right_legacy - seg_w).max(x);
-                                }
-                            }
-                            (2, _) => {
-                                // RIGHT 인라인 탭 (no leader): 한컴 metrics 차이 흡수.
-                                let seg_start = {
-                                    let mut s = i + 1;
-                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
-                                    {
-                                        s += 1;
-                                    }
-                                    s
-                                };
-                                let seg_w = measure_segment_from(
-                                    &chars,
-                                    &cluster_len,
-                                    seg_start,
-                                    &char_width,
-                                );
-                                x = (body_right_legacy - seg_w).max(x);
-                            }
-                            _ => {
-                                x = tab_target.max(x);
-                            }
-                        }
-                    }
-                    tab_char_idx += 1;
-                } else if has_custom_tabs {
-                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
-                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
-                        if let Some(target_rel) = right_leader_body_target_rel(style) {
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (target_rel - seg_w).max(x);
-                            tab_char_idx += 1;
-                            positions.push(x);
-                            continue;
-                        }
-                    }
-                    let abs_x = style.line_x_offset + x;
-                    let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
-                        abs_x,
-                        &style.tab_stops,
-                        tab_w,
-                        style.auto_tab_right,
-                        style.available_width,
-                    );
-                    let rel_tab = tab_pos - style.line_x_offset;
-                    // [Task #874] auto_tab_right / leader RIGHT 탭은 col-relative 우측 끝
-                    // (= text_start_offset + available_width) 까지 정렬.
-                    let effective_rel_tab = if tab_type == 1
-                        && style.available_width > 0.0
-                        && (fill_type != 0 || style.auto_tab_right)
-                    {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        rel_tab
-                    };
-                    match tab_type {
-                        1 => {
-                            // 오른쪽
-                            let seg_start = if fill_type != 0 {
-                                i + 1
-                            } else {
-                                let mut s = i + 1;
-                                while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
-                                    s += 1;
-                                }
-                                s
-                            };
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
-                            x = (effective_rel_tab - seg_w).max(x);
-                        }
-                        2 => {
-                            // 가운데
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (rel_tab - seg_w / 2.0).max(x);
-                        }
-                        _ => {
-                            // 왼쪽(0), 소수점(3)
-                            x = rel_tab.max(x);
-                        }
-                    }
-                    tab_char_idx += 1;
+        // [#2132] 인라인 탭 divergent 경로 훅 — HWP5 raw ext 인코딩 legacy 해석 유지
+        // (Issue #630 Stage 4/6, Task #874 계열 — 원본 무변경 이동).
+        let inline_tab_x = |i: usize,
+                            x_in: f64,
+                            ext: &[u16; 7],
+                            chars: &[char],
+                            cluster_len: &[u8],
+                            char_width: &dyn Fn(usize) -> f64|
+         -> f64 {
+            let mut x = x_in;
+            let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
+            let tab_type_raw = ext[2];
+            let tab_target = x + tab_width_px;
+            // [Task #874] auto_tab_right paragraph + 단일 tab: ext[0] = Hancom의
+            // right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w). 우리 폰트의 seg_w 와 차이
+            // 가 있으면 좌측 이탈. col-relative right edge - our_seg_w 로 override.
+            let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+            // [Task #874 #10] ext[2] high-byte 가 명시적 LEFT(1)/DECIMAL(4) 면
+            // auto_tab_right paragraph 라도 override 금지 — exam_math.hwp p7
+            // item 18 (Task #290) 의 inline LEFT tab 회귀 차단.
+            let inline_type_hi = ((tab_type_raw >> 8) & 0xFF) as u8;
+            let inline_is_explicit_left = inline_type_hi == 1 || inline_type_hi == 4;
+            let override_to_right = style.auto_tab_right
+                && !has_more_tabs_after
+                && style.available_width > 0.0
+                && !inline_is_explicit_left;
+            // [Issue #630 Stage 6] HWP5 inline tab `ext[2]` 인코딩 = `(enum+1)<<8 | fill`
+            // 이므로 high-byte 추출이 정확. 단, RIGHT(high-byte=2) + leader(fill≠0)
+            // 의 경우 한컴 ext[0] 가 이미 "(우측 끝 - 한컴_seg_w)" 까지의 거리로
+            // 저장 (Stage 4 검증).
+            let body_right_text_rel = if style.available_width > 0.0 {
+                style.text_start_offset + style.available_width - style.line_x_offset
+            } else {
+                f64::INFINITY
+            };
+            let body_right_legacy = if style.available_width > 0.0 {
+                style.available_width - style.line_x_offset
+            } else {
+                f64::INFINITY
+            };
+            if override_to_right {
+                // [Task #874 #2] lang split 후속 run 합산 override.
+                let seg_w = if let Some(w) = style.right_tab_block_width_override {
+                    w
                 } else {
-                    // 기본 등간격 탭
-                    let abs_x = style.line_x_offset + x;
-                    let next_abs = ((abs_x / tab_w).floor() + 1.0) * tab_w;
-                    x = (next_abs - style.line_x_offset).max(x);
-                    tab_char_idx += 1;
+                    let seg_start = {
+                        let mut s = i + 1;
+                        while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                            s += 1;
+                        }
+                        s
+                    };
+                    measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
+                };
+                x = (body_right_text_rel - seg_w).max(x);
+            } else if inline_type_hi == 0
+                && !has_more_tabs_after
+                && tab_suffix_is_ascii_page_number(&chars, i + 1)
+            {
+                if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                    let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                    x = (target_rel - seg_w).max(x);
+                } else {
+                    x = tab_target.max(x);
                 }
-                positions.push(x);
-                continue;
+            } else {
+                let high_byte = (tab_type_raw >> 8) & 0xFF;
+                let fill_low = tab_type_raw & 0xFF;
+                match (high_byte, tab_type_raw) {
+                    (_, 1) => {
+                        // 기존 raw 1 (LEFT 또는 잘못된 RIGHT 1) — 호환 유지
+                        let seg_start = {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let seg_w =
+                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
+                        x = (tab_target - seg_w).max(x);
+                    }
+                    (_, 2) => {
+                        // 기존 raw 2 — 호환 유지
+                        let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                        x = (tab_target - seg_w / 2.0).max(x);
+                    }
+                    (2, _) if fill_low != 0 => {
+                        // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호) —
+                        // Task #874 는 cross-run RIGHT+leader 의 text_start_offset
+                        // 미포함 본질을 fix (body_right_text_rel +
+                        // right_tab_block_width_override). 단일-run 케이스는
+                        // 여전히 body_right_legacy (= available_width - line_x_offset)
+                        // 사용 → text_start_offset 미포함 으로 cell right inner
+                        // (= text_start_offset + available_width) 미달. 또한 leading
+                        // space skip 으로 seg_w 가 space 폭만큼 과소 → digit right
+                        // edge 가 cell right inner 보다 좌측에 위치 (정렬 미달).
+                        //
+                        // Fix: \t 뒤 content 가 있는 단일-run 은 cell_right_run_rel
+                        // (= text_start_offset + available_width - line_x_offset) 정렬
+                        // + seg_w_full (i+1 부터, leading space 포함). content 없는
+                        // trailing space / 끝 케이스 (= cross-run 직전) 는 원본 path
+                        // 유지 (다음 run 의 pending_right_tab 분기가 처리).
+                        let seg_start_skipped = {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let has_content_after = seg_start_skipped < chars.len();
+                        if has_content_after {
+                            let seg_w_full =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            let cell_right_run_rel = style.text_start_offset
+                                + style.available_width
+                                - style.line_x_offset;
+                            x = (cell_right_run_rel - seg_w_full).max(x);
+                        } else {
+                            let seg_w = measure_segment_from(
+                                &chars,
+                                &cluster_len,
+                                seg_start_skipped,
+                                &char_width,
+                            );
+                            x = (body_right_legacy - seg_w).max(x);
+                        }
+                    }
+                    (2, _) => {
+                        // RIGHT 인라인 탭 (no leader): 한컴 metrics 차이 흡수.
+                        let seg_start = {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let seg_w =
+                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
+                        x = (body_right_legacy - seg_w).max(x);
+                    }
+                    _ => {
+                        x = tab_target.max(x);
+                    }
+                }
             }
-            x += char_width(i);
-            positions.push(x);
-        }
-
-        positions
+            x
+        };
+        compute_char_positions_walk(text, style, &char_px_raw, &inline_tab_x)
     }
 }
 
@@ -1208,16 +1207,7 @@ impl TextMeasurer for WasmTextMeasurer {
     }
 
     fn compute_char_positions(&self, text: &str, style: &TextStyle) -> Vec<f64> {
-        let (font_size, ratio, tab_w) = style_params(style);
-        let chars: Vec<char> = text.chars().collect();
-        let char_count = chars.len();
-        let mut positions = Vec::with_capacity(char_count + 1);
-        let mut x = 0.0;
-        positions.push(x);
-
-        let cluster_len = build_cluster_len(&chars);
-        let has_custom_tabs = !style.tab_stops.is_empty() || style.auto_tab_right;
-
+        let (font_size, _ratio, _tab_w) = style_params(style);
         let measure_font = wasm_internals::build_1000pt_font_string(style);
         let hangul_hwp = wasm_internals::measure_hangul_width_hwp(
             &measure_font,
@@ -1226,25 +1216,9 @@ impl TextMeasurer for WasmTextMeasurer {
             style.italic,
             font_size,
         );
-
-        let char_width = |i: usize| -> f64 {
-            let c = chars[i];
-            if c == '\u{2007}' {
-                return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
-            }
-            // 인라인 객체 placeholder 는 실제 control node 가 따로 그리므로 텍스트 폭은 0.
-            if c == '\u{FFFC}' {
-                return 0.0;
-            }
-            // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0
-            // 한컴이 인라인 TAC 표/도형 앞에 삽입하는 placeholder 채움 문자.
-            // 한컴 PDF 정합 — 폭 0 으로 라인 inline x 에 영향 없음. fillers 가
-            // 표 너비만큼 (≈97 chars × 1 char width = table width) 채워져
-            // 표가 fillers 영역 위에 시각적으로 겹쳐 column-left 출력 패턴.
-            if c == '\u{F081C}' {
-                return 0.0;
-            }
-            let char_px_raw = if cluster_len[i] > 1 {
+        // [#2132] 폭 산출원 훅 — wasm canvas 측정.
+        let char_px_raw = |i: usize, c: char, _chars: &[char], cluster_len: &[u8]| -> f64 {
+            if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
@@ -1256,236 +1230,130 @@ impl TextMeasurer for WasmTextMeasurer {
                     hangul_hwp,
                     font_size,
                 )
-            };
-            // Task #352: dash leader 좁은 base 0.3 em + extra_dash_advance.
-            let is_leader = is_dash_leader_run(&chars, i);
-            let char_px = if is_leader {
-                char_px_raw.min(font_size * 0.3)
-            } else {
-                char_px_raw
-            };
-            let mut w = char_px * ratio + style.letter_spacing + style.extra_char_spacing;
-            if c == ' ' {
-                w += style.extra_word_spacing;
             }
-            if is_leader {
-                w += style.extra_dash_advance;
-            }
-            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
-            // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
-            if style.letter_spacing + style.extra_char_spacing < 0.0 {
-                let min_w = char_px * ratio * 0.5;
-                w = w.max(min_w);
-            }
-            w
         };
-
-        let mut tab_char_idx = 0usize; // [Task #296] inline_tabs 인덱스
-        for i in 0..char_count {
-            let c = chars[i];
-            if cluster_len[i] == 0 {
-                positions.push(x);
-                continue;
-            }
-            if c == '\t' {
-                // [Task #296] 인라인 탭 (HWP tab_extended / HWPX 인라인 탭) 을
-                // WASM Canvas 경로에서도 존중. 네이티브 EmbeddedTextMeasurer 와 동일 구조.
-                if tab_char_idx < style.inline_tabs.len() {
-                    let ext = &style.inline_tabs[tab_char_idx];
-                    let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
-                    let tab_type = inline_tab_type(ext);
-                    let fill_low = (ext[2] & 0xFF) as u8;
-                    let tab_target = x + tab_width_px;
-                    // [Task #874] auto_tab_right paragraph + 단일 tab: native 와 동일.
-                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
-                    // [Issue #900] Task #874 #10 와 동일 가드 — 인라인 LEFT(1)/DECIMAL(4)
-                    // 탭은 auto_tab_right 라도 right-align 금지. estimate_text_width 와
-                    // 동일 처리 — pi=0 의 tab 위치 정합 (equation/text 가 column 우측으로
-                    // 밀리는 회귀 차단).
-                    let inline_is_explicit_left = tab_type == 1 || tab_type == 4;
-                    let override_to_right = style.auto_tab_right
-                        && !has_more_tabs_after
-                        && style.available_width > 0.0
-                        && !inline_is_explicit_left;
-                    // [Issue #630 Stage 6] RIGHT + leader (fill ≠ 0): ')' 끝이 본문
-                    // 우측 끝까지 정렬.
-                    let body_right_text_rel = if style.available_width > 0.0 {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        f64::INFINITY
-                    };
-                    let body_right_legacy = if style.available_width > 0.0 {
-                        style.available_width - style.line_x_offset
-                    } else {
-                        f64::INFINITY
-                    };
-                    if override_to_right {
-                        // [Task #874 #2] lang split 후속 run 합산 override (native 와 동일).
-                        let seg_w = if let Some(w) = style.right_tab_block_width_override {
-                            w
-                        } else {
-                            let seg_start = {
-                                let mut s = i + 1;
-                                while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
-                                    s += 1;
-                                }
-                                s
-                            };
-                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
-                        };
-                        x = (body_right_text_rel - seg_w).max(x);
-                    } else if tab_type == 0
-                        && !has_more_tabs_after
-                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
-                    {
-                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (target_rel - seg_w).max(x);
-                        } else {
-                            x = tab_target.max(x);
-                        }
-                    } else {
-                        match tab_type {
-                            2 if fill_low != 0 => {
-                                // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호).
-                                // EmbeddedTextMeasurer 영역 정합 (text_measurement.rs 위쪽 동일
-                                // 분기 본문 참조). \t 뒤 content 가 있는 단일-run 은
-                                // cell_right_run_rel (= text_start_offset + available_width -
-                                // line_x_offset) 정렬 + seg_w_full (leading space 포함).
-                                // content 없는 trailing space / 끝 케이스는 원본 path 유지.
-                                let seg_start_skipped = {
-                                    let mut s = i + 1;
-                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
-                                    {
-                                        s += 1;
-                                    }
-                                    s
-                                };
-                                let has_content_after = seg_start_skipped < chars.len();
-                                if has_content_after {
-                                    let seg_w_full = measure_segment_from(
-                                        &chars,
-                                        &cluster_len,
-                                        i + 1,
-                                        &char_width,
-                                    );
-                                    let cell_right_run_rel = style.text_start_offset
-                                        + style.available_width
-                                        - style.line_x_offset;
-                                    x = (cell_right_run_rel - seg_w_full).max(x);
-                                } else {
-                                    let seg_w = measure_segment_from(
-                                        &chars,
-                                        &cluster_len,
-                                        seg_start_skipped,
-                                        &char_width,
-                                    );
-                                    x = (body_right_legacy - seg_w).max(x);
-                                }
-                            }
-                            2 => {
-                                // RIGHT (no leader)
-                                let seg_start = {
-                                    let mut s = i + 1;
-                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
-                                    {
-                                        s += 1;
-                                    }
-                                    s
-                                };
-                                let seg_w = measure_segment_from(
-                                    &chars,
-                                    &cluster_len,
-                                    seg_start,
-                                    &char_width,
-                                );
-                                x = (tab_target - seg_w).max(x);
-                            }
-                            3 => {
-                                // CENTER
-                                let seg_w =
-                                    measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                                x = (tab_target - seg_w / 2.0).max(x);
-                            }
-                            _ => {
-                                // LEFT(0/1), DECIMAL(4), 기타
-                                x = tab_target.max(x);
-                            }
-                        }
-                    }
-                    tab_char_idx += 1;
-                } else if has_custom_tabs {
-                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
-                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
-                        if let Some(target_rel) = right_leader_body_target_rel(style) {
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (target_rel - seg_w).max(x);
-                            tab_char_idx += 1;
-                            positions.push(x);
-                            continue;
-                        }
-                    }
-                    let abs_x = style.line_x_offset + x;
-                    let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
-                        abs_x,
-                        &style.tab_stops,
-                        tab_w,
-                        style.auto_tab_right,
-                        style.available_width,
-                    );
-                    let rel_tab = tab_pos - style.line_x_offset;
-                    // [Task #874] auto_tab_right / leader RIGHT 탭은 col-relative 우측 끝
-                    // (= text_start_offset + available_width) 까지 정렬.
-                    let effective_rel_tab = if tab_type == 1
-                        && style.available_width > 0.0
-                        && (fill_type != 0 || style.auto_tab_right)
-                    {
-                        style.text_start_offset + style.available_width - style.line_x_offset
-                    } else {
-                        rel_tab
-                    };
-                    match tab_type {
-                        1 => {
-                            let seg_start = if fill_type != 0 {
-                                i + 1
-                            } else {
-                                let mut s = i + 1;
-                                while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
-                                    s += 1;
-                                }
-                                s
-                            };
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
-                            x = (effective_rel_tab - seg_w).max(x);
-                        }
-                        2 => {
-                            let seg_w =
-                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            x = (rel_tab - seg_w / 2.0).max(x);
-                        }
-                        _ => {
-                            x = rel_tab.max(x);
-                        }
-                    }
-                    tab_char_idx += 1;
+        // [#2132] 인라인 탭 divergent 경로 훅 — inline_tab_type 헬퍼 해석 (Task #296).
+        let inline_tab_x = |i: usize,
+                            x_in: f64,
+                            ext: &[u16; 7],
+                            chars: &[char],
+                            cluster_len: &[u8],
+                            char_width: &dyn Fn(usize) -> f64|
+         -> f64 {
+            let mut x = x_in;
+            let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
+            let tab_type = inline_tab_type(ext);
+            let fill_low = (ext[2] & 0xFF) as u8;
+            let tab_target = x + tab_width_px;
+            // [Task #874] auto_tab_right paragraph + 단일 tab: native 와 동일.
+            let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
+            // [Issue #900] Task #874 #10 와 동일 가드 — 인라인 LEFT(1)/DECIMAL(4)
+            // 탭은 auto_tab_right 라도 right-align 금지. estimate_text_width 와
+            // 동일 처리 — pi=0 의 tab 위치 정합 (equation/text 가 column 우측으로
+            // 밀리는 회귀 차단).
+            let inline_is_explicit_left = tab_type == 1 || tab_type == 4;
+            let override_to_right = style.auto_tab_right
+                && !has_more_tabs_after
+                && style.available_width > 0.0
+                && !inline_is_explicit_left;
+            // [Issue #630 Stage 6] RIGHT + leader (fill ≠ 0): ')' 끝이 본문
+            // 우측 끝까지 정렬.
+            let body_right_text_rel = if style.available_width > 0.0 {
+                style.text_start_offset + style.available_width - style.line_x_offset
+            } else {
+                f64::INFINITY
+            };
+            let body_right_legacy = if style.available_width > 0.0 {
+                style.available_width - style.line_x_offset
+            } else {
+                f64::INFINITY
+            };
+            if override_to_right {
+                // [Task #874 #2] lang split 후속 run 합산 override (native 와 동일).
+                let seg_w = if let Some(w) = style.right_tab_block_width_override {
+                    w
                 } else {
-                    // 기본 등간격 탭: 라인 절대 위치(line_x_offset + x) 기준으로 계산
-                    let abs_x = style.line_x_offset + x;
-                    let next_abs = ((abs_x / tab_w).floor() + 1.0) * tab_w;
-                    x = (next_abs - style.line_x_offset).max(x);
-                    tab_char_idx += 1;
+                    let seg_start = {
+                        let mut s = i + 1;
+                        while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                            s += 1;
+                        }
+                        s
+                    };
+                    measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
+                };
+                x = (body_right_text_rel - seg_w).max(x);
+            } else if tab_type == 0
+                && !has_more_tabs_after
+                && tab_suffix_is_ascii_page_number(&chars, i + 1)
+            {
+                if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                    let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                    x = (target_rel - seg_w).max(x);
+                } else {
+                    x = tab_target.max(x);
                 }
-                positions.push(x);
-                continue;
+            } else {
+                match tab_type {
+                    2 if fill_low != 0 => {
+                        // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호).
+                        // EmbeddedTextMeasurer 영역 정합 (text_measurement.rs 위쪽 동일
+                        // 분기 본문 참조). \t 뒤 content 가 있는 단일-run 은
+                        // cell_right_run_rel (= text_start_offset + available_width -
+                        // line_x_offset) 정렬 + seg_w_full (leading space 포함).
+                        // content 없는 trailing space / 끝 케이스는 원본 path 유지.
+                        let seg_start_skipped = {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let has_content_after = seg_start_skipped < chars.len();
+                        if has_content_after {
+                            let seg_w_full =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            let cell_right_run_rel = style.text_start_offset
+                                + style.available_width
+                                - style.line_x_offset;
+                            x = (cell_right_run_rel - seg_w_full).max(x);
+                        } else {
+                            let seg_w = measure_segment_from(
+                                &chars,
+                                &cluster_len,
+                                seg_start_skipped,
+                                &char_width,
+                            );
+                            x = (body_right_legacy - seg_w).max(x);
+                        }
+                    }
+                    2 => {
+                        // RIGHT (no leader)
+                        let seg_start = {
+                            let mut s = i + 1;
+                            while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
+                                s += 1;
+                            }
+                            s
+                        };
+                        let seg_w =
+                            measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
+                        x = (tab_target - seg_w).max(x);
+                    }
+                    3 => {
+                        // CENTER
+                        let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                        x = (tab_target - seg_w / 2.0).max(x);
+                    }
+                    _ => {
+                        // LEFT(0/1), DECIMAL(4), 기타
+                        x = tab_target.max(x);
+                    }
+                }
             }
-            x += char_width(i);
-            positions.push(x);
-        }
-
-        positions
+            x
+        };
+        compute_char_positions_walk(text, style, &char_px_raw, &inline_tab_x)
     }
 }
 
