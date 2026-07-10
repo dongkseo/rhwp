@@ -340,14 +340,49 @@ function renderTrendChart(history) {
         실행 시점별 테스트 수, Clippy 경고, CC&gt;25 함수 수의 변화를 추적합니다.
         테스트는 증가(↑), Clippy/CC는 감소(↓)가 바람직합니다.
       </div>
+    </div>
+    <div class="chart-box full">
+      <h3>CC 총량 추이 (§5.1 v2.1 — 라운드 성공 판정 축)</h3>
+      <div style="height:300px"><canvas id="totalsChart"></canvas></div>
+      <div class="chart-desc">
+        CC 총합(좌축)과 상위 20 합 / &gt;25 합(우축)의 시계열.
+        <b>총합의 순감소</b>가 실질 감소이고, 분포 지표만 개선되면 "이동"입니다.
+      </div>
     </div>`;
+}
+
+function drawTotalsChart(history, labels) {
+  const withTotals = history.filter(h => h.cc_sum !== undefined);
+  if (withTotals.length < 2 || !document.getElementById('totalsChart')) return;
+  new Chart(document.getElementById('totalsChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'CC 총합', data: history.map(h => h.cc_sum ?? null), borderColor: '#6366f1', backgroundColor: '#6366f133', tension: 0.3, yAxisID: 'y' },
+        { label: '상위 20 합', data: history.map(h => h.cc_top20 ?? null), borderColor: '#0ea5e9', backgroundColor: '#0ea5e933', tension: 0.3, yAxisID: 'y1' },
+        { label: '>25 합', data: history.map(h => h.cc_over25_sum ?? null), borderColor: '#ef4444', backgroundColor: '#ef444433', tension: 0.3, yAxisID: 'y1' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      spanGaps: true,
+      scales: {
+        y: { type: 'linear', position: 'left', title: { display: true, text: 'CC 총합' }, beginAtZero: false },
+        y1: { type: 'linear', position: 'right', title: { display: true, text: '상위 20 / >25 합' }, beginAtZero: false, grid: { drawOnChartArea: false } }
+      }
+    }
+  });
 }
 
 function drawTrendChart(history) {
   if (history.length < 2) return;
   const labels = history.map(h => {
     const d = new Date(h.timestamp);
-    return `${d.getMonth()+1}/${d.getDate()}`;
+    const md = `${d.getMonth()+1}/${d.getDate()}`;
+    // 스냅샷 라벨(r13/phase2/c2r1 …)이 있으면 우선 — 같은 날 다중 측정 구분.
+    return h.label ? `${md} ${h.label}` : `${md} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   });
   new Chart(document.getElementById('trendChart'), {
     type: 'line',
@@ -356,7 +391,7 @@ function drawTrendChart(history) {
       datasets: [
         { label: '테스트 통과', data: history.map(h => h.tests_passed), borderColor: '#10b981', backgroundColor: '#10b98133', tension: 0.3, yAxisID: 'y' },
         { label: 'Clippy 경고', data: history.map(h => h.clippy_warnings), borderColor: '#f59e0b', backgroundColor: '#f59e0b33', tension: 0.3, yAxisID: 'y1' },
-        { label: 'CC>25 함수', data: history.map(h => h.cc_count), borderColor: '#ef4444', backgroundColor: '#ef444433', tension: 0.3, yAxisID: 'y1' },
+        { label: 'CC>25 함수', data: history.map(h => h.cc_over25 !== undefined ? h.cc_over25 : h.cc_count), borderColor: '#ef4444', backgroundColor: '#ef444433', tension: 0.3, yAxisID: 'y1' },
       ]
     },
     options: {
@@ -368,6 +403,7 @@ function drawTrendChart(history) {
       }
     }
   });
+  drawTotalsChart(history, labels);
 }
 
 async function main() {

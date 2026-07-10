@@ -140,6 +140,7 @@ TIMESTAMP=$(date -Iseconds)
 cat > "$OUTPUT_DIR/metrics.json" << ENDJSON
 {
   "timestamp": "$TIMESTAMP",
+  "label": "$SNAPSHOT_LABEL",
   "file_lines": $FILE_LINES_JSON,
   "clippy": {
     "warnings": $CLIPPY_WARNINGS,
@@ -191,8 +192,9 @@ d=json.load(open('$hfile'))
 v=[x['complexity'] for x in d.get('cognitive_complexity',[])]
 print(sum(v), sum(sorted(v,reverse=True)[:20]), sum(x for x in v if x>25), len([x for x in v if x>25]))" 2>/dev/null || echo "0 0 0 0")
     read -r ccsum cctop20 ccosum ccocnt <<< "$ccx"
+    lb=$(python3 -c "import json; d=json.load(open('$hfile')); print(d.get('label',''))" 2>/dev/null || echo "")
     if [ "$sfirst" = true ]; then sfirst=false; else SUMMARY+=","; fi
-    SUMMARY+="{\"timestamp\":\"$ts\",\"tests_passed\":$tp,\"tests_failed\":$tf,\"clippy_warnings\":$cw,\"cc_count\":$cc,\"cc_sum\":$ccsum,\"cc_top20\":$cctop20,\"cc_over25_sum\":$ccosum,\"cc_over25\":$ccocnt,\"coverage\":$cv,\"file_count\":$fl}"
+    SUMMARY+="{\"timestamp\":\"$ts\",\"label\":\"$lb\",\"tests_passed\":$tp,\"tests_failed\":$tf,\"clippy_warnings\":$cw,\"cc_count\":$cc,\"cc_sum\":$ccsum,\"cc_top20\":$cctop20,\"cc_over25_sum\":$ccosum,\"cc_over25\":$ccocnt,\"coverage\":$cv,\"file_count\":$fl}"
 done
 SUMMARY+="]"
 echo "$SUMMARY" > "$OUTPUT_DIR/metrics_history.json"
