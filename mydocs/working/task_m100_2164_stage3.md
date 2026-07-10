@@ -65,6 +65,19 @@ DOM caret top = 455.3px
 
 ## 5. 검증 범위와 PR 조건
 
-작업지시자 지시에 따라 Stage 3에서는 전체 Cargo test, Clippy, 전체 프론트 빌드를
-추가 실행하지 않았다. 이번 변경 이후 실행한 자동 검증은 WASM build와 실제 브라우저
-기본 재현뿐이다. 추가한 Rust 회귀 테스트와 전체 CI는 PR head에서 별도로 확인한다.
+초기 구현 단계에서는 작업지시자 지시에 따라 WASM build와 실제 브라우저 기본 재현만
+실행했다. 이후 PR 준비 승인 뒤 전체 사전 검증을 수행했다.
+
+- `cargo build --release`: 통과
+- `cargo test --release --lib`: 2190 passed, 0 failed, 7 ignored
+- `cargo test --profile release-test --tests`: 통과
+  - `issue_2164_cell_enter_overlap`: 3 passed
+  - `svg_snapshot`: 8 passed
+- `cargo fmt --check`, `git diff --check`: 통과
+- `cargo clippy --all-targets -- -D warnings`: 통과
+- `cargo test --doc`: 0 passed, 1 ignored
+- `rhwp-studio`: TypeScript 검사, 183개 테스트, production build 통과
+- `rhwp-chrome`: production build 통과
+- 최종 `wasm-pack build --target web --out-dir pkg`: 통과
+
+기준 PDF와 visual sweep 결과, 정적 글꼴 fidelity 잔여는 최종 보고서에 기록했다.
