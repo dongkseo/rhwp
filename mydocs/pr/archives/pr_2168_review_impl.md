@@ -19,7 +19,7 @@
 ## Stage 3 - 통합 PR 준비
 
 1. 깨끗한 `target` 전체 검증을 통과했다.
-2. Open PR 생성 후 통합 PR CI를 확인한다.
+2. 통합 PR #2170을 생성했고, 통합 PR CI를 확인한다.
 3. merge 후 원 PR close 및 review 문서 archive 보존을 처리한다.
 
 ## 작업지시자 확인 사항
