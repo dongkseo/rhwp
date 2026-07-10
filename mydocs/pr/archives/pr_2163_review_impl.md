@@ -24,7 +24,7 @@
 
 1. 통합 branch diff와 기준 PDF visual sweep을 재검토했다.
 2. 깨끗한 `target` 전체 검증을 통과했다.
-3. 통합 PR #2170을 생성했고, 최신 GitHub Actions를 확인한다.
+3. 통합 PR #2170은 `c95d8fd`로 merge됐고, 최신 GitHub Actions 성공 및 #2156 auto-close를 확인했다.
 
 ## 작업지시자 확인 사항
 

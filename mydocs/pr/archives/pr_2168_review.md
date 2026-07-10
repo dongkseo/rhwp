@@ -49,3 +49,11 @@
 
 이 문서와 오늘할일 `mydocs/orders/20260710.md`를 통합 PR에 함께 포함한다. 시각 출력 경로를
 바꾸지 않는 분석/도구 PR이므로 별도 review PNG는 만들지 않는다.
+
+## Merge 결과
+
+- 통합 PR [#2170](https://github.com/edwardkim/rhwp/pull/2170)은 2026-07-10에 merge commit
+  `c95d8fd743ae4cfcbcbb0e26444ebef4e42b84ba`로 `devel`에 반영됐다.
+- 최신 head CI, CodeQL, Render Diff는 모두 성공했다. 갱신 전 head `19abd763b`의 CI/CodeQL/Render Diff는
+  force-cancel 후 `completed/cancelled`를 확인했다.
+- #2148은 래핑 폭 축이 남아 있으므로 auto-close하지 않고 open으로 유지한다.

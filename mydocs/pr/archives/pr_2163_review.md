@@ -82,3 +82,11 @@ Haansoft Batang 대체는 검증된 `함초롬바탕`/`HCR Batang` 정확한 별
 ## 옵션 1 기록
 
 이 문서, 기준 PDF, 대표 review PNG와 오늘할일 `mydocs/orders/20260710.md`를 통합 PR에 함께 포함한다.
+
+## Merge 결과
+
+- 통합 PR [#2170](https://github.com/edwardkim/rhwp/pull/2170)은 2026-07-10에 merge commit
+  `c95d8fd743ae4cfcbcbb0e26444ebef4e42b84ba`로 `devel`에 반영됐다.
+- 최신 head CI, CodeQL, Render Diff는 모두 성공했다. 갱신 전 head `19abd763b`의 CI/CodeQL/Render Diff는
+  force-cancel 후 `completed/cancelled`를 확인했다.
+- #2156은 PR body의 closing keyword로 auto-close된 것을 확인했다.
