@@ -3,7 +3,7 @@ import { EventBus } from '@/core/event-bus';
 import type { PageInfo } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
 import { CanvasPool } from './canvas-pool';
-import { PageRenderer } from './page-renderer';
+import { PageRenderer, type PageRenderContext } from './page-renderer';
 import { ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitLayerRenderer } from './canvaskit-renderer';
@@ -11,6 +11,8 @@ import { clampRenderScale, type RenderBackend } from './render-backend';
 import type { LayerRenderProfile } from '@/core/types';
 import { applyGridOverlayBox, createGridClipCornerOverlay, createGridOverlay } from './grid-overlay';
 import { getGridViewSettings } from './grid-settings';
+
+const TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS = 800;
 
 export class CanvasView {
   private virtualScroll: VirtualScroll;
@@ -23,6 +25,9 @@ export class CanvasView {
   private pages: PageInfo[] = [];
   private currentVisiblePages: number[] = [];
   private unsubscribers: (() => void)[] = [];
+  private pendingTextEditRefreshes = new Map<number, PageRenderContext>();
+  private textEditRefreshRafId: number | null = null;
+  private textEditStaticLayerVerifyTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
   constructor(
     private container: HTMLElement,
@@ -113,6 +118,8 @@ export class CanvasView {
     const prefetchSet = new Set(prefetchPages);
     for (const pageIdx of this.canvasPool.activePages) {
       if (!prefetchSet.has(pageIdx)) {
+        this.cancelPendingTextEditRefresh(pageIdx);
+        this.cancelTextEditStaticLayerVerification(pageIdx);
         this.pageRenderer.cancelReRender(pageIdx);
         this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
         this.removeGridOverlay(pageIdx);
@@ -153,7 +160,11 @@ export class CanvasView {
   }
 
   /** 기존 canvas를 유지한 채 페이지 내용을 다시 그린다. */
-  private renderCanvas(pageIdx: number, canvas: HTMLCanvasElement): boolean {
+  private renderCanvas(
+    pageIdx: number,
+    canvas: HTMLCanvasElement,
+    renderContext: PageRenderContext = {},
+  ): boolean {
     const zoom = this.viewportManager.getZoom();
     const rawDpr = window.devicePixelRatio || 1;
 
@@ -180,8 +191,9 @@ export class CanvasView {
     }
 
     // WASM이 Canvas 크기를 자동 설정한다 (물리 픽셀 = 페이지크기 × zoom × DPR)
+    let renderResult = { needsTextEditStaticLayerVerification: false };
     try {
-      this.pageRenderer.renderPage(pageIdx, canvas, renderScale, zoom, dpr);
+      renderResult = this.pageRenderer.renderPage(pageIdx, canvas, renderScale, zoom, dpr, renderContext);
     } catch (e) {
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
@@ -193,6 +205,11 @@ export class CanvasView {
     canvas.style.width = `${canvas.width / dpr}px`;
     canvas.style.height = `${canvas.height / dpr}px`;
     this.renderGridOverlay(pageIdx, canvas);
+    if (renderResult.needsTextEditStaticLayerVerification) {
+      this.scheduleTextEditStaticLayerVerification(pageIdx);
+    } else if (renderContext.reason !== 'text-edit') {
+      this.cancelTextEditStaticLayerVerification(pageIdx);
+    }
     return true;
   }
 
@@ -210,6 +227,8 @@ export class CanvasView {
 
     if (wasGrid || isGrid) {
       // 그리드 관련 변경 시 전체 재렌더링
+      this.cancelPendingTextEditRefresh();
+      this.cancelTextEditStaticLayerVerification();
       this.releaseAllRenderedPages();
       this.pageRenderer.cancelAll();
     }
@@ -240,6 +259,8 @@ export class CanvasView {
     this.viewportManager.setScrollTop(newCenter - vpHeight / 2);
 
     // 모든 Canvas 재렌더링
+    this.cancelPendingTextEditRefresh();
+    this.cancelTextEditStaticLayerVerification();
     this.releaseAllRenderedPages();
     this.pageRenderer.cancelAll();
     this.updateVisiblePages();
@@ -265,6 +286,8 @@ export class CanvasView {
     this.recalcLayout();
 
     // 보이는 페이지 재렌더링
+    this.cancelPendingTextEditRefresh();
+    this.cancelTextEditStaticLayerVerification();
     this.releaseAllRenderedPages();
     this.pageRenderer.cancelAll();
     this.updateVisiblePages();
@@ -278,11 +301,57 @@ export class CanvasView {
       typeof payload === 'object' && payload !== null && 'pageIndex' in payload
         ? Number((payload as { pageIndex?: unknown }).pageIndex)
         : Number(payload);
+    const reason =
+      typeof payload === 'object' && payload !== null && 'reason' in payload
+        ? (payload as { reason?: unknown }).reason
+        : undefined;
+    const renderContext: PageRenderContext =
+      reason === 'text-edit'
+        ? { reason: 'text-edit', allowStaticOverlayReuse: true }
+        : { reason: 'unknown', allowStaticOverlayReuse: false };
 
     if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+      this.cancelPendingTextEditRefresh();
+      this.cancelTextEditStaticLayerVerification();
       this.refreshPages();
       return;
     }
+
+    const pageCount = this.wasm.pageCount;
+    if (pageCount !== this.pages.length || pageIndex >= pageCount) {
+      this.cancelPendingTextEditRefresh();
+      this.cancelTextEditStaticLayerVerification();
+      this.refreshPages();
+      return;
+    }
+
+    if (renderContext.reason === 'text-edit') {
+      this.scheduleTextEditPageRefresh(pageIndex, renderContext);
+      return;
+    }
+
+    this.cancelPendingTextEditRefresh(pageIndex);
+    this.cancelTextEditStaticLayerVerification(pageIndex);
+    this.refreshInvalidatedPageNow(pageIndex, renderContext);
+  }
+
+  private scheduleTextEditPageRefresh(pageIndex: number, renderContext: PageRenderContext): void {
+    this.cancelTextEditStaticLayerVerification(pageIndex);
+    this.pendingTextEditRefreshes.set(pageIndex, renderContext);
+    if (this.textEditRefreshRafId !== null) return;
+
+    this.textEditRefreshRafId = requestAnimationFrame(() => {
+      this.textEditRefreshRafId = null;
+      const pending = Array.from(this.pendingTextEditRefreshes.entries());
+      this.pendingTextEditRefreshes.clear();
+      for (const [pendingPageIndex, pendingContext] of pending) {
+        this.refreshInvalidatedPageNow(pendingPageIndex, pendingContext);
+      }
+    });
+  }
+
+  private refreshInvalidatedPageNow(pageIndex: number, renderContext: PageRenderContext): void {
+    if (this.pages.length === 0) return;
 
     const pageCount = this.wasm.pageCount;
     if (pageCount !== this.pages.length || pageIndex >= pageCount) {
@@ -296,14 +365,52 @@ export class CanvasView {
       return;
     }
 
-    if (!this.renderCanvas(pageIndex, canvas)) {
+    if (!this.renderCanvas(pageIndex, canvas, renderContext)) {
       this.canvasPool.release(pageIndex);
       this.updateVisiblePages();
     }
   }
 
+  private cancelPendingTextEditRefresh(pageIndex?: number): void {
+    if (typeof pageIndex === 'number') {
+      this.pendingTextEditRefreshes.delete(pageIndex);
+    } else {
+      this.pendingTextEditRefreshes.clear();
+    }
+    if (this.pendingTextEditRefreshes.size > 0) return;
+    if (this.textEditRefreshRafId !== null) {
+      cancelAnimationFrame(this.textEditRefreshRafId);
+      this.textEditRefreshRafId = null;
+    }
+  }
+
+  private scheduleTextEditStaticLayerVerification(pageIndex: number): void {
+    this.cancelTextEditStaticLayerVerification(pageIndex);
+    const timer = setTimeout(() => {
+      this.textEditStaticLayerVerifyTimers.delete(pageIndex);
+      this.refreshInvalidatedPageNow(pageIndex, { reason: 'unknown', allowStaticOverlayReuse: false });
+    }, TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS);
+    this.textEditStaticLayerVerifyTimers.set(pageIndex, timer);
+  }
+
+  private cancelTextEditStaticLayerVerification(pageIndex?: number): void {
+    if (typeof pageIndex === 'number') {
+      const timer = this.textEditStaticLayerVerifyTimers.get(pageIndex);
+      if (timer) clearTimeout(timer);
+      this.textEditStaticLayerVerifyTimers.delete(pageIndex);
+      return;
+    }
+
+    for (const timer of this.textEditStaticLayerVerifyTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.textEditStaticLayerVerifyTimers.clear();
+  }
+
   /** 리소스를 정리한다 */
   private reset(): void {
+    this.cancelPendingTextEditRefresh();
+    this.cancelTextEditStaticLayerVerification();
     this.pageRenderer.cancelAll();
     this.releaseAllRenderedPages();
     this.currentVisiblePages = [];

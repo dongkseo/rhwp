@@ -4,12 +4,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const studioRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = path.resolve(studioRoot, '..');
 const canvaskitPath = path.join(studioRoot, 'src/view/canvaskit-renderer.ts');
 const canvaskitDirectory = path.join(studioRoot, 'src/view/canvaskit');
 const layerTypesPath = path.join(studioRoot, 'src/core/types.ts');
+const textIrV2DocPath = path.join(repoRoot, 'docs/text-ir-v2.md');
+const canvaskitParityPlanDocPath = path.join(repoRoot, 'docs/canvaskit-parity-implementation.md');
 
 const canvaskitSource = fs.readFileSync(canvaskitPath, 'utf8');
 const layerTypesSource = fs.readFileSync(layerTypesPath, 'utf8');
+const textIrV2DocSource = fs.readFileSync(textIrV2DocPath, 'utf8');
+const canvaskitParityPlanDocSource = fs.readFileSync(canvaskitParityPlanDocPath, 'utf8');
+const normalizedCanvaskitParityPlanDocSource = canvaskitParityPlanDocSource.replace(/\s+/g, ' ');
 
 function extractBlockBody(source, signatureIndex, blockName) {
   let bodyStart = -1;
@@ -153,6 +159,56 @@ const forbiddenCanvas2dApiPatterns = [
   [/\bCanvas2DLayerRenderer\b/, 'Canvas2DLayerRenderer'],
   [/canvas2d-layer-renderer/, 'canvas2d-layer-renderer import'],
 ];
+const canvaskitParityPlanTouchpoints = [
+  { token: 'src/paint/text_v2.rs', path: path.join(repoRoot, 'src/paint/text_v2.rs'), kind: 'file' },
+  {
+    token: 'src/renderer/canvaskit_policy.rs',
+    path: path.join(repoRoot, 'src/renderer/canvaskit_policy.rs'),
+    kind: 'file',
+  },
+  {
+    token: 'rhwp-studio/src/core/types.ts',
+    path: path.join(studioRoot, 'src/core/types.ts'),
+    kind: 'file',
+  },
+  {
+    token: 'rhwp-studio/src/view/canvaskit-renderer.ts',
+    path: canvaskitPath,
+    kind: 'file',
+  },
+  {
+    token: 'rhwp-studio/src/view/canvaskit/',
+    path: canvaskitDirectory,
+    kind: 'directory',
+  },
+  {
+    token: 'rhwp-studio/src/view/glyph-outline-payload-status.ts',
+    path: path.join(studioRoot, 'src/view/glyph-outline-payload-status.ts'),
+    kind: 'file',
+  },
+  {
+    token: 'rhwp-studio/e2e/renderer-contract.test.mjs',
+    path: fileURLToPath(import.meta.url),
+    kind: 'file',
+  },
+  {
+    token: '.github/workflows/render-diff.yml',
+    path: path.join(repoRoot, '.github/workflows/render-diff.yml'),
+    kind: 'file',
+  },
+];
+const canvaskitParityPlanRequiredTokens = [
+  'PageLayerTree',
+  'CanvasKit direct replay',
+  'must not depend on Canvas2D',
+  'unsupported operations stay visible',
+  'TextRun compatibility',
+  'GlyphRun',
+  'GlyphOutline',
+  'text.variantGroups',
+  'ResourceArena',
+  'render-diff CI',
+];
 
 assert.deepEqual(
   renderOpCases,
@@ -195,12 +251,14 @@ const directReplayOps = [
 ];
 const textRunFallbackOps = [
   'charOverlap',
-  'equation',
   'glyphRun',
-  'rawSvg',
   'tabLeader',
   'textControlMark',
   'textDecoration',
+];
+const objectFragmentFallbackOps = [
+  ['equation', 'equation:unsupportedDirectReplay'],
+  ['rawSvg', 'rawSvg:unsupportedDirectReplay'],
 ];
 
 for (const [op, renderMethod] of directReplayOps) {
@@ -233,6 +291,21 @@ for (const op of textRunFallbackOps) {
   );
 }
 
+for (const [op, unsupportedReason] of objectFragmentFallbackOps) {
+  const caseBody = extractSwitchCaseClusterBody(renderOpBody, op);
+  requireSnippet(caseBody, new RegExp(`case '${op}':`), `${op} should have an explicit CanvasKit fallback case`);
+  requireSnippet(
+    caseBody,
+    new RegExp(`this\\.unsupportedOps\\.add\\('${unsupportedReason}'\\);\\s*return;`),
+    `${op} should report the declared direct replay gap`,
+  );
+  assert.doesNotMatch(
+    caseBody,
+    /this\.render[A-Za-z0-9]+\(/,
+    `${op} fallback case should not direct-render before the fallback policy changes`,
+  );
+}
+
 const glyphOutlineCaseBody = extractSwitchCaseClusterBody(renderOpBody, 'glyphOutline');
 requireSnippet(
   glyphOutlineCaseBody,
@@ -245,8 +318,10 @@ const renderEllipseBody = extractMethodBody(canvaskitSource, 'renderEllipse');
 const renderPathBody = extractMethodBody(canvaskitSource, 'renderPath');
 const renderLineBody = extractMethodBody(canvaskitSource, 'renderLine');
 const renderFormObjectBody = extractMethodBody(canvaskitSource, 'renderFormObject');
+const renderTextRunBody = extractMethodBody(canvaskitSource, 'renderTextRun');
 const renderGlyphOutlineBody = extractMethodBody(canvaskitSource, 'renderGlyphOutline');
 const renderColorPaintGraphNodeBody = extractMethodBody(canvaskitSource, 'renderColorPaintGraphNode');
+const recordTextRunCoverageGapsBody = extractMethodBody(canvaskitSource, 'recordTextRunCoverageGaps');
 
 requireSnippet(
   renderRectangleBody,
@@ -273,6 +348,34 @@ requireSnippet(
   /op\.formType === 'checkbox' \|\| op\.formType === 'radio'[\s\S]*?canvas\.drawLine[\s\S]*?const label = op\.caption \|\| op\.text[\s\S]*?this\.renderTextRun/,
   'form object replay should keep checkbox/radio mark and caption text branches explicit',
 );
+requireSnippet(
+  renderTextRunBody,
+  /this\.recordTextRunCoverageGaps\(op\);[\s\S]*?canvas\.drawText\(op\.text, x, y, paint, font\)/,
+  'textRun replay should record unsupported effect diagnostics before drawing the compatibility text',
+);
+requireSnippet(
+  renderTextRunBody,
+  /const rotation = op\.rotation \?\? 0;[\s\S]*?if \(rotation !== 0\) \{[\s\S]*?canvas\.rotate\(rotation, x, y\);[\s\S]*?\}/,
+  'textRun replay should keep rotation on the direct CanvasKit path',
+);
+for (const expectedTextRunGap of [
+  'textRun:verticalText',
+  'textRun:textDecoration',
+  'textRun:emphasisDot',
+  'textRun:outlineTextEffect',
+  'textRun:shadowTextEffect',
+  'textRun:embossTextEffect',
+  'textRun:engraveTextEffect',
+  'textRun:superscriptTextEffect',
+  'textRun:subscriptTextEffect',
+  'textRun:shadeTextEffect',
+  'textRun:ratioTextEffect',
+]) {
+  assert.ok(
+    recordTextRunCoverageGapsBody.includes(`'${expectedTextRunGap}'`),
+    `textRun runtime diagnostics should include ${expectedTextRunGap}`,
+  );
+}
 requireSnippet(
   renderGlyphOutlineBody,
   /op\.colorLayers\?\.paintGraph[\s\S]*?graph\.rootNodeId[\s\S]*?this\.renderColorPaintGraphNode/,
@@ -303,5 +406,31 @@ for (const { label, source } of canvaskitSourceFiles) {
     );
   }
 }
+
+for (const { token, path: touchpointPath, kind } of canvaskitParityPlanTouchpoints) {
+  assert.ok(
+    canvaskitParityPlanDocSource.includes(token),
+    `CanvasKit parity plan should mention touchpoint ${token}`,
+  );
+
+  const stat = fs.statSync(touchpointPath);
+  if (kind === 'directory') {
+    assert.ok(stat.isDirectory(), `CanvasKit parity plan touchpoint ${token} should be a directory`);
+  } else {
+    assert.ok(stat.isFile(), `CanvasKit parity plan touchpoint ${token} should be a file`);
+  }
+}
+
+for (const token of canvaskitParityPlanRequiredTokens) {
+  assert.ok(
+    normalizedCanvaskitParityPlanDocSource.includes(token),
+    `CanvasKit parity plan should keep guard token: ${token}`,
+  );
+}
+
+assert.ok(
+  textIrV2DocSource.includes('docs/canvaskit-parity-implementation.md'),
+  'Text IR v2 contract should link to the CanvasKit parity implementation plan',
+);
 
 console.log('renderer backend contract guard passed');

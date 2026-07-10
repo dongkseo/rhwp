@@ -1,6 +1,7 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { DocumentInfo } from '@/core/types';
 import { EventBus } from '@/core/event-bus';
+import { assertRemoteDocumentBytes } from '@/core/document-signature';
 import { CanvasView } from '@/view/canvas-view';
 import { InputHandler } from '@/engine/input-handler';
 import { Toolbar } from '@/ui/toolbar';
@@ -31,7 +32,7 @@ import { initThemeSync, setThemeMode, getThemeMode, getEffectiveTheme } from '@/
 import { analyzeDocumentFonts } from '@/core/document-font-status';
 import { detectLocalFonts, getLocalFontState, loadStoredLocalFonts } from '@/core/local-fonts';
 import { userSettings } from '@/core/user-settings';
-import { AutosaveManager } from '@/recovery/autosave-manager';
+import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
 import { clearAutosaveDrafts, deleteAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
 import { recoveryFileName } from '@/recovery/recovery-format';
 import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
@@ -53,6 +54,8 @@ const documentState = new DocumentDirtyState(eventBus);
 documentState.installBeforeUnload(window);
 const autosaveManager = new AutosaveManager({
   exportBytes: () => wasm.exportHwp(),
+  schedule: autosaveScheduleFromUserSettings(),
+  onStatus: handleAutosaveStatus,
 });
 autosaveManager.connect(eventBus);
 initThemeSync((effective, mode) => {
@@ -92,6 +95,8 @@ function getContext(): EditorContext {
     hasCopiedFormat: inputHandler?.hasCopiedFormat() ?? false,
     inTable: inputHandler?.isInTable() ?? false,
     inCellSelectionMode: inputHandler?.isInCellSelectionMode() ?? false,
+    hasMultiCellSelection: inputHandler?.hasMultiCellSelection() ?? false,
+    hasTableTransposeClipboard: wasm.hasTableTransposeClipboard(),
     inTableObjectSelection: inputHandler?.isInTableObjectSelection() ?? false,
     inPictureObjectSelection: inputHandler?.isInPictureObjectSelection() ?? false,
     inField: inputHandler?.isInField() ?? false,
@@ -148,6 +153,76 @@ const sbMessage = () => document.getElementById('sb-message')!;
 const sbPage = () => document.getElementById('sb-page')!;
 const sbSection = () => document.getElementById('sb-section')!;
 const sbZoomVal = () => document.getElementById('sb-zoom-val')!;
+let autosaveStatusRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+let autosavePreviousMessage: string | null = null;
+
+function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
+  const settings = userSettings.getAutosaveSettings();
+  return {
+    recoveryEnabled: settings.recoveryEnabled,
+    recoveryIntervalMs: settings.recoveryIntervalMinutes * 60_000,
+    idleEnabled: settings.idleSaveEnabled,
+    idleDelayMs: settings.idleDelaySeconds * 1_000,
+  };
+}
+
+function handleAutosaveStatus(status: AutosaveStatus): void {
+  const message = document.getElementById('sb-message');
+  if (!message) return;
+  if (autosaveStatusRestoreTimer) {
+    clearTimeout(autosaveStatusRestoreTimer);
+    autosaveStatusRestoreTimer = null;
+  }
+
+  if (status.state === 'saving') {
+    if (autosavePreviousMessage === null) {
+      autosavePreviousMessage = message.textContent ?? '';
+    }
+    message.textContent = '복구용 자동 저장 중...';
+    return;
+  }
+
+  const restoreTarget = autosavePreviousMessage;
+  autosavePreviousMessage = null;
+  const nextMessage = status.state === 'saved'
+    ? `복구용 자동 저장 완료 (${formatBytes(status.byteLength)})`
+    : '복구용 자동 저장 실패';
+  message.textContent = nextMessage;
+  if (restoreTarget !== null) {
+    autosaveStatusRestoreTimer = setTimeout(() => {
+      if (message.textContent === nextMessage) {
+        message.textContent = restoreTarget;
+      }
+      autosaveStatusRestoreTimer = null;
+    }, status.state === 'saved' ? 1_600 : 4_000);
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(1)} KiB`;
+  return `${(kib / 1024).toFixed(1)} MiB`;
+}
+
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    window.setTimeout(finish, 50);
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+  });
+}
+
+async function updateLoadProgress(percent: number, label: string): Promise<void> {
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+  sbMessage().textContent = `파일 로딩 ${safePercent}% - ${label}`;
+  await waitForNextPaint();
+}
 
 async function initialize(): Promise<void> {
   const msg = sbMessage();
@@ -555,6 +630,10 @@ function setupEventListeners(): void {
     }
   });
 
+  eventBus.on('autosave-settings-changed', () => {
+    autosaveManager.updateSchedule(autosaveScheduleFromUserSettings());
+  });
+
   // 필드 정보 표시
   const sbField = document.getElementById('sb-field');
   eventBus.on('field-info-changed', (info) => {
@@ -638,27 +717,34 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
   let normalizedDuringLoad = false;
   try {
     console.log('[initDoc] 1. 폰트 로딩 시작');
+    await updateLoadProgress(55, '폰트 준비 중...');
     if (docInfo.fontsUsed?.length) {
       await loadWebFonts(docInfo.fontsUsed, (loaded, total) => {
-        msg.textContent = `폰트 로딩 중... (${loaded}/${total})`;
+        const fontPercent = total > 0 ? 55 + Math.round((loaded / total) * 20) : 65;
+        msg.textContent = `파일 로딩 ${fontPercent}% - 폰트 로딩 중... (${loaded}/${total})`;
       }, extensionViewerSettings);
     }
     console.log('[initDoc] 2. 폰트 로딩 완료');
-    msg.textContent = displayName;
+    await updateLoadProgress(75, '문서 상태 적용 중...');
     totalSections = docInfo.sectionCount ?? 1;
     sbSection().textContent = `구역: 1 / ${totalSections}`;
     applySavedTextMarkSettings();
     console.log('[initDoc] 3. inputHandler deactivate');
     inputHandler?.deactivate();
     console.log('[initDoc] 4. canvasView loadDocument');
+    await updateLoadProgress(82, '페이지 렌더 준비 중...');
     canvasView?.loadDocument();
     console.log('[initDoc] 5. toolbar setEnabled');
+    await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     console.log('[initDoc] 7. inputHandler activateWithCaretPosition');
+    await updateLoadProgress(96, '편집 상태 초기화 중...');
     inputHandler?.activateWithCaretPosition();
+    await updateLoadProgress(100, '완료');
+    msg.textContent = displayName;
     console.log('[initDoc] 8. 완료');
 
     // #177: HWPX 비표준 lineseg 감지 → 경고 있으면 모달로 사용자 선택 요청
@@ -738,16 +824,16 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
 }
 
 async function loadFile(file: File, options: { skipUnsavedGuard?: boolean } = {}): Promise<boolean> {
-  const msg = sbMessage();
   try {
     if (!options.skipUnsavedGuard) {
       const canReplace = await confirmSaveBeforeReplacingDocument(commandServices);
       if (!canReplace) return false;
     }
-    msg.textContent = '파일 로딩 중...';
     const startTime = performance.now();
+    await updateLoadProgress(0, '파일 읽는 중...');
     const data = new Uint8Array(await file.arrayBuffer());
-    await loadBytes(data, file.name, null, startTime);
+    await updateLoadProgress(15, '파일 읽기 완료');
+    await loadBytes(data, file.name, null, startTime, { dataReadProgressShown: true });
     return true;
   } catch (error) {
     showLoadError(error);
@@ -760,18 +846,22 @@ async function loadBytes(
   fileName: string,
   fileHandle: typeof wasm.currentFileHandle,
   startTime = performance.now(),
+  options: { dataReadProgressShown?: boolean } = {},
 ): Promise<void> {
+  if (!options.dataReadProgressShown) {
+    await updateLoadProgress(0, '문서 데이터 준비 중...');
+  }
+  await updateLoadProgress(25, '문서 파싱 및 쪽 계산 중...');
   const docInfo = wasm.loadDocument(data, fileName);
+  await updateLoadProgress(45, '자동 저장 준비 중...');
   wasm.currentFileHandle = fileHandle;
   await autosaveManager.beginDocument(
     { fileName: wasm.fileName, sourceFormat: wasm.getSourceFormat() },
     { discardPreviousDraft: true },
   );
+  await updateLoadProgress(50, '문서 초기화 중...');
   const elapsed = performance.now() - startTime;
-  // initializeDocument 안에서 #177 validation 모달이 표시될 수 있음.
-  // HWPX 토스트는 모달과의 이벤트 충돌을 피하기 위해 모달 닫힌 후 표시.
   await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지 (${elapsed.toFixed(1)}ms)`);
-  notifyHwpxSaveModeIfNeeded();
 }
 
 function shouldSkipInitialAutosaveRecovery(): boolean {
@@ -818,73 +908,6 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
   });
 }
 
-/**
- * #888: HWPX 출처 문서 로드 시 HWP 변환 저장 안내.
- * - 우상단 토스트 1회
- * - 상태 표시줄 메시지
- */
-function notifyHwpxSaveModeIfNeeded(): void {
-  if (wasm.getSourceFormat() !== 'hwpx') return;
-
-  showToast({
-    message: 'HWPX 문서는 저장 시 HWP 형식으로 변환 저장됩니다.\n원본 HWPX를 덮어쓰지 않도록 .hwp 파일명으로 저장합니다.',
-    durationMs: 0, // 자동 페이드 없음 — 사용자가 확인 버튼으로 닫음
-    action: {
-      label: '이슈 보기',
-      onClick: () => {
-        window.open('https://github.com/edwardkim/rhwp/issues/888', '_blank');
-      },
-    },
-    confirmLabel: '확인',
-  });
-
-  const sb = sbMessage();
-  if (sb) sb.textContent = 'HWPX 변환 저장 모드 — 저장 시 HWP(.hwp)로 내보냅니다';
-}
-
-type DocumentByteKind = 'hwp' | 'hwpx' | 'html' | 'unknown';
-
-const HWP_CFB_SIGNATURE = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] as const;
-const ZIP_SIGNATURES = [
-  [0x50, 0x4B, 0x03, 0x04],
-  [0x50, 0x4B, 0x05, 0x06],
-  [0x50, 0x4B, 0x07, 0x08],
-] as const;
-
-function startsWithBytes(bytes: Uint8Array, signature: readonly number[]): boolean {
-  if (bytes.length < signature.length) return false;
-  return signature.every((byte, index) => bytes[index] === byte);
-}
-
-function detectDocumentByteKind(bytes: Uint8Array, contentType?: string | null): DocumentByteKind {
-  if (startsWithBytes(bytes, HWP_CFB_SIGNATURE)) return 'hwp';
-  if (ZIP_SIGNATURES.some(signature => startsWithBytes(bytes, signature))) return 'hwpx';
-
-  const declaredContentType = contentType?.toLowerCase() ?? '';
-  if (declaredContentType.includes('text/html')) return 'html';
-
-  const prefix = new TextDecoder('utf-8')
-    .decode(bytes.subarray(0, Math.min(bytes.length, 256)))
-    .trimStart()
-    .toLowerCase();
-
-  if (prefix.startsWith('<!doctype') || prefix.startsWith('<html') || prefix.startsWith('<?xml')) {
-    return 'html';
-  }
-
-  return 'unknown';
-}
-
-function assertRemoteDocumentBytes(bytes: Uint8Array, contentType?: string | null): void {
-  const kind = detectDocumentByteKind(bytes, contentType);
-  if (kind === 'hwp' || kind === 'hwpx') return;
-
-  if (kind === 'html') {
-    throw new Error('실제 HWP/HWPX 파일이 아닙니다. 파일 미리보기/오류 페이지가 반환되었습니다.');
-  }
-
-  throw new Error('실제 HWP/HWPX 파일이 아닙니다. 파일 시그니처를 확인할 수 없습니다.');
-}
 
 async function createNewDocument(): Promise<void> {
   const msg = sbMessage();

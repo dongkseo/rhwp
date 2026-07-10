@@ -133,11 +133,118 @@ test('CanvasKit renderer source replays the root once per replay plane', () => {
 
 test('PageRenderer uses filtered canvas layers for background, behind, and front planes', () => {
   const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'background'\)/);
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'behind'\)/);
-  assert.match(source, /createFilteredCanvasLayer\(pageIdx,\s*canvas,\s*renderScale,\s*'front'\)/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'background'/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'behind'/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'front'/);
+  assert.match(source, /createFilteredCanvasLayer\(\s*pageIdx,\s*sourceCanvas,\s*renderScale,\s*layerKind\)/);
   assert.match(source, /layer\.style\.background\s*=\s*'transparent'/);
   assert.match(source, /collectLayerPlaneSummary\(root,\s*summary,\s*null\)/);
+});
+
+test('PageRenderer prefers lightweight overlay summary before full PageLayerTree fallback', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /getLayerPlaneSummaryFromOverlayImages\(pageIdx\)/);
+  assert.match(source, /if \(overlaySummary\) \{/);
+  assert.match(source, /this\.layerSummaryCache\.set\(pageIdx,\s*\{ key: cacheKey,\s*summary: overlaySummary \}\)/);
+  assert.match(source, /this\.wasm\.getPageOverlayImages\(pageIdx\)/);
+  assert.match(source, /getLayerPlaneSummaryFromTree\(pageIdx\)/);
+  assert.match(source, /this\.layerSummaryCache\.set\(pageIdx,\s*\{ key: cacheKey,\s*summary: treeSummary \}\)/);
+  assert.match(source, /this\.wasm\.getPageLayerTree\(pageIdx\)/);
+  assert.match(source, /typeof wrapper\?\.hasBehind !== 'boolean'/);
+  assert.match(source, /const rawSvgCount = finiteCount\(wrapper\.rawSvgCount\)/);
+  assert.match(source, /const flowImageCount =/);
+  assert.match(source, /const flowRawSvgCount =/);
+  assert.match(source, /flowStaticCount/);
+});
+
+test('CanvasView forwards text-edit invalidation as static overlay reuse context', () => {
+  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
+  assert.match(source, /type PageRenderContext/);
+  assert.match(source, /reason === 'text-edit'/);
+  assert.match(source, /allowStaticOverlayReuse:\s*true/);
+  assert.match(source, /allowStaticOverlayReuse:\s*false/);
+  assert.match(source, /renderCanvas\(pageIndex,\s*canvas,\s*renderContext\)/);
+  assert.match(source, /renderPage\(pageIdx,\s*canvas,\s*renderScale,\s*zoom,\s*dpr,\s*renderContext\)/);
+});
+
+test('CanvasView coalesces text-edit invalidations before rerendering a page', () => {
+  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
+  assert.match(source, /pendingTextEditRefreshes = new Map<number,\s*PageRenderContext>\(\)/);
+  assert.match(source, /textEditRefreshRafId: number \| null = null/);
+  assert.match(source, /scheduleTextEditPageRefresh\(pageIndex,\s*renderContext\)/);
+  assert.match(source, /requestAnimationFrame\(\(\) => \{/);
+  assert.match(source, /Array\.from\(this\.pendingTextEditRefreshes\.entries\(\)\)/);
+  assert.match(source, /this\.refreshInvalidatedPageNow\(pendingPageIndex,\s*pendingContext\)/);
+  assert.match(source, /cancelPendingTextEditRefresh\(pageIndex\)/);
+  assert.match(source, /cancelAnimationFrame\(this\.textEditRefreshRafId\)/);
+});
+
+test('CanvasView verifies reused static layers after text-edit idle', () => {
+  const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
+  assert.match(source, /TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS/);
+  assert.match(source, /textEditStaticLayerVerifyTimers = new Map<number,\s*ReturnType<typeof setTimeout>>\(\)/);
+  assert.match(source, /needsTextEditStaticLayerVerification/);
+  assert.match(source, /scheduleTextEditStaticLayerVerification\(pageIdx\)/);
+  assert.match(source, /cancelTextEditStaticLayerVerification\(pageIndex\)/);
+  assert.match(source, /refreshInvalidatedPageNow\(pageIndex,\s*\{\s*reason:\s*'unknown',\s*allowStaticOverlayReuse:\s*false\s*\}\)/);
+});
+
+test('PageRenderer reuses static overlay canvases only when the overlay key matches', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /export interface PageRenderContext/);
+  assert.match(source, /export interface PageRenderResult/);
+  assert.match(source, /needsTextEditStaticLayerVerification/);
+  assert.match(source, /context\.reason === 'text-edit' && context\.allowStaticOverlayReuse === true/);
+  assert.match(source, /if \(!allowReuse\) \{/);
+  assert.match(source, /this\.removePageLayers\(parent,\s*pageIdx\);/);
+  assert.match(source, /reusableLayer\?\.dataset\.rhwpStaticOverlayKey === key/);
+  assert.match(source, /reusableLayer\.width === sourceCanvas\.width/);
+  assert.match(source, /reusableLayer\.height === sourceCanvas\.height/);
+  assert.match(source, /layer\.dataset\.rhwpStaticOverlayKey = key/);
+  assert.match(source, /summary=\$\{summary\.signature\}/);
+  assert.match(source, /profile=\$\{this\.renderProfile\}/);
+  assert.match(source, /backend=\$\{this\.backend\}/);
+});
+
+test('PageRenderer reuses layer summaries on the text-edit fast path', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /layerSummaryCache = new Map<number,\s*LayerSummaryCacheEntry>\(\)/);
+  assert.match(source, /buildLayerSummaryCacheKey\(pageIdx,\s*canvas,\s*renderScale\)/);
+  assert.match(source, /context\.reason === 'text-edit' && context\.allowStaticOverlayReuse === true/);
+  assert.match(source, /cached\?\.key === cacheKey/);
+  assert.match(source, /return \{ \.\.\.cached\.summary \}/);
+  assert.match(source, /rememberLayerPlaneSummary\(pageIdx,\s*canvas,\s*renderScale,\s*layers\)/);
+  assert.match(source, /this\.layerSummaryCache\.clear\(\)/);
+});
+
+test('PageRenderer splits flow static images only on text-edit fast path', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /shouldUseStaticFlowReuse\(context,\s*layers\)/);
+  assert.match(source, /layers\.flowStaticCount > 0/);
+  assert.match(source, /!layers\.hasBehind/);
+  assert.match(source, /renderPageToCanvasFiltered\(pageIdx,\s*canvas,\s*renderScale,\s*'flow-dynamic'\)/);
+  assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'flow-static'/);
+  assert.match(source, /this\.flowSplitSupported = false/);
+  assert.match(source, /flow-dynamic 렌더 미지원/);
+  assert.match(source, /flow-static 지연 재렌더 실패/);
+});
+
+test('PageRenderer deferred image rerender preserves static layer reuse policy', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /interface ReRenderPolicy/);
+  assert.match(source, /retrySignature: overlays\.signature/);
+  assert.match(source, /reuseStaticFlow/);
+  assert.match(source, /reuseStaticOverlay/);
+  assert.match(source, /const retryKey = `\$\{imageCount\}:\$\{policy\.retrySignature\}`/);
+  assert.match(source, /this\.reRenderPageCanvases\(pageIdx,\s*canvas,\s*renderScale,\s*policy\)/);
+  assert.match(source, /this\.findOverlayLayer\(parent,\s*pageIdx,\s*'flow-static'\)/);
+  assert.match(source, /if \(policy\.reuseStaticOverlay\) return/);
+});
+
+test('WasmBridge exposes flow split filtered render layer kinds', () => {
+  const source = readFileSync(new URL('../src/core/wasm-bridge.ts', import.meta.url), 'utf8');
+  assert.match(source, /'flow-dynamic'/);
+  assert.match(source, /'flow-static'/);
 });
 
 test('PageLayerTree bridge normalizes canonical build/debug option metadata', () => {

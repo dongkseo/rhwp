@@ -13,9 +13,32 @@ function createChromeMock(options = {}) {
     cancel: [],
     erase: [],
     search: [],
+    sessionGet: [],
+    sessionRemove: [],
+    sessionSet: [],
     tabsCreate: [],
   };
   const searchItems = new Map();
+  const sessionItems = new Map(Object.entries(options.session || {}));
+
+  function getSessionValues(query) {
+    if (query == null) return Object.fromEntries(sessionItems);
+    if (typeof query === 'string') {
+      return { [query]: sessionItems.get(query) };
+    }
+    if (Array.isArray(query)) {
+      return Object.fromEntries(query.map((key) => [key, sessionItems.get(key)]));
+    }
+    if (typeof query === 'object') {
+      return Object.fromEntries(
+        Object.entries(query).map(([key, fallback]) => [
+          key,
+          sessionItems.has(key) ? sessionItems.get(key) : fallback,
+        ]),
+      );
+    }
+    return {};
+  }
 
   const chrome = {
     downloads: {
@@ -52,6 +75,25 @@ function createChromeMock(options = {}) {
       },
     },
     storage: {
+      session: {
+        async get(query) {
+          calls.sessionGet.push(query);
+          return getSessionValues(query);
+        },
+        async set(items) {
+          calls.sessionSet.push(items);
+          for (const [key, value] of Object.entries(items)) {
+            sessionItems.set(key, value);
+          }
+        },
+        async remove(query) {
+          calls.sessionRemove.push(query);
+          const keys = Array.isArray(query) ? query : [query];
+          for (const key of keys) {
+            sessionItems.delete(key);
+          }
+        },
+      },
       sync: {
         async get(defaults) {
           return { ...defaults, ...(options.settings || {}) };
@@ -66,7 +108,7 @@ function createChromeMock(options = {}) {
     },
   };
 
-  return { chrome, listeners, calls, searchItems };
+  return { chrome, listeners, calls, searchItems, sessionItems };
 }
 
 async function importFreshInterceptor() {
@@ -93,6 +135,12 @@ async function withChromeMock(env, run) {
 async function flushAsyncWork() {
   await Promise.resolve();
   await new Promise((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+function lastListener(list) {
+  return list[list.length - 1];
 }
 
 test('Chrome interceptor registers observers, not onDeterminingFilename', async () => {
@@ -335,5 +383,118 @@ test('new download seen via onCreated is opened on onChanged recheck', async () 
 
     assert.deepEqual(calls.search, [{ id: 901 }]);
     assert.equal(calls.tabsCreate.length, 1, '새 다운로드는 정상 오픈되어야 함');
+  });
+});
+
+test('download tracked before service worker restart opens on onChanged recheck', async () => {
+  const env = createChromeMock();
+
+  await withChromeMock(env, async ({ listeners, calls }) => {
+    listeners.onCreated[0]({
+      id: 904,
+      url: 'https://example.com/download?id=904',
+      filename: 'download',
+      mime: 'application/octet-stream',
+      startTime: new Date().toISOString(),
+    });
+    await flushAsyncWork();
+
+    assert.equal(calls.tabsCreate.length, 0);
+    assert.equal(calls.sessionSet.length, 1);
+  });
+
+  await withChromeMock(env, async ({ listeners, calls, searchItems }) => {
+    searchItems.set(904, {
+      id: 904,
+      url: 'https://example.com/download?id=904',
+      filename: 'restart-fresh.hwp',
+      mime: 'application/octet-stream',
+      startTime: new Date().toISOString(),
+    });
+    await lastListener(listeners.onChanged)({
+      id: 904,
+      filename: { current: '/Users/melee/Downloads/restart-fresh.hwp' },
+    });
+    await flushAsyncWork();
+
+    assert.equal(calls.tabsCreate.length, 1, '재시작 후 filename 확정 항목은 1회 열려야 함');
+    assert.match(calls.tabsCreate[0].url, /filename=restart-fresh\.hwp/);
+  });
+});
+
+test('handled state in storage prevents duplicate open after restart', async () => {
+  const env = createChromeMock();
+
+  await withChromeMock(env, async ({ listeners, calls }) => {
+    listeners.onCreated[0]({
+      id: 905,
+      url: 'https://example.com/already-opened.hwp',
+      filename: 'already-opened.hwp',
+      mime: 'application/x-hwp',
+      startTime: new Date().toISOString(),
+    });
+    await flushAsyncWork();
+
+    assert.equal(calls.tabsCreate.length, 1);
+  });
+
+  await withChromeMock(env, async ({ listeners, calls, searchItems }) => {
+    searchItems.set(905, {
+      id: 905,
+      url: 'https://example.com/already-opened.hwp',
+      filename: 'already-opened.hwp',
+      mime: 'application/x-hwp',
+      startTime: new Date().toISOString(),
+    });
+    await lastListener(listeners.onChanged)({
+      id: 905,
+      filename: { current: '/Users/melee/Downloads/already-opened.hwp' },
+    });
+    await flushAsyncWork();
+
+    assert.equal(calls.tabsCreate.length, 1, 'handled 상태는 재시작 후에도 중복 open을 막아야 함');
+  });
+});
+
+test('same download id with multiple changed events opens once', async () => {
+  const env = createChromeMock();
+
+  await withChromeMock(env, async ({ listeners, calls, searchItems }) => {
+    listeners.onCreated[0]({
+      id: 906,
+      url: 'https://example.com/download?id=906',
+      filename: 'download',
+      mime: 'application/octet-stream',
+      startTime: new Date().toISOString(),
+    });
+    await flushAsyncWork();
+
+    searchItems.set(906, {
+      id: 906,
+      url: 'https://example.com/download?id=906',
+      finalUrl: 'https://cdn.example.com/fresh-multi.hwp',
+      filename: 'fresh-multi.hwp',
+      mime: 'application/octet-stream',
+      startTime: new Date().toISOString(),
+    });
+
+    await listeners.onChanged[0]({
+      id: 906,
+      filename: { current: '/Users/melee/Downloads/fresh-multi.hwp' },
+    });
+    await flushAsyncWork();
+    await listeners.onChanged[0]({
+      id: 906,
+      finalUrl: { current: 'https://cdn.example.com/fresh-multi.hwp' },
+    });
+    await flushAsyncWork();
+    await listeners.onChanged[0]({
+      id: 906,
+      state: { current: 'complete' },
+    });
+    await flushAsyncWork();
+
+    assert.equal(calls.tabsCreate.length, 1);
+    assert.deepEqual(calls.search, [{ id: 906 }]);
   });
 });

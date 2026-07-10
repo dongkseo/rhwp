@@ -183,6 +183,10 @@ export interface CursorRect {
   x: number;
   y: number;
   height: number;
+  /** 표 셀 내부 커서일 때만 제공되는 가시 셀 bbox */
+  cellBounds?: { x: number; y: number; w: number; h: number };
+  /** 원래 TextRun 좌표가 셀 bbox를 벗어나 보정됐는지 여부 */
+  cellOverflowed?: boolean;
 }
 
 /** WASM hitTest() 반환 타입 */
@@ -456,6 +460,18 @@ export interface CellProperties {
   fillColor?: string;
   patternColor?: string;
   patternType?: number;
+  /** 대각선 선 종류 (0=없음, 1=실선, 2=파선, ...) */
+  diagonalLine?: number;
+  /** / 대각선 방향 비트 */
+  diagonalSlash?: number;
+  /** \ 대각선 방향 비트 */
+  diagonalBackSlash?: number;
+  /** 대각선 굵기 (0-6) */
+  diagonalWidth?: number;
+  /** 대각선 색상 (#rrggbb) */
+  diagonalColor?: string;
+  /** 중심선 방향: NONE / VERTICAL / HORIZONTAL / CROSS */
+  centerLine?: string;
 }
 
 /** WASM getTableProperties() 반환 타입 — HWPUNIT 원본값 */
@@ -527,7 +543,7 @@ export interface NoteControlRef {
 }
 
 export interface ControlLayoutItem {
-  type: 'table' | 'image' | 'shape' | 'equation' | 'group' | 'line';
+  type: 'table' | 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole';
   x: number;
   y: number;
   w: number;
@@ -562,7 +578,7 @@ export interface ObjectRef {
   sec: number;
   ppi: number;
   ci: number;
-  type: 'image' | 'shape' | 'equation' | 'group' | 'line';
+  type: 'image' | 'shape' | 'equation' | 'group' | 'line' | 'ole';
   /** 표 셀 내 수식인 경우: 셀 인덱스 */
   cellIdx?: number;
   /** 표 셀 내 수식인 경우: 셀 내 문단 인덱스 */
@@ -974,8 +990,22 @@ export interface LayerTextStyle {
   italic?: boolean;
   ratio?: number;
   underline?: string;
+  underlineShape?: number;
   strikethrough?: boolean;
+  strikeShape?: number;
+  outlineType?: number;
+  shadowType?: number;
+  shadowColor?: string;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+  emboss?: boolean;
+  engrave?: boolean;
+  superscript?: boolean;
+  subscript?: boolean;
+  underlineColor?: string;
+  strikeColor?: string;
   shadeColor?: string;
+  emphasisDot?: number;
 }
 
 export interface LayerTextRunOp {

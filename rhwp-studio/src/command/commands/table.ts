@@ -14,6 +14,7 @@ import {
 
 const inTable = (ctx: EditorContext) => ctx.inTable;
 const inTableOrCellSelection = (ctx: EditorContext) => ctx.inTable || ctx.inCellSelectionMode;
+const hasMultiCellSelection = (ctx: EditorContext) => ctx.hasMultiCellSelection;
 
 type CellRange = { startRow: number; startCol: number; endRow: number; endCol: number };
 type TableDimensions = { rowCount: number; colCount: number; cellCount: number };
@@ -39,6 +40,11 @@ function equalizeTargetRange(ih: ReturnType<CommandServices['getInputHandler']>,
 
 function hasNonRectangularCellSelection(ih: ReturnType<CommandServices['getInputHandler']>): boolean {
   return Boolean(ih?.isInCellSelectionMode?.() && ih.hasExcludedCellSelection?.());
+}
+
+function isTransposeTargetOverflowError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('표 크기') && message.includes('초과');
 }
 
 function isCellInRange(cell: { row: number; col: number }, range: CellRange): boolean {
@@ -273,7 +279,7 @@ export const tableCommands: CommandDef[] = [
         const ref = ih.getSelectedTableRef();
         if (!ref) return;
         const tableCtx = { sec: ref.sec, ppi: ref.ppi, ci: ref.ci };
-        const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table');
+        const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, 0, 'table', services);
         dialog.show();
         return;
       }
@@ -281,7 +287,7 @@ export const tableCommands: CommandDef[] = [
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
-      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell');
+      const dialog = new TableCellPropsDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'cell', services);
       dialog.show();
     },
   },
@@ -295,21 +301,39 @@ export const tableCommands: CommandDef[] = [
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
-      const dialog = new CellBorderBgDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'each');
+      const selectionRange = ih.isInCellSelectionMode?.() ? ih.getSelectedCellRange?.() ?? null : null;
+      const dialog = new CellBorderBgDialog(
+        services.wasm,
+        services.eventBus,
+        tableCtx,
+        pos.cellIndex,
+        'each',
+        selectionRange,
+        services,
+      );
       dialog.show();
     },
   },
   {
     id: 'table:border-one',
     label: '하나의 셀처럼 적용(Z)...',
-    canExecute: inTable,
+    canExecute: hasMultiCellSelection,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
+      if (!ih.hasMultiCellSelection()) return;
       const pos = ih.getCursorPosition();
       if (pos.parentParaIndex === undefined || pos.controlIndex === undefined || pos.cellIndex === undefined) return;
       const tableCtx = { sec: pos.sectionIndex, ppi: pos.parentParaIndex, ci: pos.controlIndex };
-      const dialog = new CellBorderBgDialog(services.wasm, services.eventBus, tableCtx, pos.cellIndex, 'asOne');
+      const dialog = new CellBorderBgDialog(
+        services.wasm,
+        services.eventBus,
+        tableCtx,
+        pos.cellIndex,
+        'asOne',
+        ih.getSelectedCellRange(),
+        services,
+      );
       dialog.show();
     },
   },
@@ -533,6 +557,150 @@ export const tableCommands: CommandDef[] = [
         },
       }), '셀 합치기');
       ih.exitCellSelectionMode();
+    },
+  },
+  {
+    id: 'table:transpose-copy',
+    label: '행/열 바꿈 복사',
+    canExecute: (ctx) => ctx.inCellSelectionMode,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const range = ih.getSelectedCellRange?.();
+      const tableCtx = ih.getCellTableContext?.();
+      if (!range || !tableCtx) return;
+      if (hasNonRectangularCellSelection(ih)) return;
+      if (tableCtx.cellPath && tableCtx.cellPath.length > 1) return;
+
+      safeTableOp(() => {
+        services.wasm.copyTableCellsTransposed(
+          tableCtx.sec,
+          tableCtx.ppi,
+          tableCtx.ci,
+          range.startRow,
+          range.startCol,
+          range.endRow,
+          range.endCol,
+        );
+      }, '행/열 바꿈 복사');
+      restoreEditorFocus(ih);
+    },
+  },
+  {
+    id: 'table:transpose-paste',
+    label: '행/열 바꿈 붙여넣기',
+    canExecute: (ctx) => ctx.hasDocument && ctx.hasTableTransposeClipboard,
+    execute(services) {
+      const ih = services.getInputHandler();
+      if (!ih) return;
+      const pos = ih.getCursorPosition();
+      if ((pos.cellPath?.length ?? 0) > 1) return;
+
+      safeTableOp(() => ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'pasteTableCellsTransposed',
+        operation: (wasm) => {
+          const pasteAsNewTable = (sectionIndex: number, paragraphIndex: number, charOffset: number) => {
+            const result = wasm.pasteTableCellsTransposedAsTable(
+              sectionIndex,
+              paragraphIndex,
+              charOffset,
+            );
+            if (result.ok && result.paraIdx !== undefined && result.controlIdx !== undefined) {
+              return {
+                sectionIndex,
+                paragraphIndex: 0,
+                charOffset: 0,
+                parentParaIndex: result.paraIdx,
+                controlIndex: result.controlIdx,
+                cellIndex: 0,
+                cellParaIndex: 0,
+              };
+            }
+            return pos;
+          };
+
+          const selectionTableCtx = ih.isInCellSelectionMode?.() ? ih.getCellTableContext?.() : null;
+          if (selectionTableCtx) {
+            if ((selectionTableCtx.cellPath?.length ?? 0) > 1) return pos;
+            const range = ih.getSelectedCellRange?.();
+            const dims = wasm.getTableDimensions(
+              selectionTableCtx.sec,
+              selectionTableCtx.ppi,
+              selectionTableCtx.ci,
+            );
+            const isWholeTable = range
+              && range.startRow === 0
+              && range.startCol === 0
+              && range.endRow === dims.rowCount - 1
+              && range.endCol === dims.colCount - 1;
+            if (isWholeTable) {
+              wasm.transposeTableCellsInPlace(
+                selectionTableCtx.sec,
+                selectionTableCtx.ppi,
+                selectionTableCtx.ci,
+              );
+              return {
+                sectionIndex: selectionTableCtx.sec,
+                paragraphIndex: 0,
+                charOffset: 0,
+                parentParaIndex: selectionTableCtx.ppi,
+                controlIndex: selectionTableCtx.ci,
+                cellIndex: 0,
+                cellParaIndex: 0,
+              };
+            }
+            if (range) {
+              try {
+                wasm.pasteTableCellsTransposed(
+                  selectionTableCtx.sec,
+                  selectionTableCtx.ppi,
+                  selectionTableCtx.ci,
+                  range.startRow,
+                  range.startCol,
+                );
+                return {
+                  sectionIndex: selectionTableCtx.sec,
+                  paragraphIndex: 0,
+                  charOffset: 0,
+                  parentParaIndex: selectionTableCtx.ppi,
+                  controlIndex: selectionTableCtx.ci,
+                  cellIndex: 0,
+                  cellParaIndex: 0,
+                };
+              } catch (err) {
+                if (!isTransposeTargetOverflowError(err)) throw err;
+              }
+            }
+            return pasteAsNewTable(selectionTableCtx.sec, selectionTableCtx.ppi, 0);
+          }
+
+          if (pos.parentParaIndex !== undefined && pos.controlIndex !== undefined && pos.cellIndex !== undefined) {
+            const cellInfo = services.wasm.getCellInfo(
+              pos.sectionIndex,
+              pos.parentParaIndex,
+              pos.controlIndex,
+              pos.cellIndex,
+            );
+            try {
+              wasm.pasteTableCellsTransposed(
+                pos.sectionIndex,
+                pos.parentParaIndex,
+                pos.controlIndex,
+                cellInfo.row,
+                cellInfo.col,
+              );
+            } catch (err) {
+              if (!isTransposeTargetOverflowError(err)) throw err;
+              return pasteAsNewTable(pos.sectionIndex, pos.parentParaIndex, 0);
+            }
+            return pos;
+          }
+
+          return pasteAsNewTable(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+        },
+      }), '행/열 바꿈 붙여넣기');
+      restoreEditorFocus(ih);
     },
   },
   {

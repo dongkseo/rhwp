@@ -18,6 +18,10 @@ export interface EditorContext {
   inTable: boolean;
   /** F5 셀 선택 모드인가? */
   inCellSelectionMode: boolean;
+  /** 여러 셀이 선택된 상태인가? */
+  hasMultiCellSelection: boolean;
+  /** 행/열 바꿈 복사 버퍼가 있는가? */
+  hasTableTransposeClipboard: boolean;
   /** 표 객체 선택 모드인가? */
   inTableObjectSelection: boolean;
   /** 그림 객체 선택 모드인가? */
@@ -44,7 +48,7 @@ export interface EditorContext {
   showParagraphMarks: boolean;
   /** 저장되지 않은 문서 변경사항이 있는가? */
   isDirty: boolean;
-  /** 원본 파일 형식 (#888 — HWPX 출처는 HWP 변환 저장) */
+  /** 원본 파일 형식 — 저장 시 출처 포맷 유지(HWPX→HWPX, HWP→HWP). 다른 포맷 저장은 별도 메뉴(#1613). */
   sourceFormat?: 'hwp' | 'hwpx';
 }
 

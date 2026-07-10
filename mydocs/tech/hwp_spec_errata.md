@@ -155,6 +155,16 @@
 | 참조 문서 | `troubleshootings/repeat_header_image_duplication.md` |
 | 발견일 | 2026-02-10 |
 
+**추가 조사 (2026-07-03, #1831)**: bytes 6-7 의 **상위 바이트(b7)** 에도 하위 바이트와
+동형의 비트 패턴(0x01/0x04/0x05 — 안여백/제목셀 유사)이 코퍼스에 대량 존재한다
+(452 통제셋 .hwp 에서 b7≠0 셀 5,639개 vs b6 의 제목셀 비트 103개, 한 셀에 양쪽
+공존도 흔함). **인과 플립 실험 결과 한글 2022 는 b7 비트를 렌더링·UI(COM Header/
+HasMargin) 모두에서 무시**하며, 재저장 시 원값 그대로 보존 재기록한다
+(2448877=`samples/float-stack-defer.hwp` 실험, 패처 `tools/patch_cell_flags.py`).
+결론: b7 은 레이아웃 불활성
+보존 데이터 — is_header 추출은 현행 b6(bit 2) 기준이 옳고, rhwp 는
+`list_header_width_ref` u16 원값 보존으로 라운드트립 요건을 이미 충족한다.
+
 ---
 
 ## 11. 단 정의(ColumnDef) 너비/간격 — 비례값 인코딩

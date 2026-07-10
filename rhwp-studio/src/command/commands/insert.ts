@@ -213,8 +213,9 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:footnote',
     label: '각주',
     icon: 'icon-footnote',
-    canExecute: () => true,
+    canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
+      if (!services.getContext().hasDocument) return;
       const ih = services.getInputHandler();
       if (!ih) return;
       const pos = ih.getPosition();
@@ -233,8 +234,9 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:endnote',
     label: '미주',
     icon: 'icon-endnote',
-    canExecute: () => true,
+    canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
+      if (!services.getContext().hasDocument) return;
       const ih = services.getInputHandler();
       if (!ih) return;
       const pos = ih.getPosition();
@@ -314,13 +316,13 @@ export const insertCommands: CommandDef[] = [
       if (!ref) return;
       if (ref.type === 'equation') {
         if (!equationPropsDialog) {
-          equationPropsDialog = new EquationPropertiesDialog(services.wasm, services.eventBus);
+          equationPropsDialog = new EquationPropertiesDialog(services.wasm, services.eventBus, services);
         }
         equationPropsDialog.open(ref.sec, ref.ppi, ref.ci, ref.cellIdx, ref.cellParaIdx, ref.noteRef);
         return;
       }
       if (!picturePropsDialog) {
-        picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus);
+        picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus, services);
       }
       // [Task #825] 머리말/꼬리말 그림은 ref.headerFooter 동반 — dialog 에 전달.
       // [Task #1138] 표 셀 내 도형(shape/line) 은 cellPath 구성하여 dialog 에 전달
@@ -334,7 +336,7 @@ export const insertCommands: CommandDef[] = [
           ref.cellIdx !== undefined &&
           ref.cellParaIdx !== undefined &&
           (ref as any).outerTableControlIdx !== undefined &&
-          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image')
+          (ref.type === 'shape' || ref.type === 'line' || ref.type === 'image' || ref.type === 'ole')
         )
           ? [{
               controlIdx: (ref as any).outerTableControlIdx as number,
