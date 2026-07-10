@@ -28,8 +28,8 @@ issue comment/checklist/close는 수행하지 않았다.
 | 항목 | 결정 |
 |------|------|
 | metrics script | `scripts/frontend-metrics.mjs`를 신설한다. 기존 `scripts/metrics.sh`는 Rust 중심이라 이번 이슈에서는 확장하지 않는다. |
-| ESLint 실행 환경 | `rhwp-studio` devDependencies에 `eslint`, `eslint-plugin-sonarjs`, `@typescript-eslint/parser`를 고정한다. 루트 `package.json`을 새로 만들지 않는다. |
-| 실행 방식 | root script가 `rhwp-studio/node_modules`의 ESLint/parser/plugin을 기준으로 로드해 전체 프론트 모집단을 측정한다. |
+| ESLint 실행 환경 | `scripts/frontend-metrics/` private package에 `eslint`, `eslint-plugin-sonarjs`, `@typescript-eslint/parser`, 호환 TypeScript를 고정한다. 루트 `package.json`은 만들지 않는다. |
+| 실행 방식 | root script가 metrics tool package의 ESLint/parser/plugin을 로드해 전체 프론트 모집단을 측정한다. |
 | complexity 지위 | `sonarjs/cognitive-complexity`는 Phase 0에서 snapshot/advisory로만 사용한다. CI fail gate는 추가하지 않는다. |
 | metrics schema | schema v2에 분포 지표와 CC 총합·상위 20 합·CC>25 합을 함께 저장하고, 전체 함수 entry를 함수별 diff 입력으로 보존한다. |
 | 재현성 | HEAD/upstream, dirty path, measured-source clean 여부, script/lockfile SHA-256을 snapshot에 기록한다. |
@@ -49,8 +49,9 @@ issue comment/checklist/close는 수행하지 않았다.
 | `scripts/frontend-editor-embed.test.mjs` | `@rhwp/editor` 무의존 iframe/message contract smoke |
 | `scripts/frontend-extension-dist.test.mjs` | Chrome/Firefox dist asset/CSP/WAR/font smoke |
 | `scripts/frontend-wasm-bindings.test.mjs` | Rust 명시 export와 fresh `pkg/rhwp.d.ts` 일치 gate |
-| `rhwp-studio/package.json` | ESLint/sonarjs/parser devDependency 추가 |
-| `rhwp-studio/package-lock.json` | devDependency lock 갱신 |
+| `scripts/frontend-metrics/package.json` | 분석 도구와 호환 TypeScript exact version 고정 |
+| `scripts/frontend-metrics/package-lock.json` | 측정 도구 dependency lock |
+| `rhwp-studio/package.json` | metrics 실행 명령만 제공, 제품 TypeScript 유지 |
 
 ### 공식 산출물
 
@@ -76,7 +77,7 @@ issue comment/checklist/close는 수행하지 않았다.
 
 작업:
 
-- `rhwp-studio/package.json`에 ESLint/sonarjs/parser devDependency를 추가하고 lockfile을 갱신한다.
+- `scripts/frontend-metrics/package.json`에 ESLint/sonarjs/parser와 호환 TypeScript를 고정하고 lockfile을 생성한다.
 - `scripts/frontend-metrics.mjs`를 추가한다.
 - 스크립트는 공식 include/exclude를 코드 상수로 두고, 출력 JSON에 같은 내용을 기록한다.
 - `mydocs/tech/task_m100_2124_frontend_metrics_scope.md`를 작성한다.
@@ -97,6 +98,7 @@ issue comment/checklist/close는 수행하지 않았다.
 검증:
 
 ```bash
+npm ci --prefix scripts/frontend-metrics
 node scripts/frontend-metrics.mjs --help
 node scripts/frontend-metrics.mjs --out output/frontend-metrics/metrics.json --summary output/frontend-metrics/summary.md
 node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json --out /tmp/frontend-metrics-compare.json --summary /tmp/frontend-metrics-compare.md
@@ -229,7 +231,7 @@ rg -n "2124|Phase 0|frontend baseline|SOLID|smoke" mydocs/metrics/frontend/2026-
 |--------|------|
 | ESLint/sonarjs 설치가 네트워크를 요구 | 구현 시작 전 설치 명령을 명시하고, 실패 시 미설치 사유와 대체 방안을 보고 |
 | sonarjs rule 메시지 포맷 의존 | complexity 값과 전체 함수 entry를 schema v2 JSON에 보존하고 self-diff로 검증 |
-| 루트 package 부재 | 새 루트 package를 만들지 않고 `rhwp-studio` devDependency와 root script 조합으로 제한 |
+| 루트 package 부재 | 새 루트 package를 만들지 않고 `scripts/frontend-metrics/` private tool package로 제한 |
 | metrics가 fail gate로 오해됨 | script와 문서에 advisory/snapshot 지위를 명시 |
 | `@rhwp/editor` 무의존 계약 오해 | `@rhwp/editor` package는 변경하지 않고 public contract snapshot만 작성 |
 | stale local `pkg` 오판 | repository Docker build 전 binding test로 stale 상태를 탐지하고, fresh build 후 재검증 |

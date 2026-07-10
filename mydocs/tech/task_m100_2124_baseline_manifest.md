@@ -200,3 +200,30 @@ git rev-parse HEAD upstream/devel
 
 Stage 3 계약 snapshot과 Stage 4 local gate를 완료했다. maintainer/collaborator 리뷰 승인이 확인되기
 전에는 Stage 5 완료, #2124 close 또는 #2125 착수를 선언하지 않는다.
+
+## 12. 리뷰 동기화 addendum
+
+이 manifest의 기준 commit, 도구 hash와 Studio package-lock hash는 `ebf05268`에서 생성한 공식
+snapshot의 historical provenance이므로 수정하지 않는다. 이후 최신 `upstream/devel` rebase에서 Studio가
+TypeScript 7.0.2로 갱신됐고, `@typescript-eslint/parser@8.63.0`의 지원 범위(`<6.1.0`) 및
+`eslint-plugin-sonarjs@4.1.0`의 compiler API 사용 방식과 호환되지 않는 것이 확인됐다.
+
+제품 빌드의 TypeScript 7은 유지하고 측정 의존성은 `scripts/frontend-metrics/` private package로
+분리했다. 최종 리뷰 동기화 환경은 다음 명령으로 설치한다.
+
+```bash
+npm ci --prefix scripts/frontend-metrics
+```
+
+최종 도구는 ESLint 10.6.0, SonarJS 4.1.0, parser 8.63.0, TypeScript 6.0.3을 그대로 사용한다.
+공식 snapshot 자기 비교 결과는 aggregate delta 0, function diff 0이며 기준선 수치는 변하지 않았다.
+리뷰 동기화 시점의 hash는 다음과 같다.
+
+| 항목 | SHA-256 |
+|------|---------|
+| metrics script | `6984e6eb7b019e76c040d98360c403449994da0275d03e4dd0978c8a315a496b` |
+| metrics package-lock | `a7ae3c1a0f3c94700cfe29dc9c363657cb1f675c988446d5dc81b7eeecace5dd` |
+| Studio package-lock | `a9992df61824d3778c206e59ad89ecd8156e2835af728752e9ffc77bee4885dc` |
+
+새 실행 결과의 `tools`에는 `metricsPackageLockSha256`과 `studioPackageLockSha256`을 함께 기록한다.
+따라서 원본 snapshot의 측정 이력과 최종 재현 환경을 구분하면서도 동일 산식을 재현할 수 있다.

@@ -39,11 +39,13 @@
 | eslint-plugin-sonarjs | `4.1.0` |
 | @typescript-eslint/parser | `8.63.0` |
 | TypeScript | `6.0.3` |
-| 의존성 위치 | `rhwp-studio` devDependencies |
+| 의존성 위치 | `scripts/frontend-metrics/` private tool package |
 
-루트에는 `package.json`을 만들지 않는다. 스크립트는 `rhwp-studio/node_modules`의 ESLint,
-sonarjs, parser를 사용한다. 입력은 tracked 파일과 non-ignored untracked 파일을 함께 보며, 출력 인자의
-상대 경로는 실행 cwd와 무관하게 저장소 루트를 기준으로 해석한다.
+루트에는 `package.json`을 만들지 않는다. `npm ci --prefix scripts/frontend-metrics`로 측정 도구만
+설치하고 스크립트는 해당 package의 ESLint, sonarjs, parser, TypeScript를 사용한다. Studio의 제품
+TypeScript 버전과 측정 parser 호환 범위를 분리해 upstream dependency update가 metrics를 깨뜨리지
+않게 한다. 입력은 tracked 파일과 non-ignored untracked 파일을 함께 보며, 출력 인자의 상대 경로는
+실행 cwd와 무관하게 저장소 루트를 기준으로 해석한다.
 
 ## 3. 포함 모집단
 
@@ -161,6 +163,7 @@ Phase A/B 추출 PR에서 CC>25 count가 일시적으로 +1~2 늘 수 있으나 
 다음 명령을 실행해 스크립트 동작을 확인했다.
 
 ```bash
+npm ci --prefix scripts/frontend-metrics
 node scripts/frontend-metrics.mjs --help
 node --check scripts/frontend-metrics.mjs
 node scripts/frontend-metrics.mjs --out output/frontend-metrics/metrics.json --summary output/frontend-metrics/summary.md

@@ -11,12 +11,13 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const STUDIO_DIR = path.join(ROOT, 'rhwp-studio');
-const studioRequire = createRequire(path.join(STUDIO_DIR, 'package.json'));
+const METRICS_DIR = path.join(ROOT, 'scripts/frontend-metrics');
+const metricsRequire = createRequire(path.join(METRICS_DIR, 'package.json'));
 
-const { ESLint } = studioRequire('eslint');
-const sonarjs = studioRequire('eslint-plugin-sonarjs');
-const tsParser = studioRequire('@typescript-eslint/parser');
-const ts = studioRequire('typescript');
+const { ESLint } = metricsRequire('eslint');
+const sonarjs = metricsRequire('eslint-plugin-sonarjs');
+const tsParser = metricsRequire('@typescript-eslint/parser');
+const ts = metricsRequire('typescript');
 
 const DEFAULT_OUT = 'output/frontend-metrics/metrics.json';
 const DEFAULT_SUMMARY = 'output/frontend-metrics/summary.md';
@@ -131,7 +132,7 @@ Default output:
   ${DEFAULT_SUMMARY}
 
 Notes:
-  - Uses rhwp-studio devDependencies for eslint, eslint-plugin-sonarjs, and @typescript-eslint/parser.
+  - Uses the private scripts/frontend-metrics package for analysis dependencies.
   - sonarjs/cognitive-complexity is advisory in Phase 0 and does not act as a fail gate.
   - --compare records aggregate and per-function cognitive-complexity deltas.
 `);
@@ -895,10 +896,10 @@ async function main() {
   const sourceDirtyPaths = measuredSourceDirtyPaths(statusPaths);
   const develCommit = canonicalDevelCommit();
   const packageVersions = {
-    eslint: studioRequire('eslint/package.json').version,
-    eslintPluginSonarjs: studioRequire('eslint-plugin-sonarjs/package.json').version,
-    typescriptEslintParser: studioRequire('@typescript-eslint/parser/package.json').version,
-    typescript: studioRequire('typescript/package.json').version,
+    eslint: metricsRequire('eslint/package.json').version,
+    eslintPluginSonarjs: metricsRequire('eslint-plugin-sonarjs/package.json').version,
+    typescriptEslintParser: metricsRequire('@typescript-eslint/parser/package.json').version,
+    typescript: metricsRequire('typescript/package.json').version,
   };
 
   const data = {
@@ -921,6 +922,7 @@ async function main() {
       arch: process.arch,
       osRelease: os.release(),
       scriptSha256: sha256(readFileSync(SCRIPT_FILE)),
+      metricsPackageLockSha256: sha256(readFileSync(path.join(METRICS_DIR, 'package-lock.json'))),
       studioPackageLockSha256: sha256(readFileSync(path.join(STUDIO_DIR, 'package-lock.json'))),
     },
     thresholds: {

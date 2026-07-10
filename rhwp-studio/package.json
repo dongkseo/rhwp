@@ -21,9 +21,6 @@
   },
   "devDependencies": {
     "@types/chrome": "^0.2.2",
-    "@typescript-eslint/parser": "^8.63.0",
-    "eslint": "^10.6.0",
-    "eslint-plugin-sonarjs": "^4.1.0",
     "puppeteer-core": "^25.3.0",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
