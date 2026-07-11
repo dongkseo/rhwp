@@ -173,5 +173,29 @@ workflow를 다시 실행했다.
 - CodeQL Rust analyze: PASS, 8분 44초
 
 최신 upstream에서도 frontend consumer gate와 기존 required surface가 모두 통과했다. 이 보고서 갱신만 담은
-후속 commit을 review-only 후보로 사용해, candidate run의 `Build & Test=completed/success`를 Actions Jobs
-fallback이 식별하고 `fast_pass=true`로 전환하는지 최종 실측한다.
+후속 commit을 review-only 후보로 사용해, candidate run의 `Build & Test=completed/success`를 우선
+Check Runs 경로 또는 Actions Jobs fallback이 식별하고 `fast_pass=true`로 전환하는지 최종 실측한다.
+
+## 11. review-only fast-pass 최종 실측
+
+위 보고서 갱신만 담은 commit `36bfb223`의 CI run에서 review-only fast-pass가 정상 동작했다.
+
+- CI run: `https://github.com/edwardkim/rhwp/actions/runs/29159065890`
+- candidate SHA: `c81a4af4b2279c2641cb34a80daaecbb1ec41dde`
+- preflight: PASS, 4초
+- `fast_pass=true`
+- reason: `build-and-test-green:success`
+- `Build default-feature tests`: SKIP
+- `Native Skia tests`: SKIP
+- `Frontend package gates`: SKIP
+- `Build & Test`: PASS, 3초
+- Render Diff와 CodeQL: review-only fast-pass로 worker SKIP
+
+이번 run에서는 candidate의 Check Runs API가 정상 노출되어 기존 우선 경로가 선택됐다. 따라서 Actions Jobs
+fallback의 GitHub 실측을 인위적으로 만들지는 않았고, fork run의 check-run 부재를 재현한 fixture를 포함한
+8건의 추출 script 검증으로 보완했다. fallback은 exact workflow, event, branch, `head_sha`, aggregate job의
+`completed/success`를 모두 요구하며, 누락·진행·실패·API 오류에서는 full CI로 닫힌다.
+
+결론적으로 최신 upstream의 전체 CI와 후속 review-only fast-pass가 모두 PASS했다. #2183의 구현·로컬 gate·
+GitHub Actions 실측 범위에서 남은 실패는 없으며, trusted `devel` push의 frontend cargo cache save만 merge 후
+관찰 항목으로 남는다.
