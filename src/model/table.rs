@@ -186,7 +186,11 @@ impl Cell {
         allow_saved_small_cell_margin: bool,
     ) -> bool {
         if self.apply_inner_margin {
-            return cell_padding != 0;
+            // [#2070] aim=true 의 0 은 사용자가 지정한 셀 고유 안 여백 — 존중한다
+            // (한글 PDF 실측: 시장구조조사 c0 pad=(0,0) 코드 폭 37.0px > 표 폴백
+            // inner 26.5px — 표 패딩 폴백이면 물리적으로 1줄 불가). 음수는 결측
+            // 센티널로 보고 표 패딩 폴백 유지.
+            return cell_padding >= 0;
         }
         if cell_padding <= table_padding {
             return false;

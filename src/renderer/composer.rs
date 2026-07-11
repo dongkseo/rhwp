@@ -1514,17 +1514,49 @@ pub fn recompose_for_cell_width(
         let g_first = if gi == 0 { eff_first_px } else { eff_cont_px };
         let start = composed.lines.len();
         let total_width = estimate_composed_line_width(&combined_line, styles);
-        if total_width <= g_first + 0.5 {
+        // [#2070] 행미 공백 hanging — 한글은 줄 끝 공백을 폭 판정에서 제외한다.
+        // trailing 공백 포함 폭으로 분할하면 공백만의 유령 둘째 줄이 생겨
+        // NO_LS 셀 행높이가 배가된다 (시장구조조사 "100.0␣␣" 22→50.4px,
+        // 2195행 × 4표 → +291쪽의 본류).
+        let trailing_space_w: f64 = {
+            let mut w = 0.0;
+            'outer: for run in combined_line.runs.iter().rev() {
+                let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
+                for ch in run.text.chars().rev() {
+                    if ch == ' ' {
+                        w += estimate_text_width(" ", &ts);
+                    } else {
+                        break 'outer;
+                    }
+                }
+            }
+            w
+        };
+        if total_width - trailing_space_w <= g_first + 0.5 {
             composed.lines.push(combined_line);
         } else {
-            composed.lines.extend(split_composed_line_by_width(
+            let mut frags = split_composed_line_by_width(
                 &combined_line,
                 g_first,
                 eff_cont_px,
                 styles,
                 char_break,
                 space_condense,
-            ));
+            );
+            // 분할 결과의 공백-단독 조각도 hanging — 직전 조각에 흡수한다.
+            let mut folded: Vec<ComposedLine> = Vec::with_capacity(frags.len());
+            for frag in frags.drain(..) {
+                let ws_only = !frag.runs.is_empty()
+                    && frag.runs.iter().all(|r| r.text.chars().all(|c| c == ' '));
+                if ws_only {
+                    if let Some(prev) = folded.last_mut() {
+                        prev.runs.extend(frag.runs);
+                        continue;
+                    }
+                }
+                folded.push(frag);
+            }
+            composed.lines.extend(folded);
         }
         if composed.lines.len() > start && ends_with_break {
             if let Some(last) = composed.lines.last_mut() {
