@@ -1,7 +1,7 @@
 # 프론트 metrics 요약
 
-- generatedAt: 2026-07-11T03:01:51.538Z
-- commit: 6f1bd284b751aa861b161e9b648c7bb394b4fa84
+- generatedAt: 2026-07-11T06:14:26.268Z
+- commit: acc841c92522b984cf65c8814105d940c508a326
 - measured source clean: true
 - advisory: Phase 0 기준선 고정용 snapshot이며 CI fail gate가 아니다.
 

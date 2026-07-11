@@ -4,7 +4,7 @@
 - 상위 umbrella: #2022
 - 선행 계획 이슈: #2023
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
 - 작성일: 2026-07-10
 - 단계: Phase 0 baseline freeze / Stage 3
 

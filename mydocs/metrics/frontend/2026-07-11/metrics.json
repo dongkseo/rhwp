@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-11T03:01:51.538Z",
+  "generatedAt": "2026-07-11T06:14:26.268Z",
   "advisory": "Phase 0 snapshot only. Do not use as a fail gate before baseline approval.",
   "snapshotPath": "mydocs/metrics/frontend/2026-07-11/metrics.json",
   "git": {
-    "headCommit": "6f1bd284b751aa861b161e9b648c7bb394b4fa84",
-    "upstreamDevelCommit": "6f1bd284b751aa861b161e9b648c7bb394b4fa84",
+    "headCommit": "acc841c92522b984cf65c8814105d940c508a326",
+    "upstreamDevelCommit": "acc841c92522b984cf65c8814105d940c508a326",
     "clean": false,
     "dirtyPaths": [
       "scripts/frontend-metrics.mjs",

@@ -4,7 +4,7 @@
 - 단계: Stage 2 - 공식 metrics snapshot
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
 - 선행 단계: `mydocs/working/task_m100_2124_stage1.md`
 
 ## 1. 완료 요약
@@ -44,7 +44,7 @@ schema v2 공식 frontend metrics snapshot과 재현성 manifest를 저장했다
 | metrics script SHA-256 | `6984e6eb7b019e76c040d98360c403449994da0275d03e4dd0978c8a315a496b` |
 | metrics lock SHA-256 | `a7ae3c1a0f3c94700cfe29dc9c363657cb1f675c988446d5dc81b7eeecace5dd` |
 | Studio lock SHA-256 | `a9992df61824d3778c206e59ad89ecd8156e2835af728752e9ffc77bee4885dc` |
-| `HEAD` / `upstream/devel` | `6f1bd284b751aa861b161e9b648c7bb394b4fa84` |
+| `HEAD` / `upstream/devel` | `acc841c92522b984cf65c8814105d940c508a326` |
 | 측정 대상 source | clean |
 
 snapshot은 advisory다. 후속 PR은 schema v2 `--compare` 결과를 제공하되 사전 리뷰 없이 threshold를

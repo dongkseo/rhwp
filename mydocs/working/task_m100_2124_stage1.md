@@ -4,7 +4,7 @@
 - 단계: Stage 1 - metrics 도구와 모집단 고정
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
 - 선행 구현 계획: `mydocs/plans/task_m100_2124_impl.md`
 
 ## 1. 완료 요약

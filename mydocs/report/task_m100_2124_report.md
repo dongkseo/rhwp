@@ -6,7 +6,7 @@
 - 선행 문서 PR: #2080
 - 브랜치: `task2124-frontend-baseline`
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
 - 작성일: 2026-07-10
 - 상태: maintainer 최종 승인 / 최신 devel 재검증 후 merge
 
@@ -109,11 +109,17 @@ maintainer WSL2 재현에서도 당시 metrics 총량 3종 11,774 / 2,581 / 3,90
 |-----------|------|
 | `upstream/devel` 하드코딩 | `upstream/devel` → `origin/devel` → 속성 생략 fallback 적용 |
 | `orders/20260710.md` 충돌 | 최신 `upstream/devel` rebase, 원격 기록 유지 후 #2124 섹션 append |
+| metrics 전용 `node_modules` 잔류 | `scripts/frontend-metrics/.gitignore`에 `node_modules/` 추가, `npm ci` 후 clean 상태 확인 |
 
 dependency-only 전진분에서는 기존 snapshot을 보존했다. 최종 #2188 전진분은 실제 Studio source와
 Rust policy를 바꾸므로 `6f1bd284`의 measured source clean 상태에서 공식 snapshot을 재생성했다.
 직전 snapshot 비교에서 Total CC +14와 두 함수 diff를 확인한 뒤 새 기준선 자기 비교 delta 0을
 확인했다. Rust 변경도 포함되므로 fresh WASM과 consumer gate를 다시 실행했다.
+
+그 뒤 `acc841c9` 전진분은 `mydocs/manual/memory/`만 바꾼 문서 전용 커밋이었다. 최신 devel provenance를
+맞추기 위해 공식 snapshot을 다시 생성했고 모든 정량 지표와 함수별 diff가 0-delta임을 확인했다.
+frontend/Rust/package 입력이 변하지 않았으므로 `6f1bd284`에서 통과한 fresh WASM consumer gate는
+재실행하지 않았다.
 
 원격 Chrome/Firefox/Studio Vite·TypeScript dependency update와 metrics 의존성이 함께 보존됐으며,
 최종 head의 CI·merge 상태는 PR #2174 checks를 실시간 source of truth로 사용한다.

@@ -4,7 +4,7 @@
 - 단계: Stage 4 - local gate 완료 / maintainer 승인
 - 작성일: 2026-07-10
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
 - 관련 산출물:
   - `mydocs/metrics/frontend/2026-07-11/metrics.json`
   - `mydocs/tech/task_m100_2124_baseline_manifest.md`

@@ -5,7 +5,7 @@
 - 상태: maintainer 최종 승인 / 최신 devel 재검증 후 merge
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
+- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
 - 선행 단계: `mydocs/working/task_m100_2124_stage4.md`
 
 ## 1. 현재 상태
@@ -13,7 +13,7 @@
 draft PR #2174를 생성했고, maintainer가 metrics·contract/gate·SOLID 미채점·후속 순서 네 안건을
 모두 승인했다. maintainer WSL2에서도 metrics 총량 3종과 함수별 자기 비교가 재현됐고, stale binding
 검출 후 repo Docker fresh WASM으로 consumer gate가 통과했다. merge 전 경미 수정은 metrics remote
-fallback과 최신 devel rebase 두 건이다.
+fallback, 최신 devel rebase, metrics 전용 `node_modules` ignore다.
 
 최신 `upstream/devel` rebase에서 원격의 0.7.18 릴리즈 기록과 Chrome/Firefox/Studio Vite·TypeScript
 dependency update를 유지한 뒤 #2124 변경을 적용했다. metrics 도구는 `upstream/devel`, `origin/devel`
@@ -30,6 +30,14 @@ metrics 의존성을 `scripts/frontend-metrics/` private package로 분리해 Ty
 snapshot 대비 Total CC +14가 `renderTextRun` +16, `recordTextRunCoverageGaps` -2로 설명됐으며,
 Top 20과 CC>25/100은 변하지 않았다. 공식 기준선을 `6f1bd284`로 재생성하고 fresh WASM gate를 다시
 적용했다.
+
+그 뒤 `acc841c9`는 `mydocs/manual/memory/`만 바꾼 문서 전용 전진분이었다. 최신 devel로 다시
+rebase하고 공식 snapshot provenance를 갱신했으며 정량 지표와 함수별 diff가 모두 0-delta임을
+확인했다. frontend/Rust/package 입력이 동일하므로 fresh WASM gate는 재실행하지 않았다.
+
+maintainer 후속 요청대로 `scripts/frontend-metrics/.gitignore`의 `node_modules/` 패턴을 확인했다.
+이 패턴은 현재 head에 포함돼 있으며 `npm ci --prefix scripts/frontend-metrics` 후 의존성 디렉터리가
+Git status에 남지 않는 것을 검증했다.
 
 ## 2. 현재 판단
 
