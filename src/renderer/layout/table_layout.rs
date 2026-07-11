@@ -491,6 +491,9 @@ struct HorizontalCellVars {
     inner_height: f64,
     text_y_start: f64,
     use_top_vpos_anchor: bool,
+    /// [Task #2211] 저장 LINE_SEG 흐름이 자체 스택 합보다 압축된 셀 —
+    /// 문단 배치를 저장 vpos 스냅으로 강제한다 (valign 무관).
+    trust_stored_cell_flow: bool,
     has_nested_table: bool,
     section_index: usize,
     outline_numbering_id: u16,
@@ -896,8 +899,14 @@ impl LayoutEngine {
 
         // ── 1. 열 폭 + 행 높이 계산 ──
         let col_widths = self.resolve_column_widths(table, col_count);
-        let row_heights =
-            self.resolve_row_heights(table, col_count, row_count, measured_table, styles);
+        let row_heights = self.resolve_row_heights(
+            table,
+            col_count,
+            row_count,
+            measured_table,
+            styles,
+            depth > 0 || table.common.treat_as_char,
+        );
 
         // ── 2. 누적 위치 계산 ──
         let mut col_x = vec![0.0f64; col_count + 1];
@@ -1551,6 +1560,7 @@ impl LayoutEngine {
         row_count: usize,
         measured_table: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
+        relaxed_pad: bool,
     ) -> Vec<f64> {
         self.resolve_row_heights_with_common_fit(
             table,
@@ -1559,6 +1569,7 @@ impl LayoutEngine {
             measured_table,
             styles,
             true,
+            relaxed_pad,
         )
     }
 
@@ -1569,6 +1580,7 @@ impl LayoutEngine {
         row_count: usize,
         measured_table: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
+        relaxed_pad: bool,
     ) -> Vec<f64> {
         self.resolve_row_heights_with_common_fit(
             table,
@@ -1577,7 +1589,20 @@ impl LayoutEngine {
             measured_table,
             styles,
             false,
+            relaxed_pad,
         )
+    }
+
+    /// [Task #2211] 셀의 전 문단이 저장 LINE_SEG 를 보유하는지 — 보유 셀은
+    /// 한컴이 저장 시 셀 h 를 콘텐츠에 맞춰 확정했으므로 행 성장 판정에서
+    /// 저장 지오메트리를 그대로 신뢰한다 (#2112 계보). 합성 seg(tag bit31)는
+    /// 저장으로 치지 않는다 — height_measurer 와 동일 술어.
+    fn cell_has_stored_line_segs(cell: &crate::model::table::Cell) -> bool {
+        !cell.paragraphs.is_empty()
+            && cell
+                .paragraphs
+                .iter()
+                .all(|p| !crate::renderer::para_has_no_stored_line_segs(p))
     }
 
     fn resolve_row_heights_with_common_fit(
@@ -1588,6 +1613,7 @@ impl LayoutEngine {
         measured_table: Option<&MeasuredTable>,
         styles: &ResolvedStyleSet,
         fit_common_height: bool,
+        relaxed_pad: bool,
     ) -> Vec<f64> {
         if let Some(mt) = measured_table {
             let mut rh = mt.row_heights.clone();
@@ -1625,17 +1651,36 @@ impl LayoutEngine {
                 let (pad_left, pad_right, pad_top, pad_bottom) =
                     self.resolve_cell_padding(cell, table);
 
-                let content_height = if cell.text_direction != 0 {
+                // LINE_SEG의 line_height에 이미 셀 내 중첩 표 높이가 반영되어 있으므로
+                // controls_height를 별도로 더하면 이중 계산됨
+                // [Task #2211] 저장 LINE_SEG 보유 셀의 줄 흐름은 성장 판정에 pad 를
+                // 더하지 않는다 — 한컴 저장 h 는 콘텐츠에 꽉 맞게 저장되며(빈 셀
+                // lh=h), pad 가산 시 그런 행마다 +pad 상하합(주보 p1: 행당 +282HU)씩
+                // 부풀어 하단이 절단된다. 개체 기반 지오메트리(Square bottom 등,
+                // #1486 p19)와 LINE_SEG 부재(합성 줄) 셀은 pad 포함 유지.
+                let required_height = if cell.text_direction != 0 {
                     // 세로쓰기: line_seg.segment_width가 열의 세로 길이
-                    self.calc_vertical_cell_content_height(&cell.paragraphs)
+                    self.calc_vertical_cell_content_height(&cell.paragraphs) + pad_top + pad_bottom
                 } else {
                     let cell_w_px = hwpunit_to_px(cell.width as i32, self.dpi);
                     let inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
-                    self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles, inner_width)
+                    let (line_based, object_based) = self.calc_cell_paragraphs_content_parts(
+                        &cell.paragraphs,
+                        styles,
+                        inner_width,
+                    );
+                    let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
+                        line_based
+                    } else {
+                        line_based + pad_top + pad_bottom
+                    };
+                    let object_req = if object_based > 0.0 {
+                        object_based + pad_top + pad_bottom
+                    } else {
+                        0.0
+                    };
+                    line_req.max(object_req)
                 };
-                // LINE_SEG의 line_height에 이미 셀 내 중첩 표 높이가 반영되어 있으므로
-                // controls_height를 별도로 더하면 이중 계산됨
-                let required_height = content_height + pad_top + pad_bottom;
                 if required_height > row_heights[r] {
                     row_heights[r] = required_height;
                 }
@@ -1707,11 +1752,23 @@ impl LayoutEngine {
                     self.resolve_cell_padding(cell, table);
                 let cell_w_px = hwpunit_to_px(cell.width as i32, self.dpi);
                 let inner_width = (cell_w_px - pad_left - pad_right).max(0.0);
-                let content_height =
-                    self.calc_cell_paragraphs_content_height(&cell.paragraphs, styles, inner_width);
                 // LINE_SEG의 line_height에 이미 셀 내 중첩 표 높이가 반영되어 있으므로
                 // controls_height를 별도로 더하면 이중 계산됨
-                let required_height = content_height + pad_top + pad_bottom;
+                // [Task #2211] 1-b 와 동일 — 저장 LINE_SEG 줄 흐름은 pad 미가산,
+                // 개체 기반 지오메트리는 pad 가산 유지.
+                let (line_based, object_based) =
+                    self.calc_cell_paragraphs_content_parts(&cell.paragraphs, styles, inner_width);
+                let line_req = if relaxed_pad && Self::cell_has_stored_line_segs(cell) {
+                    line_based
+                } else {
+                    line_based + pad_top + pad_bottom
+                };
+                let object_req = if object_based > 0.0 {
+                    object_based + pad_top + pad_bottom
+                } else {
+                    0.0
+                };
+                let required_height = line_req.max(object_req);
                 let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum();
                 if required_height > combined {
                     let deficit = required_height - combined;
@@ -1763,6 +1820,21 @@ impl LayoutEngine {
         styles: &ResolvedStyleSet,
         cell_inner_width_px: f64,
     ) -> f64 {
+        let (line_based, object_based) =
+            self.calc_cell_paragraphs_content_parts(paragraphs, styles, cell_inner_width_px);
+        line_based.max(object_based)
+    }
+
+    /// [Task #2211] 셀 콘텐츠 높이를 (줄 기반, 개체 기반)으로 분리 반환.
+    /// 행 성장 판정에서 저장 LINE_SEG 줄 흐름은 pad 미가산, 개체(중첩 표·
+    /// TopAndBottom flow·Square bottom) 지오메트리는 pad 가산이 한컴 정합 —
+    /// 두 축의 pad 취급이 다르다 (#1486 p19 Square 그림 캘리브레이션).
+    pub(crate) fn calc_cell_paragraphs_content_parts(
+        &self,
+        paragraphs: &[Paragraph],
+        styles: &ResolvedStyleSet,
+        cell_inner_width_px: f64,
+    ) -> (f64, f64) {
         let cell_para_count = paragraphs.len();
         let line_based_height: f64 = paragraphs
             .iter()
@@ -1790,10 +1862,11 @@ impl LayoutEngine {
                 )
             })
             .sum();
-        line_based_height
-            .max(self.calc_nested_controls_bottom_height(paragraphs, styles))
+        let object_based = self
+            .calc_nested_controls_bottom_height(paragraphs, styles)
             .max(self.calc_non_inline_controls_flow_height(paragraphs))
-            .max(self.calc_cell_wrap_objects_bottom_height(paragraphs))
+            .max(self.calc_cell_wrap_objects_bottom_height(paragraphs));
+        (line_based_height, object_based)
     }
 
     /// pre-composed 문단들의 콘텐츠 높이 합산 (compose 생략)
@@ -2488,6 +2561,7 @@ impl LayoutEngine {
             inner_height,
             text_y_start,
             use_top_vpos_anchor,
+            trust_stored_cell_flow,
             has_nested_table,
             section_index,
             outline_numbering_id,
@@ -2548,8 +2622,9 @@ impl LayoutEngine {
             // 문서는 한컴이 각 문단 top을 vpos로 고정해 둔다. 누적 y만 쓰면
             // spacing_before가 중복되거나 음수 line_spacing이 누적되어 줄 위치가
             // 점점 어긋난다.
-            let use_saved_cell_para_vpos =
-                use_top_vpos_anchor || has_initial_tac_shape_host(&cell.paragraphs);
+            let use_saved_cell_para_vpos = use_top_vpos_anchor
+                || trust_stored_cell_flow
+                || has_initial_tac_shape_host(&cell.paragraphs);
             if use_saved_cell_para_vpos && !has_nested_table {
                 if let Some(first_seg) = para.line_segs.first() {
                     if first_seg.vertical_pos >= 0 {
@@ -4012,6 +4087,41 @@ impl LayoutEngine {
                 .first()
                 .and_then(|p| p.line_segs.first())
                 .map(|ls| hwpunit_to_px(ls.vertical_pos, self.dpi));
+            // [Task #2211] 저장 LINE_SEG 흐름 extent(각 seg 의 vpos+lh 최댓값)가
+            // 자체 스택 합(total_content_height)보다 작으면 — 예: 악보 셀처럼
+            // 빈 앵커 줄이 TopAndBottom 그림 높이에 흡수된 문서 — 한컴 저장
+            // 지오메트리를 신뢰한다: 정렬 기준 콘텐츠 높이를 저장 extent 로
+            // 바꾸고, 문단 배치도 저장 vpos 스냅을 강제한다 (한컴 실측:
+            // 가사 top = 셀 top + pad + 센터 오프셋(저장 extent 기준) + vpos).
+            let stored_flow_extent = if !has_nested_table
+                && !cell.paragraphs.is_empty()
+                && cell.paragraphs.iter().all(|p| !p.line_segs.is_empty())
+            {
+                cell.paragraphs
+                    .iter()
+                    .flat_map(|p| p.line_segs.iter())
+                    .filter(|s| s.vertical_pos >= 0 && s.line_height > 0)
+                    .map(|s| hwpunit_to_px(s.vertical_pos + s.line_height, self.dpi))
+                    .fold(0.0f64, f64::max)
+            } else {
+                0.0
+            };
+            // Square/중첩 표 등 비-flow 개체의 시각 bottom 은 저장 LINE_SEG 흐름에
+            // 포함되지 않으므로(#1486 p19 Square 그림), 그런 개체가 저장 extent 를
+            // 넘는 셀은 저장 흐름 신뢰 대상이 아니다 — TopAndBottom flow 개체만
+            // 저장 vpos 에 흡수된다(악보 셀).
+            let non_flow_object_extent = self
+                .calc_nested_controls_bottom_height(&cell.paragraphs, styles)
+                .max(self.calc_cell_wrap_objects_bottom_height(&cell.paragraphs));
+            let trust_stored_cell_flow = (depth > 0 || table.common.treat_as_char)
+                && stored_flow_extent > 0.0
+                && stored_flow_extent + 0.5 < total_content_height
+                && non_flow_object_extent <= stored_flow_extent + 0.5;
+            let total_content_height = if trust_stored_cell_flow {
+                stored_flow_extent
+            } else {
+                total_content_height
+            };
             let use_top_vpos_anchor = matches!(effective_valign, VerticalAlign::Top);
             let text_y_start = if use_top_vpos_anchor
                 && !has_nested_table
@@ -4082,6 +4192,7 @@ impl LayoutEngine {
                         inner_height,
                         text_y_start,
                         use_top_vpos_anchor,
+                        trust_stored_cell_flow,
                         has_nested_table,
                         section_index,
                         outline_numbering_id,
@@ -4161,7 +4272,7 @@ impl LayoutEngine {
     ) -> f64 {
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
-        let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles);
+        let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles, true);
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
         let om_top = hwpunit_to_px(table.outer_margin_top as i32, self.dpi);
         let om_bottom = hwpunit_to_px(table.outer_margin_bottom as i32, self.dpi);
@@ -5136,9 +5247,9 @@ impl LayoutEngine {
                         .iter()
                         .all(|c| c.paragraphs.iter().all(|p| p.line_segs.is_empty()));
                     let rhs = if nt_all_no_ls {
-                        self.resolve_row_heights(nt, ncol, nrow, None, styles)
+                        self.resolve_row_heights(nt, ncol, nrow, None, styles, true)
                     } else {
-                        self.resolve_row_heights_for_content(nt, ncol, nrow, None, styles)
+                        self.resolve_row_heights_for_content(nt, ncol, nrow, None, styles, true)
                     };
                     let ncs = hwpunit_to_px(nt.cell_spacing as i32, self.dpi);
                     let om_top = hwpunit_to_px(nt.outer_margin_top as i32, self.dpi);

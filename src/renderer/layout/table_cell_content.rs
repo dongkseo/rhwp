@@ -466,7 +466,7 @@ impl LayoutEngine {
         }
 
         // 행 높이 계산 (layout_table과 동일한 resolve_row_heights 사용)
-        let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles);
+        let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles, true);
 
         // 누적 위치 계산
         let mut col_x = vec![0.0f64; col_count + 1];

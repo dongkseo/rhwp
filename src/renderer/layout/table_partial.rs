@@ -1251,6 +1251,7 @@ impl LayoutEngine {
                                                 nrow,
                                                 None,
                                                 styles,
+                                                true,
                                             );
                                             let ncs = hwpunit_to_px(
                                                 nested_table.cell_spacing as i32,
@@ -1281,6 +1282,7 @@ impl LayoutEngine {
                                                 nrow,
                                                 None,
                                                 styles,
+                                                true,
                                             );
                                             let ncell_spacing = hwpunit_to_px(
                                                 nested_table.cell_spacing as i32,
@@ -1486,8 +1488,14 @@ impl LayoutEngine {
 
         // ── 1. 열 폭 계산 + 2. 행 높이 계산 (table_layout 공유 메서드) ──
         let col_widths = self.resolve_column_widths(table, col_count);
-        let mut row_heights =
-            self.resolve_row_heights(table, col_count, row_count, measured_table, styles);
+        let mut row_heights = self.resolve_row_heights(
+            table,
+            col_count,
+            row_count,
+            measured_table,
+            styles,
+            table.common.treat_as_char,
+        );
         // [Task #1748] 컷 걸침 rowspan 셀의 이전 프래그먼트 소비 높이 재계산용 —
         // 2b 컷 오버라이드 이전의 원본 행 높이 (프래그먼트 무관 값).
         let resolved_row_heights = row_heights.clone();
