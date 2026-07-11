@@ -4,7 +4,7 @@
 - 단계: Stage 4 - frontend SOLID evidence
 - 작성일: 2026-07-10
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 기준 문서: `mydocs/manual/solid_scoring_guide.md`
 - metrics snapshot: `mydocs/metrics/frontend/2026-07-11/metrics.json`
 - 공식 SOLID 점수: 미채점
@@ -25,12 +25,12 @@
 | 항목 | 값 |
 |------|----:|
 | 공식 snapshot 제품 파일 수 | 203 |
-| 제품 함수 / CC가 보고된 함수 | 4,725 / 2,280 |
-| Total CC / 전체 Top 20 합 | 11,788 / 2,581 |
-| CC>25 함수 수 / 합 | 61 / 3,901 |
+| 제품 함수 / CC가 보고된 함수 | 4,728 / 2,282 |
+| Total CC / 전체 Top 20 합 | 11,805 / 2,581 |
+| CC>25 함수 수 / 합 | 62 / 3,932 |
 | CC>100 함수 수 / 합 | 6 / 1,732 |
 | metrics parse/fatal diagnostics | 0 |
-| Studio runtime code lines / Total CC | 53,921 / 9,488 |
+| Studio runtime code lines / Total CC | 54,007 / 9,505 |
 | Studio CC>25 / Max CC | 46 / 453 |
 | legacy `/web` code lines / Total CC | 5,795 / 828 |
 | legacy `/web` CC>25 / Max CC | 4 / 86 |

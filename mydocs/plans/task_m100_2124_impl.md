@@ -6,7 +6,7 @@
 - 선행 문서 PR: #2080
 - 브랜치: `task2124-frontend-baseline`
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 작성일: 2026-07-10
 - 단계: 구현 계획서
 - 선행 수행 계획서: `mydocs/plans/task_m100_2124.md`
@@ -112,7 +112,7 @@ node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json
 
 작업:
 
-- 기준 커밋 `acc841c9`의 measured source가 clean인 상태에서 Stage 1 metrics 명령을 실행한다.
+- 기준 커밋 `3077f96d`의 measured source가 clean인 상태에서 Stage 1 metrics 명령을 실행한다.
 - `mydocs/metrics/frontend/2026-07-11/metrics.json`을 저장한다.
 - `mydocs/metrics/frontend/2026-07-11/summary.md`를 저장한다.
 - `mydocs/tech/task_m100_2124_baseline_manifest.md`에 OS, Node/npm, 브라우저 후보, font path, 제외군,

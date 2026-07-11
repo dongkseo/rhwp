@@ -4,7 +4,7 @@
 - 단계: Stage 4 - local gate 완료 / maintainer 승인
 - 작성일: 2026-07-10
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 관련 산출물:
   - `mydocs/metrics/frontend/2026-07-11/metrics.json`
   - `mydocs/tech/task_m100_2124_baseline_manifest.md`
@@ -35,7 +35,7 @@ fresh output에서 build되는지 확인한다.
 | Docker client / server | `29.4.0` / `29.2.1` |
 | Docker Compose | `5.1.3` |
 | build command | `docker-compose --env-file .env.docker run --rm wasm` |
-| build result | PASS, release profile + `wasm-opt`, 약 2분 20초 |
+| build result | PASS, release profile + `wasm-opt`, 약 1분 56초 |
 
 로컬 `wasm-pack`을 직접 실행하지 않고 repository Docker service를 사용했다. 생성된 `pkg/`와 package
 `dist/`는 ignored build output이며 commit하지 않는다.
@@ -58,6 +58,10 @@ fresh output에서 build되는지 확인한다.
 Rust 렌더·편집·cursor rect 변경이 포함돼 repository Docker service로 WASM을 다시 생성했고, 최종
 binding과 모든 consumer gate를 그 output에서 재검증했다.
 
+최신 `3077f96d`에도 #2184/#2191의 Rust renderer/layout과 Studio CanvasKit 변경이 포함돼 fresh WASM을
+다시 생성했다. binding/editor, Studio build·unit, VS Code compile, Chrome/Firefox build, extension dist와
+renderer contract를 같은 output에서 재검증했다.
+
 ## 5. 실행 결과
 
 | 명령 | 결과 | 비고 |
@@ -70,6 +74,7 @@ binding과 모든 consumer gate를 그 output에서 재검증했다.
 | `npm --prefix rhwp-chrome run build` | PASS | fresh WASM과 36 fonts copy |
 | `npm --prefix rhwp-firefox run build` | PASS | fresh WASM과 36 fonts copy |
 | `node --test scripts/frontend-extension-dist.test.mjs` | PASS, 3 tests | manifest/CSP/WAR/inline script/font/WASM dist contract |
+| `npm --prefix rhwp-studio run e2e:renderer-contract` | PASS | #2184/#2191 CanvasKit 변경 선택 gate |
 
 Chrome/Firefox build의 Vite externalization, asset runtime resolution, chunk-size 메시지는 warning이며 build를
 실패시키지 않았다.

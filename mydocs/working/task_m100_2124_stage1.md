@@ -4,7 +4,7 @@
 - 단계: Stage 1 - metrics 도구와 모집단 고정
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `upstream/devel` `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 선행 구현 계획: `mydocs/plans/task_m100_2124_impl.md`
 
 ## 1. 완료 요약
@@ -45,8 +45,8 @@
 | 항목 | 값 |
 |------|---:|
 | 포함 제품 파일 | 203 |
-| Total CC / 전체 Top 20 합 | 11,788 / 2,581 |
-| CC>25 count / sum | 61 / 3,901 |
+| Total CC / 전체 Top 20 합 | 11,805 / 2,581 |
+| CC>25 count / sum | 62 / 3,932 |
 | CC>100 count / sum | 6 / 1,732 |
 | Max CC | 453 |
 | parse/fatal diagnostics | 0 |

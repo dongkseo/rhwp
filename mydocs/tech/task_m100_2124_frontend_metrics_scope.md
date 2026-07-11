@@ -2,7 +2,7 @@
 
 - 이슈: #2124
 - 작성일: 2026-07-10
-- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `upstream/devel` `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 관련 계획: `mydocs/plans/task_m100_2124.md`
 - 구현 계획: `mydocs/plans/task_m100_2124_impl.md`
 - 측정 스크립트: `scripts/frontend-metrics.mjs`
@@ -176,10 +176,10 @@ node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json
 |------|---:|
 | schema | 2 |
 | 포함 파일 | 203 |
-| CC 총합 | 11,788 |
+| CC 총합 | 11,805 |
 | 상위 20 합 | 2,581 |
-| CC>25 | 61 |
-| CC>25 합 | 3,901 |
+| CC>25 | 62 |
+| CC>25 합 | 3,932 |
 | CC>100 | 6 |
 | ESLint diagnostics | 0 |
 
@@ -192,5 +192,10 @@ functions는 4,720에서 4,725로, Total CC는 11,768에서 11,774로 변했다.
 `renderTextRun` +16과 `recordTextRunCoverageGaps` -2를 식별했고 Top 20 및 CC>25/100 지표는 변하지
 않았다. 이어진 `acc841c9`는 측정 대상 밖의 문서 전용 변경이므로 모든 지표와 함수별 diff가 0-delta였다.
 공식 snapshot은 최신 upstream provenance를 포함한 `acc841c9` 기준으로 다시 생성했다.
+
+그 뒤 `3077f96d`의 #2184/#2191이 Studio CanvasKit source를 변경해 code lines 67,155, functions 4,728,
+Total CC 11,805, CC>25 62개/합 3,932가 됐다. `acc841c9` 대비 Total CC +17은 네 함수 diff로 전부
+설명됐고 Top 20, CC>100, Max는 변하지 않았다. 공식 snapshot은 이 최신 upstream을 새 영점으로
+재생성했다.
 
 같은 산식으로 Stage 2 공식 baseline을 `mydocs/metrics/frontend/2026-07-11/`에 저장했다.

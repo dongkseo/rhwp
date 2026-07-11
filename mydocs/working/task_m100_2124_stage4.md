@@ -5,7 +5,7 @@
 - 상태: 로컬 완료 / maintainer 승인
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `acc841c92522b984cf65c8814105d940c508a326`
+- 기준 커밋: `upstream/devel` `3077f96d1f9931c50d6d62be77b389d4f66470a9`
 - 선행 단계: `mydocs/working/task_m100_2124_stage3.md`
 
 ## 1. 완료 요약

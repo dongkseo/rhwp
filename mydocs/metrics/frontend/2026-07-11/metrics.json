@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-07-11T06:14:26.268Z",
+  "generatedAt": "2026-07-11T06:21:30.736Z",
   "advisory": "Phase 0 snapshot only. Do not use as a fail gate before baseline approval.",
   "snapshotPath": "mydocs/metrics/frontend/2026-07-11/metrics.json",
   "git": {
-    "headCommit": "acc841c92522b984cf65c8814105d940c508a326",
-    "upstreamDevelCommit": "acc841c92522b984cf65c8814105d940c508a326",
+    "headCommit": "3077f96d1f9931c50d6d62be77b389d4f66470a9",
+    "upstreamDevelCommit": "3077f96d1f9931c50d6d62be77b389d4f66470a9",
     "clean": false,
     "dirtyPaths": [
       "scripts/frontend-metrics.mjs",
@@ -1785,16 +1785,16 @@
     "studio-runtime": {
       "label": "Studio runtime",
       "files": 145,
-      "lines": 59696,
-      "codeLines": 53921,
-      "functions": 3949,
-      "filesOver1200": 10,
+      "lines": 59783,
+      "codeLines": 54007,
+      "functions": 3952,
+      "filesOver1200": 11,
       "filesOver2000": 4,
-      "ccOver25": 46,
+      "ccOver25": 47,
       "ccOver100": 6,
-      "cognitiveComplexityTotal": 9488,
+      "cognitiveComplexityTotal": 9505,
       "cognitiveComplexityTop20Sum": 2523,
-      "cognitiveComplexityOver25Sum": 3315,
+      "cognitiveComplexityOver25Sum": 3346,
       "maxCognitiveComplexity": 453,
       "any": 455,
       "asAny": 241,
@@ -2573,8 +2573,8 @@
       "group": "studio-runtime",
       "label": "Studio runtime",
       "legacy": false,
-      "lines": 1396,
-      "codeLines": 1294
+      "lines": 1398,
+      "codeLines": 1296
     },
     {
       "file": "rhwp-studio/src/core/user-settings.ts",
@@ -3341,8 +3341,8 @@
       "group": "studio-runtime",
       "label": "Studio runtime",
       "legacy": false,
-      "lines": 1121,
-      "codeLines": 1058
+      "lines": 1206,
+      "codeLines": 1142
     },
     {
       "file": "rhwp-studio/src/view/canvaskit/image-replay.ts",
@@ -3647,8 +3647,16 @@
       "group": "studio-runtime",
       "label": "Studio runtime",
       "legacy": false,
-      "lines": 1396,
-      "codeLines": 1294
+      "lines": 1398,
+      "codeLines": 1296
+    },
+    {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "group": "studio-runtime",
+      "label": "Studio runtime",
+      "legacy": false,
+      "lines": 1206,
+      "codeLines": 1142
     },
     {
       "file": "rhwp-studio/src/main.ts",
@@ -3665,14 +3673,6 @@
       "legacy": false,
       "lines": 1168,
       "codeLines": 994
-    },
-    {
-      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "group": "studio-runtime",
-      "label": "Studio runtime",
-      "legacy": false,
-      "lines": 1121,
-      "codeLines": 1058
     },
     {
       "file": "rhwp-studio/src/ui/cell-border-bg-dialog.ts",
@@ -5285,6 +5285,16 @@
       "id": "rhwp-vscode/src/hwp-editor-provider.ts::MethodDeclaration:resolveCustomEditor#1"
     },
     {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "name": "renderTextRun",
+      "line": 866,
+      "endLine": 961,
+      "loc": 96,
+      "codeLoc": 95,
+      "kind": "MethodDeclaration",
+      "id": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderTextRun#1"
+    },
+    {
       "file": "web/format_toolbar.js",
       "name": "_setupEventListeners",
       "line": 131,
@@ -5353,24 +5363,14 @@
       "codeLoc": 72,
       "kind": "MethodDeclaration",
       "id": "rhwp-studio/src/core/rhwp-dev.ts::MethodDeclaration:help#1"
-    },
-    {
-      "file": "rhwp-studio/src/ui/cell-border-bg-dialog.ts",
-      "name": "onConfirm",
-      "line": 983,
-      "endLine": 1071,
-      "loc": 89,
-      "codeLoc": 84,
-      "kind": "MethodDeclaration",
-      "id": "rhwp-studio/src/ui/cell-border-bg-dialog.ts::MethodDeclaration:onConfirm#1"
     }
   ],
   "cognitiveComplexity": {
-    "reportedFunctions": 2280,
-    "total": 11788,
+    "reportedFunctions": 2282,
+    "total": 11805,
     "top20Sum": 2581,
-    "over25Count": 61,
-    "over25Sum": 3901,
+    "over25Count": 62,
+    "over25Sum": 3932,
     "over100Count": 6,
     "over100Sum": 1732,
     "max": 453
@@ -5817,6 +5817,17 @@
       "functionLoc": 76
     },
     {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "line": 866,
+      "column": 11,
+      "complexity": 31,
+      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderTextRun#1",
+      "function": "renderTextRun",
+      "functionKind": "MethodDeclaration",
+      "functionLine": 866,
+      "functionLoc": 96
+    },
+    {
       "file": "rhwp-chrome/dev-tools-inject.js",
       "line": 10,
       "column": 5,
@@ -6236,13 +6247,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 490,
+      "line": 510,
       "column": 11,
       "complexity": 22,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderColorPaintGraphNode#1",
       "function": "renderColorPaintGraphNode",
       "functionKind": "MethodDeclaration",
-      "functionLine": 490,
+      "functionLine": 510,
       "functionLoc": 79
     },
     {
@@ -6357,13 +6368,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 722,
+      "line": 742,
       "column": 11,
       "complexity": 21,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:drawTiledImage#1",
       "function": "drawTiledImage",
       "functionKind": "MethodDeclaration",
-      "functionLine": 722,
+      "functionLine": 742,
       "functionLoc": 38
     },
     {
@@ -6420,17 +6431,6 @@
       "functionKind": "ArrowFunction",
       "functionLine": 101,
       "functionLoc": 29
-    },
-    {
-      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 846,
-      "column": 11,
-      "complexity": 20,
-      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderTextRun#1",
-      "function": "renderTextRun",
-      "functionKind": "MethodDeclaration",
-      "functionLine": 846,
-      "functionLoc": 66
     },
     {
       "file": "rhwp-safari/src/background.js",
@@ -6786,13 +6786,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 803,
+      "line": 823,
       "column": 11,
       "complexity": 16,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:recordTextRunCoverageGaps#1",
       "function": "recordTextRunCoverageGaps",
       "functionKind": "MethodDeclaration",
-      "functionLine": 803,
+      "functionLine": 823,
       "functionLoc": 33
     },
     {
@@ -7116,13 +7116,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 638,
+      "line": 658,
       "column": 11,
       "complexity": 14,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:drawImageOp#1",
       "function": "drawImageOp",
       "functionKind": "MethodDeclaration",
-      "functionLine": 638,
+      "functionLine": 658,
       "functionLoc": 70
     },
     {
@@ -7270,13 +7270,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 389,
+      "line": 409,
       "column": 11,
       "complexity": 13,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderPath#1",
       "function": "renderPath",
       "functionKind": "MethodDeclaration",
-      "functionLine": 389,
+      "functionLine": 409,
       "functionLoc": 41
     },
     {
@@ -7512,13 +7512,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 125,
+      "line": 144,
       "column": 3,
       "complexity": 12,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderPage#1",
       "function": "renderPage",
       "functionKind": "MethodDeclaration",
-      "functionLine": 125,
+      "functionLine": 144,
       "functionLoc": 56
     },
     {
@@ -7765,13 +7765,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 1041,
+      "line": 1126,
       "column": 10,
       "complexity": 11,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::FunctionDeclaration:parseCssColor#1",
       "function": "parseCssColor",
       "functionKind": "FunctionDeclaration",
-      "functionLine": 1041,
+      "functionLine": 1126,
       "functionLoc": 52
     },
     {
@@ -9030,13 +9030,13 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 761,
+      "line": 781,
       "column": 11,
       "complexity": 8,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:withImageTransform#1",
       "function": "withImageTransform",
       "functionKind": "MethodDeclaration",
-      "functionLine": 761,
+      "functionLine": 781,
       "functionLoc": 31
     },
     {
@@ -10504,35 +10504,46 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 211,
+      "line": 100,
+      "column": 16,
+      "complexity": 6,
+      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:create#1",
+      "function": "create",
+      "functionKind": "MethodDeclaration",
+      "functionLine": 100,
+      "functionLoc": 43
+    },
+    {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "line": 231,
       "column": 11,
       "complexity": 6,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:makeSurface#1",
       "function": "makeSurface",
       "functionKind": "MethodDeclaration",
-      "functionLine": 211,
+      "functionLine": 231,
       "functionLoc": 20
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 288,
+      "line": 308,
       "column": 11,
       "complexity": 6,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderOp#1",
       "function": "renderOp",
       "functionKind": "MethodDeclaration",
-      "functionLine": 288,
+      "functionLine": 308,
       "functionLoc": 64
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 913,
+      "line": 998,
       "column": 11,
       "complexity": 6,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderFormObject#1",
       "function": "renderFormObject",
       "functionKind": "MethodDeclaration",
-      "functionLine": 913,
+      "functionLine": 998,
       "functionLoc": 26
     },
     {
@@ -11516,24 +11527,24 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 465,
+      "line": 485,
       "column": 11,
       "complexity": 5,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderGlyphOutline#1",
       "function": "renderGlyphOutline",
       "functionKind": "MethodDeclaration",
-      "functionLine": 465,
+      "functionLine": 485,
       "functionLoc": 24
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 957,
+      "line": 1042,
       "column": 11,
       "complexity": 5,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:drawStyledShape#1",
       "function": "drawStyledShape",
       "functionKind": "MethodDeclaration",
-      "functionLine": 957,
+      "functionLine": 1042,
       "functionLoc": 22
     },
     {
@@ -12891,46 +12902,46 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 232,
+      "line": 252,
       "column": 11,
       "complexity": 4,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderNode#1",
       "function": "renderNode",
       "functionKind": "MethodDeclaration",
-      "functionLine": 232,
+      "functionLine": 252,
       "functionLoc": 21
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 431,
+      "line": 451,
       "column": 11,
       "complexity": 4,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:applyPathCommand#1",
       "function": "applyPathCommand",
       "functionKind": "MethodDeclaration",
-      "functionLine": 431,
+      "functionLine": 451,
       "functionLoc": 23
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 793,
+      "line": 813,
       "column": 11,
       "complexity": 4,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:recordImageCoverageGaps#1",
       "function": "recordImageCoverageGaps",
       "functionKind": "MethodDeclaration",
-      "functionLine": 793,
+      "functionLine": 813,
       "functionLoc": 9
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 980,
+      "line": 1065,
       "column": 11,
       "complexity": 4,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:drawStyledPath#1",
       "function": "drawStyledPath",
       "functionKind": "MethodDeclaration",
-      "functionLine": 980,
+      "functionLine": 1065,
       "functionLoc": 20
     },
     {
@@ -15201,46 +15212,35 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 94,
-      "column": 16,
-      "complexity": 3,
-      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:create#1",
-      "function": "create",
-      "functionKind": "MethodDeclaration",
-      "functionLine": 94,
-      "functionLoc": 30
-    },
-    {
-      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 273,
+      "line": 293,
       "column": 11,
       "complexity": 3,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderLeaf#1",
       "function": "renderLeaf",
       "functionKind": "MethodDeclaration",
-      "functionLine": 273,
+      "functionLine": 293,
       "functionLoc": 14
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 353,
+      "line": 373,
       "column": 11,
       "complexity": 3,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderPageBackground#1",
       "function": "renderPageBackground",
       "functionKind": "MethodDeclaration",
-      "functionLine": 353,
+      "functionLine": 373,
       "functionLoc": 12
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 1001,
+      "line": 1086,
       "column": 11,
       "complexity": 3,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:imageForOp#1",
       "function": "imageForOp",
       "functionKind": "MethodDeclaration",
-      "functionLine": 1001,
+      "functionLine": 1086,
       "functionLoc": 11
     },
     {
@@ -19150,14 +19150,25 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 367,
+      "line": 387,
       "column": 61,
       "complexity": 2,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::ArrowFunction:<anonymous>#2",
       "function": "<anonymous>",
       "functionKind": "ArrowFunction",
-      "functionLine": 367,
+      "functionLine": 387,
       "functionLoc": 8
+    },
+    {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "line": 963,
+      "column": 11,
+      "complexity": 2,
+      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderShapedScriptText#1",
+      "function": "renderShapedScriptText",
+      "functionKind": "MethodDeclaration",
+      "functionLine": 963,
+      "functionLoc": 34
     },
     {
       "file": "rhwp-studio/src/view/canvaskit/replay-plane.ts",
@@ -29116,145 +29127,156 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 99,
+      "line": 105,
       "column": 26,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::ArrowFunction:locateFile#1",
       "function": "locateFile",
       "functionKind": "ArrowFunction",
-      "functionLine": 99,
+      "functionLine": 105,
       "functionLoc": 1
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 197,
+      "line": 216,
       "column": 3,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:recordRenderFailure#1",
       "function": "recordRenderFailure",
       "functionKind": "MethodDeclaration",
-      "functionLine": 197,
+      "functionLine": 216,
       "functionLoc": 4
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 202,
+      "line": 221,
       "column": 3,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:dispose#1",
       "function": "dispose",
       "functionKind": "MethodDeclaration",
-      "functionLine": 202,
-      "functionLoc": 8
+      "functionLine": 221,
+      "functionLoc": 9
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 455,
+      "line": 475,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderImage#1",
       "function": "renderImage",
       "functionKind": "MethodDeclaration",
-      "functionLine": 455,
+      "functionLine": 475,
       "functionLoc": 9
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 570,
+      "line": 590,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:affineToCanvasKitMatrix#1",
       "function": "affineToCanvasKitMatrix",
       "functionKind": "MethodDeclaration",
-      "functionLine": 570,
+      "functionLine": 590,
       "functionLoc": 14
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 585,
+      "line": 605,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:applyFillRule#1",
       "function": "applyFillRule",
       "functionKind": "MethodDeclaration",
-      "functionLine": 585,
+      "functionLine": 605,
       "functionLoc": 5
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 677,
+      "line": 697,
       "column": 80,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::ArrowFunction:drawImage#1",
       "function": "drawImage",
       "functionKind": "ArrowFunction",
-      "functionLine": 677,
+      "functionLine": 697,
       "functionLoc": 6
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 709,
+      "line": 729,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:drawImageRect#1",
       "function": "drawImageRect",
       "functionKind": "MethodDeclaration",
-      "functionLine": 709,
+      "functionLine": 729,
       "functionLoc": 12
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 732,
+      "line": 752,
       "column": 45,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::ArrowFunction:drawTile#1",
       "function": "drawTile",
       "functionKind": "ArrowFunction",
-      "functionLine": 732,
+      "functionLine": 752,
       "functionLoc": 5
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 837,
+      "line": 857,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:boundsAreDrawable#1",
       "function": "boundsAreDrawable",
       "functionKind": "MethodDeclaration",
-      "functionLine": 837,
+      "functionLine": 857,
       "functionLoc": 8
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 940,
+      "line": 891,
+      "column": 62,
+      "complexity": 1,
+      "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::ArrowFunction:<anonymous>#5",
+      "function": "<anonymous>",
+      "functionKind": "ArrowFunction",
+      "functionLine": 891,
+      "functionLoc": 4
+    },
+    {
+      "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
+      "line": 1025,
       "column": 11,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::MethodDeclaration:renderPlaceholder#1",
       "function": "renderPlaceholder",
       "functionKind": "MethodDeclaration",
-      "functionLine": 940,
+      "functionLine": 1025,
       "functionLoc": 16
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 1094,
+      "line": 1179,
       "column": 10,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::FunctionDeclaration:clampUnit#1",
       "function": "clampUnit",
       "functionKind": "FunctionDeclaration",
-      "functionLine": 1094,
+      "functionLine": 1179,
       "functionLoc": 3
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 1114,
+      "line": 1199,
       "column": 10,
       "complexity": 1,
       "functionId": "rhwp-studio/src/view/canvaskit-renderer.ts::FunctionDeclaration:base64ToBytes#1",
       "function": "base64ToBytes",
       "functionKind": "FunctionDeclaration",
-      "functionLine": 1114,
+      "functionLine": 1199,
       "functionLoc": 8
     },
     {
@@ -30458,8 +30480,8 @@
     }
   ],
   "cognitiveComplexityCounts": {
-    "reportedFunctions": 2280,
-    "over25": 61,
+    "reportedFunctions": 2282,
+    "over25": 62,
     "over100": 6
   },
   "typeSurfaceTop": [
@@ -33523,253 +33545,253 @@
           "name": "LayerFootnoteMarkerOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1024
+          "line": 1026
         },
         {
           "name": "LayerLineStyle",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1033
+          "line": 1035
         },
         {
           "name": "LayerShapeStyle",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1042
+          "line": 1044
         },
         {
           "name": "LayerLineOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1050
+          "line": 1052
         },
         {
           "name": "LayerRectangleOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1060
+          "line": 1062
         },
         {
           "name": "LayerEllipseOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1067
+          "line": 1069
         },
         {
           "name": "LayerPathCommand",
           "kind": "TypeAliasDeclaration",
           "source": null,
-          "line": 1073
+          "line": 1075
         },
         {
           "name": "LayerPathTransform",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1089
+          "line": 1091
         },
         {
           "name": "LayerPathOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1095
+          "line": 1097
         },
         {
           "name": "LayerImageOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1104
+          "line": 1106
         },
         {
           "name": "LayerEquationOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1122
+          "line": 1124
         },
         {
           "name": "LayerFormObjectOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1130
+          "line": 1132
         },
         {
           "name": "LayerPlaceholderOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1142
+          "line": 1144
         },
         {
           "name": "LayerRawSvgOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1150
+          "line": 1152
         },
         {
           "name": "LayerTextDecorationOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1156
+          "line": 1158
         },
         {
           "name": "LayerTextControlMarkOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1162
+          "line": 1164
         },
         {
           "name": "LayerTabLeaderOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1168
+          "line": 1170
         },
         {
           "name": "LayerCharOverlapOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1177
+          "line": 1179
         },
         {
           "name": "LayerGlyphRunOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1185
+          "line": 1187
         },
         {
           "name": "LayerGlyphOutlineOp",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1191
+          "line": 1193
         },
         {
           "name": "LayerTextVariantMeta",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1205
+          "line": 1207
         },
         {
           "name": "LayerGlyphOutlinePayloadKind",
           "kind": "TypeAliasDeclaration",
           "source": null,
-          "line": 1218
+          "line": 1220
         },
         {
           "name": "LayerGlyphOutlinePath",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1226
+          "line": 1228
         },
         {
           "name": "LayerGlyphOutlineStroke",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1234
+          "line": 1236
         },
         {
           "name": "LayerTextRange",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1244
+          "line": 1246
         },
         {
           "name": "LayerResolvedColor",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1249
+          "line": 1251
         },
         {
           "name": "LayerColorGradientStop",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1254
+          "line": 1256
         },
         {
           "name": "LayerColorSolidPathNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1259
+          "line": 1261
         },
         {
           "name": "LayerColorLinearGradient",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1267
+          "line": 1269
         },
         {
           "name": "LayerColorRadialGradient",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1275
+          "line": 1277
         },
         {
           "name": "LayerColorSweepGradient",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1282
+          "line": 1284
         },
         {
           "name": "LayerColorLinearGradientPathNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1290
+          "line": 1292
         },
         {
           "name": "LayerColorRadialGradientPathNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1298
+          "line": 1300
         },
         {
           "name": "LayerColorSweepGradientPathNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1306
+          "line": 1308
         },
         {
           "name": "LayerColorTransformNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1314
+          "line": 1316
         },
         {
           "name": "LayerFontColorGlyphRef",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1319
+          "line": 1321
         },
         {
           "name": "LayerPaletteRef",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1326
+          "line": 1328
         },
         {
           "name": "LayerColorPaintGraphNode",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1332
+          "line": 1334
         },
         {
           "name": "LayerColorPaintGraphPayload",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1345
+          "line": 1347
         },
         {
           "name": "LayerColorLayersPayload",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1350
+          "line": 1352
         },
         {
           "name": "LayerBitmapGlyphPayload",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1373
+          "line": 1375
         },
         {
           "name": "LayerSvgGlyphPayload",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 1384
+          "line": 1386
         }
       ]
     },
@@ -35893,13 +35915,13 @@
           "name": "CanvasKitRenderDiagnostics",
           "kind": "InterfaceDeclaration",
           "source": null,
-          "line": 68
+          "line": 70
         },
         {
           "name": "CanvasKitLayerRenderer",
           "kind": "ClassDeclaration",
           "source": null,
-          "line": 77
+          "line": 79
         }
       ]
     },
@@ -37417,7 +37439,7 @@
     },
     {
       "file": "rhwp-studio/src/view/canvaskit-renderer.ts",
-      "line": 113,
+      "line": 121,
       "text": "const response = await fetch('fonts/NotoSansKR-Regular.woff2');"
     },
     {
