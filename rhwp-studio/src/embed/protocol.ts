@@ -24,6 +24,15 @@ export interface EmbedRequestEnvelope {
   params?: unknown;
 }
 
+export interface EmbedRequestAttempt {
+  type: 'rhwp-request';
+  version?: unknown;
+  sessionId: string;
+  id: number;
+  method?: unknown;
+  params?: unknown;
+}
+
 export interface EmbedResponseEnvelope {
   type: 'rhwp-response';
   version: typeof EMBED_PROTOCOL_VERSION;
@@ -62,13 +71,20 @@ export function isRequestEnvelope(
   value: unknown,
   sessionId: string,
 ): value is EmbedRequestEnvelope {
-  return isRecord(value)
-    && value.type === 'rhwp-request'
+  return isRequestAttempt(value, sessionId)
     && value.version === EMBED_PROTOCOL_VERSION
-    && value.sessionId === sessionId
-    && Number.isSafeInteger(value.id)
     && typeof value.method === 'string'
     && value.method.length > 0;
+}
+
+export function isRequestAttempt(
+  value: unknown,
+  sessionId: string,
+): value is EmbedRequestAttempt {
+  return isRecord(value)
+    && value.type === 'rhwp-request'
+    && value.sessionId === sessionId
+    && Number.isSafeInteger(value.id);
 }
 
 export function isUsableParentOrigin(origin: string): boolean {

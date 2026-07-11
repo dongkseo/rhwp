@@ -1,6 +1,6 @@
 const PROTOCOL_VERSION = 1;
 const CAPABILITIES = ['transferable-array-buffer'];
-const LONG_RUNNING_METHODS = new Set(['loadFile', 'exportHwp', 'exportHwpx']);
+const LONG_RUNNING_METHODS = new Set(['loadFile', 'exportHwp', 'exportHwpVerify', 'exportHwpx']);
 
 export function requestTimeoutFor(method, configuredTimeout) {
   if (configuredTimeout != null) return configuredTimeout;
@@ -157,9 +157,27 @@ export class EditorTransport {
   }
 
   _handleResponse(message, legacy = false) {
-    if (!isResponseEnvelope(message, legacy, this._sessionId)) return;
+    if (legacy) {
+      if (!isResponseEnvelope(message, true, this._sessionId)) return;
+    } else if (message?.type !== 'rhwp-response'
+        || !Number.isSafeInteger(message.id)
+        || message.sessionId !== this._sessionId) {
+      return;
+    }
     const pending = this._pending.get(message.id);
     if (!pending) return;
+    if (!legacy && Number.isSafeInteger(message.version)
+        && message.version !== PROTOCOL_VERSION) {
+      this._rejectPendingResponse(message.id, pending, 'UNSUPPORTED_VERSION',
+        `Unsupported embed protocol version: ${message.version}`, [PROTOCOL_VERSION]);
+      return;
+    }
+    if (!isResponseEnvelope(message, legacy, this._sessionId)) {
+      setTimeout(() => this._rejectPendingResponse(
+        message.id, pending, 'INVALID_RESPONSE', 'Invalid response envelope',
+      ), 0);
+      return;
+    }
     this._pending.delete(message.id);
     clearTimeout(pending.timeout);
     if (message.error) {
@@ -168,6 +186,16 @@ export class EditorTransport {
       pending.reject(error);
     }
     else pending.resolve(message.result);
+  }
+
+  _rejectPendingResponse(id, pending, code, message, supportedVersions) {
+    if (this._pending.get(id) !== pending) return;
+    this._pending.delete(id);
+    clearTimeout(pending.timeout);
+    const error = new Error(message);
+    error.code = code;
+    if (supportedVersions) error.supportedVersions = supportedVersions;
+    pending.reject(error);
   }
 
   _rejectConnect(error) {

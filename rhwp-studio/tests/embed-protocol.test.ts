@@ -115,6 +115,181 @@ test('embed runtime은 parent의 exact origin에서 v1 port session을 설치한
   channel.port1.close();
 });
 
+test('embed runtime은 bound session의 malformed request에만 구조화된 오류를 반환한다', async () => {
+  let messageListener: (event: MessageEvent) => void = () => {};
+  const hostWindow = {
+    addEventListener(_type: string, listener: (event: MessageEvent) => void) { messageListener = listener; },
+    removeEventListener() {},
+  };
+  const parentWindow = { postMessage() {} };
+  const cleanup = installEmbedRuntime({
+    hostWindow: hostWindow as unknown as Window,
+    parentWindow: parentWindow as unknown as Window,
+    handlers: {} as EmbedRpcHandlers,
+  });
+  const channel = new MessageChannel();
+  const messages: unknown[] = [];
+  let resolveConnected: () => void = () => {};
+  let resolveInvalid: (message: unknown) => void = () => {};
+  const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const invalidResponse = new Promise<unknown>((resolve) => { resolveInvalid = resolve; });
+  channel.port1.onmessage = ({ data }) => {
+    messages.push(data);
+    if (data.type === 'rhwp-connected') resolveConnected();
+    if (data.type === 'rhwp-response') resolveInvalid(data);
+  };
+  channel.port1.start();
+
+  try {
+    messageListener({
+      data: {
+        type: 'rhwp-connect', version: 1, sessionId: 'session-a',
+        capabilities: ['transferable-array-buffer'],
+      },
+      source: parentWindow, origin: 'https://host.example', ports: [channel.port2],
+    } as unknown as MessageEvent);
+    await connected;
+    channel.port1.postMessage({
+      type: 'rhwp-request', version: 1, sessionId: 'session-a', id: 7, method: '',
+    });
+    channel.port1.postMessage({
+      type: 'rhwp-request', version: 1, sessionId: 'other', id: 8, method: '',
+    });
+    channel.port1.postMessage({
+      type: 'rhwp-request', version: 1, sessionId: 'session-a',
+      id: Number.MAX_SAFE_INTEGER + 1, method: '',
+    });
+
+    assert.deepEqual(await Promise.race([
+      invalidResponse,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('INVALID_REQUEST timeout')), 50)),
+    ]), {
+      type: 'rhwp-response', version: 1, sessionId: 'session-a', id: 7,
+      error: { code: 'INVALID_REQUEST', message: 'Invalid embed request.' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(messages.length, 2);
+  } finally {
+    cleanup();
+    channel.port1.close();
+  }
+});
+
+test('embed runtime은 bound session의 unsupported request version을 명시적으로 거부한다', async () => {
+  let messageListener: (event: MessageEvent) => void = () => {};
+  const hostWindow = {
+    addEventListener(_type: string, listener: (event: MessageEvent) => void) { messageListener = listener; },
+    removeEventListener() {},
+  };
+  const parentWindow = { postMessage() {} };
+  const cleanup = installEmbedRuntime({
+    hostWindow: hostWindow as unknown as Window,
+    parentWindow: parentWindow as unknown as Window,
+    handlers: {} as EmbedRpcHandlers,
+  });
+  const channel = new MessageChannel();
+  let resolveConnected: () => void = () => {};
+  let resolveMismatch: (message: unknown) => void = () => {};
+  const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const mismatchResponse = new Promise<unknown>((resolve) => { resolveMismatch = resolve; });
+  channel.port1.onmessage = ({ data }) => {
+    if (data.type === 'rhwp-connected') resolveConnected();
+    if (data.type === 'rhwp-response') resolveMismatch(data);
+  };
+  channel.port1.start();
+
+  try {
+    messageListener({
+      data: {
+        type: 'rhwp-connect', version: 1, sessionId: 'session-a',
+        capabilities: ['transferable-array-buffer'],
+      },
+      source: parentWindow, origin: 'https://host.example', ports: [channel.port2],
+    } as unknown as MessageEvent);
+    await connected;
+    channel.port1.postMessage({
+      type: 'rhwp-request', version: 2, sessionId: 'session-a', id: 9, method: 'pageCount',
+    });
+
+    assert.deepEqual(await Promise.race([
+      mismatchResponse,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('UNSUPPORTED_VERSION timeout')), 50)),
+    ]), {
+      type: 'rhwp-response', version: 1, sessionId: 'session-a', id: 9,
+      error: {
+        code: 'UNSUPPORTED_VERSION',
+        message: 'Unsupported embed protocol version: 2',
+        supportedVersions: [1],
+      },
+    });
+  } finally {
+    cleanup();
+    channel.port1.close();
+  }
+});
+
+test('embed runtime은 bound session의 missing/non-numeric version을 malformed로 거부한다', async () => {
+  let messageListener: (event: MessageEvent) => void = () => {};
+  const hostWindow = {
+    addEventListener(_type: string, listener: (event: MessageEvent) => void) { messageListener = listener; },
+    removeEventListener() {},
+  };
+  const parentWindow = { postMessage() {} };
+  const cleanup = installEmbedRuntime({
+    hostWindow: hostWindow as unknown as Window,
+    parentWindow: parentWindow as unknown as Window,
+    handlers: {} as EmbedRpcHandlers,
+  });
+  const channel = new MessageChannel();
+  let resolveConnected: () => void = () => {};
+  const malformedMessages: unknown[] = [];
+  let resolveMalformed: (messages: unknown[]) => void = () => {};
+  const connected = new Promise<void>((resolve) => { resolveConnected = resolve; });
+  const malformedResponses = new Promise<unknown[]>((resolve) => { resolveMalformed = resolve; });
+  channel.port1.onmessage = ({ data }) => {
+    if (data.type === 'rhwp-connected') resolveConnected();
+    if (data.type === 'rhwp-response') {
+      malformedMessages.push(data);
+      if (malformedMessages.length === 2) resolveMalformed(malformedMessages);
+    }
+  };
+  channel.port1.start();
+
+  try {
+    messageListener({
+      data: {
+        type: 'rhwp-connect', version: 1, sessionId: 'session-a',
+        capabilities: ['transferable-array-buffer'],
+      },
+      source: parentWindow, origin: 'https://host.example', ports: [channel.port2],
+    } as unknown as MessageEvent);
+    await connected;
+    channel.port1.postMessage({
+      type: 'rhwp-request', sessionId: 'session-a', id: 10, method: 'pageCount',
+    });
+    channel.port1.postMessage({
+      type: 'rhwp-request', version: '2', sessionId: 'session-a', id: 11, method: 'pageCount',
+    });
+
+    assert.deepEqual(await Promise.race([
+      malformedResponses,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('INVALID_REQUEST timeout')), 50)),
+    ]), [
+      {
+        type: 'rhwp-response', version: 1, sessionId: 'session-a', id: 10,
+        error: { code: 'INVALID_REQUEST', message: 'Invalid embed request.' },
+      },
+      {
+        type: 'rhwp-response', version: 1, sessionId: 'session-a', id: 11,
+        error: { code: 'INVALID_REQUEST', message: 'Invalid embed request.' },
+      },
+    ]);
+  } finally {
+    cleanup();
+    channel.port1.close();
+  }
+});
+
 test('embed runtime은 첫 v1 origin/session/port만 사용하고 이후 legacy dispatch를 막는다', async () => {
   let messageListener: (event: MessageEvent) => void = () => {};
   let pageCountCalls = 0;

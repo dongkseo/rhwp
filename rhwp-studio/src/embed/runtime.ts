@@ -3,6 +3,7 @@ import {
   EMBED_CAPABILITIES,
   isConnectAttempt,
   isConnectMessage,
+  isRequestAttempt,
   isRequestEnvelope,
   isUsableParentOrigin,
   type EmbedResponseEnvelope,
@@ -40,10 +41,23 @@ function releasePorts(ports: readonly MessagePort[]): void {
 
 function bindPort(port: MessagePort, sessionId: string, handlers: EmbedRpcHandlers): void {
   port.onmessage = async ({ data }) => {
-    if (!isRequestEnvelope(data, sessionId)) return;
+    if (!isRequestAttempt(data, sessionId)) return;
     const response: EmbedResponseEnvelope = {
       type: 'rhwp-response', version: EMBED_PROTOCOL_VERSION, sessionId, id: data.id,
     };
+    if (!isRequestEnvelope(data, sessionId)) {
+      response.error = typeof data.version === 'number'
+        && Number.isSafeInteger(data.version)
+        && data.version !== EMBED_PROTOCOL_VERSION
+        ? {
+            code: 'UNSUPPORTED_VERSION',
+            message: `Unsupported embed protocol version: ${data.version}`,
+            supportedVersions: [EMBED_PROTOCOL_VERSION],
+          }
+        : { code: 'INVALID_REQUEST', message: 'Invalid embed request.' };
+      postPortResponse(port, response);
+      return;
+    }
     try {
       response.result = await routeEmbedRequest(data.method, data.params, handlers);
     } catch (error) {
