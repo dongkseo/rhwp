@@ -1,7 +1,7 @@
 # 프론트 metrics 요약
 
-- generatedAt: 2026-07-10T15:16:40.284Z
-- commit: ebf052685e0927b60ab06f27defdfa484f717e79
+- generatedAt: 2026-07-11T03:01:51.538Z
+- commit: 6f1bd284b751aa861b161e9b648c7bb394b4fa84
 - measured source clean: true
 - advisory: Phase 0 기준선 고정용 snapshot이며 CI fail gate가 아니다.
 
@@ -9,13 +9,13 @@
 
 | Reported functions | Total CC | Top 20 sum | CC>25 count | CC>25 sum | CC>100 count | Max CC |
 |-------------------:|---------:|-----------:|------------:|----------:|-------------:|-------:|
-| 2280 | 11774 | 2581 | 61 | 3901 | 6 | 453 |
+| 2280 | 11788 | 2581 | 61 | 3901 | 6 | 453 |
 
 ## Group 합계
 
 | Group | Files | Lines | Functions | Total CC | Top 20 sum | CC>25 | CC>25 sum | Max CC | any | exports |
 |------|------:|------:|----------:|---------:|-----------:|------:|----------:|-------:|----:|--------:|
-| Studio runtime | 145 | 59663 | 3949 | 9474 | 2523 | 46 | 3315 | 453 | 455 | 595 |
+| Studio runtime | 145 | 59696 | 3949 | 9488 | 2523 | 46 | 3315 | 453 | 455 | 595 |
 | Chrome extension | 15 | 2330 | 130 | 444 | 295 | 4 | 132 | 40 | 0 | 31 |
 | Firefox extension | 15 | 2325 | 137 | 444 | 295 | 4 | 132 | 40 | 0 | 31 |
 | Safari extension | 3 | 1305 | 107 | 299 | 259 | 3 | 115 | 43 | 0 | 0 |

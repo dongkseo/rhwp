@@ -4,7 +4,7 @@
 - 상위 umbrella: #2022
 - 선행 계획 이슈: #2023
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 작성일: 2026-07-10
 - 단계: Phase 0 baseline freeze / Stage 3
 
@@ -165,7 +165,7 @@ endpoint는 현재 요청 origin/source를 allowlist로 검증하지 않고, 응
 VS Code compile도 fresh declaration 기준으로 통과했다. stale generated output은 계약 변경 근거나
 결함 확정 근거로 사용하지 않는다.
 
-최종 기준 `ebf05268`에서는 pre-build binding도 통과했으며, upstream Rust 변경을 포함한 fresh WASM을
+최종 기준 `6f1bd284`에서는 pre-build binding도 통과했으며, upstream Rust 변경을 포함한 fresh WASM을
 다시 생성해 같은 public surface와 consumer build를 재확인했다.
 
 ## 6. VS Code extension 계약

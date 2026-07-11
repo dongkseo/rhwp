@@ -2,7 +2,7 @@
 
 - 이슈: #2124
 - 작성일: 2026-07-10
-- 기준 커밋: `upstream/devel` `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 관련 계획: `mydocs/plans/task_m100_2124.md`
 - 구현 계획: `mydocs/plans/task_m100_2124_impl.md`
 - 측정 스크립트: `scripts/frontend-metrics.mjs`
@@ -176,7 +176,7 @@ node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json
 |------|---:|
 | schema | 2 |
 | 포함 파일 | 203 |
-| CC 총합 | 11,774 |
+| CC 총합 | 11,788 |
 | 상위 20 합 | 2,581 |
 | CC>25 | 61 |
 | CC>25 합 | 3,901 |
@@ -186,10 +186,10 @@ node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json
 기존 210개에서 extension/shared test 6개와 `web/clipboard_test.html` 1개를 제외했다. schema v2 자기
 비교 결과 총량 delta와 함수별 diff가 모두 0이었다.
 
-최종 기준 커밋을 `782059d9`에서 게시 기준 `ebf05268`로 이동하는 동안 upstream frontend가 두 번
-변경됐다. 제품 code lines는 66,968에서 67,037로, functions는 4,720에서 4,725로, Total CC는
-11,768에서 11,774로 변했다. 함수별 diff는 `command.ts` helper 내부 arrow function과 caret/IME 보정의
-신규 함수 3개, 기존 `afterPageLocalEdit`의 CC +1을 식별했다. 전체 Top 20 및 CC>25/100 지표는 변하지
-않았다. 공식 snapshot은 이 upstream delta를 포함한 `ebf05268` 기준으로 다시 생성했다.
+기준 커밋을 `782059d9`에서 `ebf05268`로 이동하는 동안 제품 code lines는 66,968에서 67,037로,
+functions는 4,720에서 4,725로, Total CC는 11,768에서 11,774로 변했다. 최종 merge 직전 #2188을
+반영한 `6f1bd284`에서는 code lines 67,069, Total CC 11,788이 됐다. 함수별 diff는 #2188의
+`renderTextRun` +16과 `recordTextRunCoverageGaps` -2를 식별했고 Top 20 및 CC>25/100 지표는 변하지
+않았다. 공식 snapshot은 최종 upstream delta를 포함한 `6f1bd284` 기준으로 다시 생성했다.
 
 같은 산식으로 Stage 2 공식 baseline을 `mydocs/metrics/frontend/2026-07-11/`에 저장했다.

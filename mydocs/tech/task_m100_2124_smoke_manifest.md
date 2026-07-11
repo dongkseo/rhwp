@@ -1,10 +1,10 @@
 # Task M100 #2124 - frontend smoke manifest
 
 - 이슈: #2124
-- 단계: Stage 4 - local gate 완료 / reviewer 승인 대기
+- 단계: Stage 4 - local gate 완료 / maintainer 승인
 - 작성일: 2026-07-10
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 관련 산출물:
   - `mydocs/metrics/frontend/2026-07-11/metrics.json`
   - `mydocs/tech/task_m100_2124_baseline_manifest.md`
@@ -54,7 +54,7 @@ fresh output에서 build되는지 확인한다.
 통과했고, 이전에 type declaration 때문에 막혔던 Studio build와 VS Code compile도 통과했다. 이 전후
 결과는 binding gate가 stale generated output을 정확히 식별한다는 근거다.
 
-최종 기준을 `ebf05268`로 옮겼을 때는 기존 `pkg`도 explicit export 검사를 통과했다. 다만 upstream
+최종 기준을 `6f1bd284`로 옮겼을 때는 기존 `pkg`도 explicit export 검사를 통과했다. 다만 upstream
 Rust 렌더·편집·cursor rect 변경이 포함돼 repository Docker service로 WASM을 다시 생성했고, 최종
 binding과 모든 consumer gate를 그 output에서 재검증했다.
 

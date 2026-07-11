@@ -2,10 +2,10 @@
 
 - 이슈: #2124
 - 단계: Stage 5 - 최종 보고와 GitHub 후속 처리
-- 상태: 조건부 승인 / 경미 수정 반영 / ready 전환 gate 적용
+- 상태: maintainer 최종 승인 / 최신 devel 재검증 후 merge
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 선행 단계: `mydocs/working/task_m100_2124_stage4.md`
 
 ## 1. 현재 상태
@@ -19,28 +19,35 @@ fallback과 최신 devel rebase 두 건이다.
 dependency update를 유지한 뒤 #2124 변경을 적용했다. metrics 도구는 `upstream/devel`, `origin/devel`
 순서로 조회하고 둘 다 없으면 `upstreamDevelCommit` 속성을 생략한다. 세 경로와 기존 snapshot 자기
 비교를 로컬 검증했다. 최종 head의 CI 상태는 PR #2174 checks를 실시간 source of truth로 사용한다.
-Studio/metrics/Chrome/Firefox 네 패키지의 lockfile로 `npm ci`를 실행하고 제품 세 패키지의
-production build를 검증했다. build 후 contract/shared 68건과 Studio 185건이 통과했다.
+Studio/metrics/Chrome/Firefox/VS Code 다섯 패키지의 lockfile로 `npm ci`를 실행하고 Studio·확장
+production build와 VS Code compile을 검증했다. build 후 contract/shared 68건과 Studio 185건이 통과했다.
 
 upstream TypeScript 7.0.2는 기존 compiler API를 기본 export하지 않고 metrics parser의 peer 범위도
 `<6.1.0`이라 Studio devDependencies 공유 방식이 재현되지 않았다. 제품 TypeScript 7은 유지하고
 metrics 의존성을 `scripts/frontend-metrics/` private package로 분리해 TypeScript 6.0.3을 고정했다.
 
+최종 merge 직전 `upstream/devel@6f1bd284`의 #2188 Studio/Rust 변경을 충돌 없이 rebase했다. 직전
+snapshot 대비 Total CC +14가 `renderTextRun` +16, `recordTextRunCoverageGaps` -2로 설명됐으며,
+Top 20과 CC>25/100은 변하지 않았다. 공식 기준선을 `6f1bd284`로 재생성하고 fresh WASM gate를 다시
+적용했다.
+
 ## 2. 현재 판단
 
 | 항목 | 판단 |
 |------|------|
-| draft PR | #2174 생성, maintainer 조건부 승인. 최종 head gate 확인 후 ready 전환 |
-| maintainer 답변 | 수정 근거·gate 결과 초안을 사용자에게 제시한 뒤 게시 |
+| PR | #2174 maintainer 최종 승인. 최종 head gate 확인 후 collaborator merge |
+| maintainer 답변 | rebase·재검증 후 merge 위임 확인 |
 | build 후속 이슈 | 생성하지 않음. fresh WASM에서 binding, Studio, VS Code gate가 모두 통과함 |
 | #2124 checklist/close | PR merge 전 금지. merge 후에도 사용자 승인 필요 |
 | #2022 umbrella update | #2124 승인·close 시점에 근거 링크와 함께 수행 |
-| #2125 | #2124가 승인될 때까지 착수 보류 |
+| #2183 | #2124 close 후 frontend CI gate로 우선 진행 |
+| #2187 | #2183 merge 후 contract snapshot·smoke 보정과 collaborator 리뷰 |
+| #2125 | #2187 이후 착수하며 #2190 font subset 규칙 연계 검토 |
 
 ## 3. Stage 5 완료 조건
 
-1. 사용자 승인 후 #2174를 ready로 전환하고 maintainer 반영 보고를 게시한다.
-2. 승인된 PR이 merge된다.
+1. #2174 ready 전환과 maintainer 반영 보고를 완료한다.
+2. 최종 rebase·재검증·CI를 통과한 승인 PR을 merge한다.
 3. 사용자 승인 후 #2124 체크리스트·최종 코멘트·close와 #2022 추적 항목을 갱신한다.
 
 현재 문서는 merge 전 상태를 기록한 단계 보고이며, #2124 완료 선언은 아니다.

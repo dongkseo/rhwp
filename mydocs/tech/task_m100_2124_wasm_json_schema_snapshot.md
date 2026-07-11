@@ -5,7 +5,7 @@
 - 선행 계획 이슈: #2023
 - Rust 리팩터링 기준 이슈: #1883
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 작성일: 2026-07-10
 - 단계: Phase 0 baseline freeze / Stage 3
 
@@ -210,6 +210,6 @@ source의 다음 네 export가 없었다.
 동일 검사는 fresh output에서 통과했고 Studio build와 VS Code compile도 통과했다. 이 전후 결과는
 generated output을 source of truth로 오인하지 않으면서 stale 상태를 조기에 찾는 gate의 근거다.
 
-최종 기준 `ebf05268`로 동기화한 뒤에는 pre-build declaration도 explicit export 검사를 통과했다.
+최종 기준 `6f1bd284`로 동기화한 뒤에는 pre-build declaration도 explicit export 검사를 통과했다.
 upstream Rust 변경을 반영한 fresh WASM을 다시 생성하고 동일 gate와 consumer build를 재실행해 최종
 snapshot의 binding 일치를 확인했다.

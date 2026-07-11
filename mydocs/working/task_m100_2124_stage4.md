@@ -2,10 +2,10 @@
 
 - 이슈: #2124
 - 단계: Stage 4 - font, extension security, smoke, SOLID evidence
-- 상태: 로컬 완료 / reviewer 승인 대기
+- 상태: 로컬 완료 / maintainer 승인
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 선행 단계: `mydocs/working/task_m100_2124_stage3.md`
 
 ## 1. 완료 요약
@@ -30,7 +30,7 @@ VS Code package gate를 같은 output에서 검증했다.
 |------|------|
 | font | #2124에서 asset을 변경하지 않으며 #2125가 canonical 이동을 담당한다. legacy `/web` 정리는 dependency scan 후 별도 단위로 판단한다. |
 | security | 기존 policy를 snapshot으로 보존한다. `postMessage('*')`와 origin/source 미검증은 영구 계약이 아니라 별도 설계가 필요한 부채다. |
-| generated WASM | `pkg/`는 source of truth가 아니다. 초기 pre-build stale 상태는 binding test가 탐지했고, 최종 `ebf05268` fresh Docker build 후 모든 consumer gate가 통과했다. |
+| generated WASM | `pkg/`는 source of truth가 아니다. 초기 pre-build stale 상태는 binding test가 탐지했고, 최종 `6f1bd284` fresh Docker build 후 모든 consumer gate가 통과했다. |
 | SOLID | 초기 `54/100`을 폐기했다. 공식 점수는 구체 review unit과 maintainer/collaborator calibration 후에만 기록한다. |
 | Phase A | #2125는 #2124 reviewer 승인 뒤 시작한다. extension 또는 giant handler가 이를 앞서지 않는다. |
 
@@ -58,7 +58,7 @@ node --test scripts/frontend-extension-dist.test.mjs
 
 초기 기준선 검증(`782059d9`)의 build 전 stale declaration은 Rust explicit export 네 개가 빠져 있었고
 binding test가 이를 탐지했다. fresh output에서 동일 test와 기존 실패 지점이 모두 통과했다. 최종
-`ebf05268` 동기화에서는 pre-build binding도 통과했으며 upstream Rust 변경을 반영한 fresh output으로
+`6f1bd284` 동기화에서는 pre-build binding도 통과했으며 upstream Rust 변경을 반영한 fresh output으로
 모든 consumer gate를 재실행했다. 별도 source 결함으로 분리하지 않는다.
 
 ## 5. 미실행 수동 검증

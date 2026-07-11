@@ -4,7 +4,7 @@
 - 단계: Stage 4 — extension security snapshot
 - 작성일: 2026-07-10
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 관련 문서:
   - `mydocs/manual/browser_extension_dev_guide.md`
   - `mydocs/report/archives/browser_extension_security_audit.md`

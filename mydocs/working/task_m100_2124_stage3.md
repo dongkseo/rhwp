@@ -4,7 +4,7 @@
 - 단계: Stage 3 - public contract와 WASM JSON advisory snapshot
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 선행 단계: `mydocs/working/task_m100_2124_stage2.md`
 
 ## 1. 완료 요약
@@ -38,5 +38,5 @@ frontend external/package/message/build surface와 Rust-owned WASM JSON boundary
 editor embed contract test 1개가 통과했다. 초기 기준선 검증(`782059d9`)의 repository Docker build 전
 local ignored `pkg/rhwp.d.ts`는 Rust source보다 오래되어 explicit export 네 개가 빠졌고 binding test가
 이를 정확히 탐지했다. Stage 4에서 fresh WASM을 생성한 뒤 같은 binding test, Studio build, VS Code
-compile이 통과했다. 최종 `ebf05268` 동기화에서도 fresh WASM과 consumer gate를 다시 통과했다. stale
+compile이 통과했다. 최종 `6f1bd284` 동기화에서도 fresh WASM과 consumer gate를 다시 통과했다. stale
 generated output을 근거로 API 결함이나 별도 후속 이슈를 확정하지 않는다.

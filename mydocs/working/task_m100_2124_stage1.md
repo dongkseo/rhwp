@@ -4,7 +4,7 @@
 - 단계: Stage 1 - metrics 도구와 모집단 고정
 - 작성일: 2026-07-10
 - 브랜치: `task2124-frontend-baseline`
-- 기준 커밋: `upstream/devel` `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `upstream/devel` `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 선행 구현 계획: `mydocs/plans/task_m100_2124_impl.md`
 
 ## 1. 완료 요약
@@ -19,8 +19,9 @@
 
 | 파일 | 변경 내용 |
 |------|-----------|
-| `rhwp-studio/package.json` | metrics script와 ESLint/SonarJS/parser devDependency 추가 |
-| `rhwp-studio/package-lock.json` | 측정 도구 버전 고정 |
+| `rhwp-studio/package.json` | metrics 실행 script 추가 |
+| `scripts/frontend-metrics/package.json` | ESLint/SonarJS/parser와 호환 TypeScript 고정 |
+| `scripts/frontend-metrics/package-lock.json` | 측정 도구 버전 고정 |
 | `scripts/frontend-metrics.mjs` | schema v2 frontend metrics 수집·비교 도구 |
 | `mydocs/tech/task_m100_2124_frontend_metrics_scope.md` | 공식 모집단, 제외군, 산식 문서화 |
 
@@ -44,7 +45,7 @@
 | 항목 | 값 |
 |------|---:|
 | 포함 제품 파일 | 203 |
-| Total CC / 전체 Top 20 합 | 11,774 / 2,581 |
+| Total CC / 전체 Top 20 합 | 11,788 / 2,581 |
 | CC>25 count / sum | 61 / 3,901 |
 | CC>100 count / sum | 6 / 1,732 |
 | Max CC | 453 |

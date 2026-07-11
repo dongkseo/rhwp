@@ -6,7 +6,7 @@
 - 선행 문서 PR: #2080
 - 브랜치: `task2124-frontend-baseline`
 - 기준 브랜치: `upstream/devel`
-- 기준 커밋: `ebf052685e0927b60ab06f27defdfa484f717e79`
+- 기준 커밋: `6f1bd284b751aa861b161e9b648c7bb394b4fa84`
 - 작성일: 2026-07-10
 - 단계: 구현 계획서
 - 선행 수행 계획서: `mydocs/plans/task_m100_2124.md`
@@ -20,8 +20,8 @@
 3. public contract, WASM JSON schema, font, extension security, smoke gate, SOLID evidence 문서를 만든다.
 4. #2124 체크리스트를 각 산출물 근거와 연결할 수 있게 만든다.
 
-현재 Stage 1~4는 fresh WASM을 포함해 로컬 완료했고, Stage 5는 리뷰 전 보류 상태다. push, PR,
-issue comment/checklist/close는 수행하지 않았다.
+현재 Stage 1~4는 fresh WASM을 포함해 로컬 완료했고, Stage 5는 maintainer 최종 승인 후 최신 devel
+재검증과 merge를 진행하는 상태다. issue checklist/close는 merge 후 별도 승인까지 수행하지 않는다.
 
 ## 2. 확정 구현 결정
 
@@ -112,7 +112,7 @@ node scripts/frontend-metrics.mjs --compare output/frontend-metrics/metrics.json
 
 작업:
 
-- 기준 커밋 `ebf05268`의 measured source가 clean인 상태에서 Stage 1 metrics 명령을 실행한다.
+- 기준 커밋 `6f1bd284`의 measured source가 clean인 상태에서 Stage 1 metrics 명령을 실행한다.
 - `mydocs/metrics/frontend/2026-07-11/metrics.json`을 저장한다.
 - `mydocs/metrics/frontend/2026-07-11/summary.md`를 저장한다.
 - `mydocs/tech/task_m100_2124_baseline_manifest.md`에 OS, Node/npm, 브라우저 후보, font path, 제외군,
