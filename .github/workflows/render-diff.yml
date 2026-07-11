@@ -11,6 +11,7 @@ on:
       - 'src/document_core/queries/rendering.rs'
       - 'src/wasm_api.rs'
       - 'src/main.rs'
+      - 'web/fonts/**'
       - 'docs/canvaskit-parity-implementation.md'
       - 'docs/text-ir-v2.md'
       - 'rhwp-studio/**'
@@ -297,10 +298,12 @@ jobs:
         working-directory: rhwp-studio
         run: |
           node --check e2e/renderer-contract.test.mjs
+          node --check e2e/canvaskit-font-coverage.test.mjs
           node --check e2e/canvas-render-diff.test.mjs
           node --check e2e/pdf-render-diff-report.mjs
           node --check e2e/run-render-diff.mjs
           npm run e2e:renderer-contract
+          npm run e2e:canvaskit-font-coverage
 
       - name: Run canvas visual diff and PDF report
         working-directory: rhwp-studio
