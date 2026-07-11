@@ -136,6 +136,15 @@ frontend 판정은 기존 review-only detector와 별도 step으로 둔다. work
 review-only fast-pass가 성립하면 frontend 판정값과 무관하게 모든 worker를 skip하고 기존 candidate
 `Build & Test` 결과를 재사용한다. preflight job 자체가 실패하면 aggregate가 실패한다.
 
+fork PR에서는 candidate head SHA가 Actions run/job metadata에는 노출되지만 Check Runs API가 같은 SHA에 0건을
+반환할 수 있다. 따라서 기존 `checks: read` 조회를 우선 유지하고, `Build & Test` check-run이 없을 때만
+read-only `actions: read` fallback을 사용한다.
+
+fallback은 현재 PR head branch의 `ci.yml` pull-request runs를 조회한 뒤 응답의 `head_sha`를 candidate SHA와
+로컬에서 exact match하고, 해당 run의 `Build & Test` job이 `completed/success`인지 확인한다. Actions API의
+`head_sha` server filter도 fork run을 누락할 수 있으므로 이를 authority로 사용하지 않는다. run/job 누락,
+진행 중, 실패, API 오류는 모두 fast-pass 거부와 full CI 실행으로 처리한다.
+
 ## 5. frontend worker 구현
 
 ### 5.1 job 조건과 권한

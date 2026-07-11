@@ -121,6 +121,39 @@ PR의 restore hit를 확인할 수 있다.
 
 - trusted `devel` push의 frontend cargo cache save는 merge 뒤에만 실측 가능하다.
 - Rust-only PR의 frontend skip은 fixture로 검증했으며 실제 별도 PR을 만들지 않는다.
-- Stage 3 보고서의 trailing docs commit은 기존 review-only fast-pass 보존 여부를 추가 관찰할 수 있다.
+- Stage 3 보고서의 trailing docs commit에서 review-only fast-pass 실패를 실측했고 아래 보정 작업으로 전환했다.
 - PR 본문 체크리스트 갱신과 CI 결과 코멘트는 초안을 작업지시자에게 먼저 제시한 뒤 게시한다.
 - maintainer 리뷰 승인 전 draft 해제, merge, #2183 close를 수행하지 않는다.
+
+## 9. trailing docs fast-pass 실패와 보정
+
+Stage 3 보고서 commit `b73a1255`를 push한 두 번째 CI run
+(`https://github.com/edwardkim/rhwp/actions/runs/29154801461`)에서 review-only fast-pass가 성립하지 않고 전체
+jobs가 재실행됐다. 전체 결과는 다시 PASS했고 frontend worker는 2분 10초였지만 preflight reason은 다음이었다.
+
+```text
+fast_pass=false
+reason=missing-build-and-test:82a297ab53e0e67c15f2622d4a8819699fef8cb7
+```
+
+API를 직접 비교한 결과는 다음과 같다.
+
+- candidate SHA의 Check Runs API: 0건
+- 첫 CI run metadata `head_sha`: candidate SHA와 일치
+- 첫 CI run jobs API: `Build & Test=completed/success` 존재
+- Actions workflow-runs의 `head_sha=` server filter: fork run 누락
+- source branch filter: 두 CI run 반환, 응답 `head_sha`로 exact match 가능
+
+이는 새 frontend 판정 문제가 아니라 기존 review-only detector가 fork PR의 API 가시성 차이를 처리하지 못한
+경우다. 구현 계획의 fast-pass 보존 완료 조건을 만족하기 위해 다음 최소 보정을 적용한다.
+
+1. preflight에 read-only `actions: read` 추가
+2. 기존 Check Runs 조회를 우선 유지
+3. check-run 부재 시 현재 PR branch의 `ci.yml` runs 조회
+4. 응답 `head_sha`를 candidate와 exact match
+5. 해당 run의 `Build & Test` job이 `completed/success`인 경우에만 fast-pass
+6. 누락·진행·실패·API 오류는 full CI
+
+실제 inline script를 추출한 fixture 8건에서 check-run 성공, Actions job fallback 성공, 진행 중, job 실패,
+job 누락, wrong SHA, API 오류, trailing docs 부재를 검증했다. 최종 GitHub 실측은 최신
+`upstream/devel@413d8a67` rebase와 보정 commit push 후 수행한다.
