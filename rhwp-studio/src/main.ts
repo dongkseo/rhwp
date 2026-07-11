@@ -13,7 +13,7 @@ import { CommandDispatcher } from '@/command/dispatcher';
 import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
 import { confirmSaveBeforeReplacingDocument, fileCommands } from '@/command/commands/file';
 import { editCommands } from '@/command/commands/edit';
-import { syncTextMarkMenu, viewCommands } from '@/command/commands/view';
+import { CLIP_ENABLED_DEFAULT, syncClipMenu, syncTextMarkMenu, viewCommands } from '@/command/commands/view';
 import { formatCommands } from '@/command/commands/format';
 import { insertCommands } from '@/command/commands/insert';
 import { tableCommands } from '@/command/commands/table';
@@ -710,6 +710,9 @@ function applySavedTextMarkSettings(): void {
   wasm.setShowControlCodes(view.showControlCodes);
   wasm.setShowParagraphMarks(view.showParagraphMarks);
   syncTextMarkMenu(view.showControlCodes, view.showParagraphMarks);
+  // #2204: 짤림보기(잘림 보기) 기본값 = 켜짐(오버플로 표시). WASM 기본이 잘림 적용일 수 있어 명시 적용.
+  wasm.setClipEnabled(CLIP_ENABLED_DEFAULT);
+  syncClipMenu(CLIP_ENABLED_DEFAULT);
 }
 
 async function initializeDocument(docInfo: DocumentInfo, displayName: string): Promise<void> {
