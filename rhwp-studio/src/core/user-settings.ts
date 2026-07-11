@@ -48,6 +48,8 @@ export interface ViewSettings {
   showParagraphMarks: boolean;
   /** 조판부호 표시 여부 */
   showControlCodes: boolean;
+  /** 짤림보기(잘림 보기) 켜짐 여부. true = 편집용지 경계 밖 오버플로 내용을 보임(잘림 미적용). */
+  clipView: boolean;
 }
 
 /** 복구용 자동저장 설정 */
@@ -134,6 +136,7 @@ function defaultSettings(): AppSettings {
     view: {
       showParagraphMarks: false,
       showControlCodes: false,
+      clipView: true,
     },
     autosave: {
       recoveryEnabled: true,
@@ -205,6 +208,10 @@ class UserSettingsService {
           showControlCodes: normalizeBoolean(
             view.showControlCodes,
             defaults.view.showControlCodes,
+          ),
+          clipView: normalizeBoolean(
+            view.clipView,
+            defaults.view.clipView,
           ),
         },
         autosave: {
@@ -298,6 +305,12 @@ class UserSettingsService {
   /** 조판부호 표시 설정 */
   setShowControlCodes(value: boolean): void {
     this.data.view.showControlCodes = value;
+    this.save();
+  }
+
+  /** 짤림보기(잘림 보기) 켜짐 설정. true = 오버플로 내용 표시(잘림 미적용). */
+  setClipView(value: boolean): void {
+    this.data.view.clipView = value;
     this.save();
   }
 

@@ -48,18 +48,15 @@ export function syncTextMarkMenu(showControlCodes: boolean, showParagraphMarks: 
 }
 
 /**
- * 짤림보기(잘림 보기) 기본값.
- * false = 잘림 미적용(clip off) = 편집용지 경계 밖 오버플로 내용을 보이게 함 = 짤림보기 켜짐.
+ * view:toggle-clip 내부 상태(clipEnabled). true=잘림 적용, false=오버플로 표시(짤림보기 켜짐).
+ * 저장된 짤림보기 설정(clipView)에서 초기화한다. clipEnabled = !clipView.
  */
-export const CLIP_ENABLED_DEFAULT = false;
-
-/** view:toggle-clip 내부 상태. clipEnabled=true면 잘림 적용, false면 오버플로 표시(짤림보기 켜짐). */
-let clipEnabled = CLIP_ENABLED_DEFAULT;
+let clipEnabled = !userSettings.getViewSettings().clipView;
 
 /**
  * 짤림보기(잘림 보기) 메뉴 활성 상태와 내부 상태를 동기화한다.
  * 버튼 active = 잘림 미적용(오버플로 보임) = !enabled.
- * 문서 로드 시 기본값 적용에도 사용한다.
+ * 문서 로드 시 저장된 설정 적용에도 사용한다.
  */
 export function syncClipMenu(enabled: boolean): void {
   clipEnabled = enabled;
@@ -270,8 +267,10 @@ export const viewCommands: CommandDef[] = [
     label: '잘림 보기',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      services.wasm.setClipEnabled(!clipEnabled);
-      syncClipMenu(!clipEnabled);
+      const next = !clipEnabled;
+      services.wasm.setClipEnabled(next);
+      userSettings.setClipView(!next); // 짤림보기 켜짐(clipView) = 잘림 미적용(!clipEnabled)
+      syncClipMenu(next);
       services.eventBus.emit('document-view-changed');
     },
   } satisfies CommandDef,
