@@ -2865,7 +2865,19 @@ impl LayoutEngine {
                                 pic.common.vert_rel_to,
                                 crate::model::shape::VertRelTo::Para
                             );
-                            let anchor_y = if top_and_bottom_para {
+                            // [Task #2207] 글뒤로/글앞으로(절대 오버레이) + Para 도 앵커
+                            // 시점 기준. 오버레이 그림은 텍스트 플로우를 밀지 않으므로
+                            // compose 후 전진된 para_y 는 한 줄 아래를 가리킨다 (#577 과
+                            // 동일 원리 — Shape 경로는 이미 wrap 무관 앵커 시점 기준).
+                            let overlay_para = matches!(
+                                pic.common.text_wrap,
+                                crate::model::shape::TextWrap::BehindText
+                                    | crate::model::shape::TextWrap::InFrontOfText
+                            ) && matches!(
+                                pic.common.vert_rel_to,
+                                crate::model::shape::VertRelTo::Para
+                            );
+                            let anchor_y = if top_and_bottom_para || overlay_para {
                                 para.line_segs
                                     .first()
                                     .filter(|seg| seg.vertical_pos >= 0)
