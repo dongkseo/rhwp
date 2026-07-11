@@ -8,6 +8,9 @@ import {
   getLocalFontRecords,
   getLocalFontState,
   getLocalFonts,
+  localFontFaceKey,
+  loadLocalFontBytes,
+  loadLocalFontBytesFor,
   loadStoredLocalFonts,
   resetLocalFontsForTests,
   resolveLocalFont,
@@ -424,12 +427,14 @@ test('SFNT 지역화 이름을 보존해 HWP 한글 full name을 영문 family�
   try {
     const fonts = await detectLocalFonts({ force: true, includeRegistered: true });
     const record = resolveLocalFont('08서울한강체 M');
+    const englishRecord = resolveLocalFont('08SeoulHangang M');
     const report = analyzeDocumentFonts(['08서울한강체 M']);
     const cssChain = fontFamilyChainForDisplay('08서울한강체 M');
     const stored = JSON.parse(storage.getItem(STORAGE_KEY) ?? '{}') as LocalFontSnapshot;
 
     assert.deepEqual(fonts, ['08서울한강체 M']);
     assert.equal(record?.family, '08SeoulHangang');
+    assert.equal(englishRecord?.postscriptName, 'SeoulHangangM');
     assert.equal(record?.postscriptName, 'SeoulHangangM');
     assert.ok(record?.aliases.includes('08서울한강체 M'));
     assert.deepEqual(getLocalFontRecords().map(item => item.displayName), ['08서울한강체 M']);
@@ -439,6 +444,81 @@ test('SFNT 지역화 이름을 보존해 HWP 한글 full name을 영문 family�
     assert.match(cssChain, /^"08SeoulHangang"/);
     assert.equal(stored.version, 2);
     assert.equal('blob' in (stored.fontRecords?.[0] ?? {}), false);
+  } finally {
+    await clearStoredLocalFonts();
+    resetLocalFontsForTests();
+    restoreGlobals(originals);
+  }
+});
+
+test('CanvasKit용 SFNT 바이트는 여러 PostScript face를 한 번에 읽고 현재 세션에서 재사용한다', async () => {
+  const g = globalThis as TestGlobals;
+  const originals = {
+    browser: g.browser,
+    chrome: g.chrome,
+    document: g.document,
+    localStorage: g.localStorage,
+    queryLocalFonts: g.queryLocalFonts,
+  };
+  const storage = createStorage();
+  const nameTableBytes = createSfntWithNameRecords([
+    { nameId: 1, value: '08서울한강체' },
+    { nameId: 2, value: 'M' },
+    { nameId: 4, value: '08서울한강체 M' },
+    { nameId: 6, value: 'SeoulHangangM' },
+  ]);
+  const secondNameTableBytes = createSfntWithNameRecords([
+    { nameId: 1, value: '08서울한강체' },
+    { nameId: 2, value: 'L' },
+    { nameId: 4, value: '08서울한강체 L' },
+    { nameId: 6, value: 'SeoulHangangL' },
+  ]);
+  const fontBytes = new Uint8Array(nameTableBytes.length + 4);
+  fontBytes.set(nameTableBytes);
+  fontBytes.set([0xde, 0xad, 0xbe, 0xef], nameTableBytes.length);
+  const secondFontBytes = new Uint8Array(secondNameTableBytes.length + 4);
+  secondFontBytes.set(secondNameTableBytes);
+  secondFontBytes.set([0xca, 0xfe, 0xba, 0xbe], secondNameTableBytes.length);
+  const queryCalls: Array<string[] | undefined> = [];
+
+  resetLocalFontsForTests();
+  g.browser = undefined;
+  g.chrome = undefined;
+  g.localStorage = storage;
+  g.queryLocalFonts = async (options?: { postscriptNames?: string[] }) => {
+    queryCalls.push(options?.postscriptNames);
+    return [
+      {
+        family: '08SeoulHangang',
+        fullName: '08SeoulHangang M',
+        postscriptName: 'SeoulHangangM',
+        style: 'M',
+        blob: async () => new Blob([options ? fontBytes : nameTableBytes]),
+      },
+      {
+        family: '08SeoulHangang',
+        fullName: '08SeoulHangang L',
+        postscriptName: 'SeoulHangangL',
+        style: 'L',
+        blob: async () => new Blob([options ? secondFontBytes : secondNameTableBytes]),
+      },
+    ];
+  };
+
+  try {
+    await detectLocalFonts({ force: true, includeRegistered: true });
+    const all = await loadLocalFontBytesFor(['08서울한강체 M', '08서울한강체 L']);
+    const first = await loadLocalFontBytes('08서울한강체 M');
+    const hangangRecord = resolveLocalFont('08서울한강체 M');
+    const hangangLightRecord = resolveLocalFont('08서울한강체 L');
+
+    assert.deepEqual(new Uint8Array(all.get(localFontFaceKey(hangangRecord!)) ?? new ArrayBuffer(0)), fontBytes);
+    assert.deepEqual(new Uint8Array(all.get(localFontFaceKey(hangangLightRecord!)) ?? new ArrayBuffer(0)), secondFontBytes);
+    assert.deepEqual(new Uint8Array(first ?? new ArrayBuffer(0)), fontBytes);
+    assert.equal(resolveLocalFont('08SeoulHangang'), null);
+    assert.equal(queryCalls.length, 2);
+    assert.equal(queryCalls[0], undefined);
+    assert.deepEqual(new Set(queryCalls[1]), new Set(['SeoulHangangM', 'SeoulHangangL']));
   } finally {
     await clearStoredLocalFonts();
     resetLocalFontsForTests();

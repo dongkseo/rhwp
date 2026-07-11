@@ -18,7 +18,9 @@
 공통 resolver는 Unicode NFC, 공백 정리, 대소문자 무시 비교를 수행하되, 서로 다른 글꼴을 넓게 추측해
 합치지 않는다. HWP 원본 글꼴명으로 local record를 찾으면 CSS에는 record의 canonical family를 전달한다.
 
-`08서울한강체 M` / `08SeoulHangang M` / `08SeoulHangang` / `SeoulHangangM`은 같은 record를 반환해야 한다.
+`08서울한강체 M` / `08SeoulHangang M` / `SeoulHangangM`은 같은 M face record를 반환해야 한다.
+`08SeoulHangang`처럼 style이 빠진 family는 설치된 face가 하나일 때만 해석하고, L/M처럼 여러 face가
+있으면 임의로 하나를 고르지 않는다.
 
 ### CanvasKit
 

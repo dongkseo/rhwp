@@ -125,6 +125,8 @@ const HANGUL_RE = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3]/;
 let cachedSnapshot: LocalFontSnapshot | null = null;
 let storageLoaded = false;
 let lastStorageError: string | null = null;
+/** 현재 페이지 수명 동안만 유지하는 CanvasKit용 SFNT 바이트 조회 캐시. */
+const localFontBytesByPostscriptName = new Map<string, Promise<ArrayBuffer | null>>();
 
 /** Local Font Access API 지원 여부 */
 export function isLocalFontAccessSupported(): boolean {
@@ -710,6 +712,7 @@ export async function loadStoredLocalFonts(): Promise<LocalFontSnapshot | null> 
 export async function clearStoredLocalFonts(): Promise<void> {
   cachedSnapshot = null;
   storageLoaded = true;
+  localFontBytesByPostscriptName.clear();
   await removeStoredSnapshot();
 }
 
@@ -742,6 +745,7 @@ export async function detectLocalFonts(options: DetectLocalFontsOptions = {}): P
 
   if (!snapshot) return [];
 
+  localFontBytesByPostscriptName.clear();
   cachedSnapshot = snapshot;
   storageLoaded = true;
   await writeStoredSnapshot(snapshot);
@@ -773,10 +777,99 @@ export function resolveLocalFont(fontName: string): LocalFontRecord | null {
   const matches = getLocalFontRecords({ includeRegistered: true })
     .filter(record => record.aliases.some(alias => normalizeFontAlias(alias) === target));
   if (matches.length === 0) return null;
-  return matches.find(record => normalizeFontAlias(record.family) === target)
-    ?? matches.find(record => normalizeFontAlias(record.fullName) === target)
-    ?? matches.find(record => normalizeFontAlias(record.postscriptName) === target)
+
+  const uniqueMatch = (predicate: (record: LocalFontRecord) => boolean): LocalFontRecord | null => {
+    const candidates = matches.filter(predicate);
+    return candidates.length === 1 ? candidates[0] : null;
+  };
+  return uniqueMatch(record => normalizeFontAlias(record.postscriptName) === target)
+    ?? uniqueMatch(record =>
+      normalizeFontAlias(record.fullName) === target
+      || normalizeFontAlias(`${record.family} ${record.style}`) === target,
+    )
+    // family만으로 여러 style face가 매칭되면 임의 face를 고르지 않는다.
+    ?? uniqueMatch(record => normalizeFontAlias(record.family) === target)
     ?? (matches.length === 1 ? matches[0] : null);
+}
+
+/** CSS family와 달리 style별 native Typeface cache를 구분하는 안정 키다. */
+export function localFontFaceKey(record: Pick<LocalFontRecord, 'family' | 'fullName' | 'postscriptName'>): string {
+  return normalizeFontAlias(record.postscriptName || record.fullName || record.family);
+}
+
+function localFontRecordMatchesFontData(record: LocalFontRecord, fontData: FontData): boolean {
+  const expectedPostscriptName = normalizeFontAlias(record.postscriptName);
+  const actualPostscriptName = normalizeFontAlias(fontData.postscriptName);
+  if (expectedPostscriptName && actualPostscriptName) {
+    return expectedPostscriptName === actualPostscriptName;
+  }
+  const names = [fontData.family, fontData.fullName, fontData.postscriptName]
+    .map(normalizeFontAlias)
+    .filter(Boolean);
+  const aliases = new Set(record.aliases.map(normalizeFontAlias));
+  return names.some(name => aliases.has(name));
+}
+
+async function readLocalFontBytesBatch(records: readonly LocalFontRecord[]): Promise<Map<string, ArrayBuffer>> {
+  const bytesByPostscriptName = new Map<string, ArrayBuffer>();
+  if (cachedSnapshot?.source !== 'local-font-access') return bytesByPostscriptName;
+  const queryLocalFonts = (globalThis as LocalFontGlobal).queryLocalFonts;
+  const postscriptNames = normalizeFontNames(records.map(record => record.postscriptName));
+  if (!queryLocalFonts || postscriptNames.length === 0) return bytesByPostscriptName;
+
+  try {
+    const candidates = await queryLocalFonts({ postscriptNames });
+    await Promise.all(records.map(async (record) => {
+      const fontData = candidates.find(candidate => localFontRecordMatchesFontData(record, candidate));
+      if (!fontData?.blob) return;
+      const bytes = await (await fontData.blob()).arrayBuffer();
+      bytesByPostscriptName.set(normalizeFontAlias(record.postscriptName), bytes);
+    }));
+  } catch (error) {
+    // 이미 승인된 글꼴을 다시 읽지 못해도 기본 Typeface fallback으로 계속 렌더한다.
+    console.warn('[LocalFonts] CanvasKit용 SFNT 바이트 일괄 조회 실패:', error);
+  }
+  return bytesByPostscriptName;
+}
+
+/**
+ * CanvasKit이 현재 문서의 local face를 등록할 때만 원본 SFNT 바이트를 일괄 조회한다.
+ * 바이트는 localStorage에 저장하지 않고, 같은 PostScript face는 현재 페이지에서 한 번만 읽는다.
+ */
+export async function loadLocalFontBytesFor(fontNames: readonly string[]): Promise<Map<string, ArrayBuffer>> {
+  const recordsByPostscriptName = new Map<string, LocalFontRecord>();
+  for (const fontName of fontNames) {
+    const record = resolveLocalFont(fontName);
+    if (!record?.postscriptName) continue;
+    recordsByPostscriptName.set(normalizeFontAlias(record.postscriptName), record);
+  }
+
+  const missing = Array.from(recordsByPostscriptName.entries())
+    .filter(([postscriptName]) => !localFontBytesByPostscriptName.has(postscriptName));
+  if (missing.length > 0) {
+    const records = missing.map(([, record]) => record);
+    const batch = readLocalFontBytesBatch(records);
+    for (const [postscriptName] of missing) {
+      localFontBytesByPostscriptName.set(
+        postscriptName,
+        batch.then(bytesByPostscriptName => bytesByPostscriptName.get(postscriptName) ?? null),
+      );
+    }
+  }
+
+  const result = new Map<string, ArrayBuffer>();
+  for (const [postscriptName, record] of recordsByPostscriptName) {
+    const bytes = await localFontBytesByPostscriptName.get(postscriptName);
+    if (bytes) result.set(localFontFaceKey(record), bytes);
+  }
+  return result;
+}
+
+/** 단일 face 요청도 일괄 조회 cache를 경유하는 편의 함수다. */
+export async function loadLocalFontBytes(fontName: string): Promise<ArrayBuffer | null> {
+  const record = resolveLocalFont(fontName);
+  if (!record) return null;
+  return (await loadLocalFontBytesFor([fontName])).get(localFontFaceKey(record)) ?? null;
 }
 
 /** 현재 로컬 글꼴 감지/저장 상태를 반환한다. */
@@ -806,4 +899,5 @@ export function resetLocalFontsForTests(): void {
   cachedSnapshot = null;
   storageLoaded = false;
   lastStorageError = null;
+  localFontBytesByPostscriptName.clear();
 }

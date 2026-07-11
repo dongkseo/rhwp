@@ -77,6 +77,7 @@ let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
 let toolbar: Toolbar | null = null;
 let ruler: Ruler | null = null;
+let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
 let editMode: EditorEditMode = 'normal';
 let rendererRuntimeRequest: {
   backend: ReturnType<typeof resolveRenderBackendRequest>;
@@ -234,6 +235,25 @@ async function updateLoadProgress(percent: number, label: string): Promise<void>
   await waitForNextPaint();
 }
 
+/**
+ * CanvasKit은 browser CSS font fallback을 사용하지 않는다. 초기 페이지를 먼저 표시한 뒤,
+ * 저장된 권한 범위 안에서 필요한 local face를 준비하고 등록된 경우에만 다시 그린다.
+ */
+function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): void {
+  const renderer = canvaskitRenderer;
+  if (!renderer || !fontNames?.length) return;
+  const requestedFonts = [...fontNames];
+  void (async () => {
+    await loadStoredLocalFonts();
+    const registered = await renderer.prepareLocalFonts(requestedFonts);
+    if (registered > 0 && renderer === canvaskitRenderer) {
+      canvasView?.loadDocument();
+    }
+  })().catch((error) => {
+    console.warn('[CanvasKit] 로컬 Typeface 준비 실패, 기본 fallback으로 계속 표시합니다:', error);
+  });
+}
+
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -273,8 +293,6 @@ async function initialize(): Promise<void> {
     }
     let renderBackend = renderBackendRequest.backend;
     renderBackendFallbackReason = renderBackendRequest.unsupportedReason ?? null;
-    let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
-
     if (renderBackend === 'canvaskit') {
       msg.textContent = 'CanvasKit 로딩 중...';
       try {
@@ -767,6 +785,7 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     console.log('[initDoc] 4. canvasView loadDocument');
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     canvasView?.loadDocument();
+    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     console.log('[initDoc] 5. toolbar setEnabled');
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
@@ -839,6 +858,7 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
     });
     const nextReport = analyzeDocumentFonts(docInfo.fontsUsed);
     eventBus.emit('local-fonts-changed', { fonts, report: nextReport });
+    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     const state = getLocalFontState();
     const resultLabel = state.source === 'font-presence-probe' ? '확인됨' : '감지됨';
     msg.textContent = `${displayName} (로컬 글꼴 ${fonts.length}개 ${resultLabel})`;
