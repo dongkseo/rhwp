@@ -35,6 +35,8 @@ export class Toolbar {
 
   private enabled = false;
   private styleDropdownInitialized = false;
+  /** 대량 로컬 글꼴 option은 실제 글꼴 목록을 열 때만 생성한다. */
+  private localFontOptionsPrepared = false;
   /** 마지막으로 받은 fontFamilies (언어별 7개 배열) */
   private lastFontFamilies?: string[];
 
@@ -225,7 +227,15 @@ export class Toolbar {
   /** 글꼴 선택 + 크기 변경 이벤트 */
   private setupFontControls(): void {
     this.populateFontSetOptions();
-    this.populateLocalFontOptions();
+
+    // 로컬 글꼴이 수천 개일 수 있어 문서 로드 중 native select에 모두 넣으면
+    // 다음 paint와 편집 활성화가 장시간 막힌다. 실제 목록을 열 때만 준비한다.
+    this.fontName.addEventListener('pointerdown', () => this.populateLocalFontOptions());
+    this.fontName.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+        this.populateLocalFontOptions();
+      }
+    });
 
     this.fontName.addEventListener('change', () => {
       const name = this.fontName.value;
@@ -483,6 +493,7 @@ export class Toolbar {
   /** 문서 로드 시 글꼴 드롭다운을 초기화한다 (기본 글꼴 + 문서 글꼴 + 대표/로컬) */
   initFontDropdown(docFonts?: string[]): void {
     this.lastFontFamilies = docFonts ? [...docFonts] : undefined;
+    this.localFontOptionsPrepared = false;
     const BASE_FONTS = ['함초롬바탕', '함초롬돋움', '맑은 고딕', '나눔고딕', '바탕', '돋움', '궁서'];
     this.fontName.replaceChildren();
     for (const name of BASE_FONTS) {
@@ -504,7 +515,6 @@ export class Toolbar {
       }
     }
     this.populateFontSetOptions();
-    this.populateLocalFontOptions();
   }
 
   private refreshFontDropdown(): void {
@@ -678,21 +688,26 @@ export class Toolbar {
 
   /** 로컬 글꼴 optgroup을 #font-name 드롭다운에 추가 */
   private populateLocalFontOptions(): void {
+    if (this.localFontOptionsPrepared) return;
     const localFonts = getLocalFonts();
     if (localFonts.length === 0) return;
+
+    this.localFontOptionsPrepared = true;
 
     // 기존 로컬 글꼴 optgroup 제거 (재호출 대비)
     this.fontName.querySelectorAll('optgroup[label="로컬 글꼴"]').forEach(g => g.remove());
 
     const group = document.createElement('optgroup');
     group.label = '로컬 글꼴';
+    const options = document.createDocumentFragment();
 
     for (const name of localFonts) {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
-      group.appendChild(opt);
+      options.appendChild(opt);
     }
+    group.appendChild(options);
 
     // 대표 글꼴 optgroup 다음에 삽입
     const fontSetGroup = this.fontName.querySelector('optgroup[label="대표 글꼴"]');

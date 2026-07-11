@@ -88,7 +88,9 @@ export class PageRenderer {
     const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
     const preferStaticFlow = this.shouldSplitStaticFlow(layers);
     let reuseStaticFlow = this.renderFlowCanvas(pageIdx, canvas, renderScale, preferStaticFlow);
-    const flowImages = reuseStaticFlow ? this.getFlowImagePaintOps(pageIdx) : [];
+    const flowImages = reuseStaticFlow && layers.flowImageCount > 0
+      ? this.getFlowImagePaintOps(pageIdx)
+      : [];
     const usesDomFlowImages =
       reuseStaticFlow &&
       layers.flowRawSvgCount === 0 &&

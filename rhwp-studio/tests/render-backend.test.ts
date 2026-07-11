@@ -227,6 +227,12 @@ test('PageRenderer prefers lightweight overlay summary before full PageLayerTree
   assert.match(source, /flowStaticCount/);
 });
 
+test('PageRenderer skips full flow-image JSON when the summary has no flow images', () => {
+  const source = readFileSync(new URL('../src/view/page-renderer.ts', import.meta.url), 'utf8');
+  assert.match(source, /reuseStaticFlow && layers\.flowImageCount > 0/);
+  assert.match(source, /\? this\.getFlowImagePaintOps\(pageIdx\)/);
+});
+
 test('CanvasView forwards text-edit invalidation as static overlay reuse context', () => {
   const source = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
   assert.match(source, /type PageRenderContext/);
