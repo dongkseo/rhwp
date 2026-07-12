@@ -152,6 +152,7 @@ const renderOpBody = extractMethodBody(canvaskitSource, 'renderOp');
 const renderNodeBody = extractMethodBody(canvaskitSource, 'renderNode');
 const diagnosticsBody = extractMethodBody(canvaskitSource, 'diagnostics');
 const makeSurfaceBody = extractMethodBody(canvaskitSource, 'makeSurface');
+const renderPageCanvasKitBody = extractMethodBody(pageRendererSource, 'renderPageCanvasKit');
 const renderOpCases = caseLabels(renderOpBody).sort();
 const layerOpTypes = layerPaintOpTypes();
 const layerNodeKindSet = layerNodeKinds();
@@ -297,8 +298,23 @@ requireSnippet(
 );
 requireSnippet(
   makeSurfaceBody,
-  /try \{[\s\S]*?MakeCanvasSurface\(targetCanvas\)[\s\S]*?this\.surfaceBackend = 'default'[\s\S]*?\} catch \{[\s\S]*?defaultSurfaceCreationFailed[\s\S]*?MakeSWCanvasSurface\(targetCanvas\)[\s\S]*?this\.surfaceBackend = 'software'/,
+  /try \{[\s\S]*?MakeCanvasSurface\(targetCanvas\)[\s\S]*?this\.surfaceBackend = 'default'[\s\S]*?\} catch \{[\s\S]*?defaultSurfaceCreationFailed[\s\S]*?MakeSWCanvasSurface\(softwareCanvas\)[\s\S]*?this\.surfaceBackend = 'software'/,
   'CanvasKit auto surface creation should fall back to software after default surface exceptions',
+);
+requireSnippet(
+  makeSurfaceBody,
+  /targetCanvas\.parentElement !== originalParent[\s\S]*?this\.surfaceBackend = 'software';[\s\S]*?canvas: replacement/,
+  'CanvasKit internal software fallback should expose its replacement canvas',
+);
+requireSnippet(
+  makeSurfaceBody,
+  /surfaceRequest\.preference === 'webgpu'[\s\S]*?surfaceFallbackReason = 'webgpuSurfaceUnsupported'[\s\S]*?reuseSoftwareFallbackCanvas/,
+  'CanvasKit repeated software fallback should preserve the original WebGPU rejection reason',
+);
+requireSnippet(
+  renderPageCanvasKitBody,
+  /canvaskitDiagnosticsByPage\.delete\(pageIdx\);[\s\S]*?try \{[\s\S]*?getPageInfo\(pageIdx\)[\s\S]*?getPageLayerTreeObject\(pageIdx[\s\S]*?renderStarted = true;[\s\S]*?recordRenderFailure\(error, !renderStarted\)[\s\S]*?if \(!renderStarted\) throw error/,
+  'CanvasKit page diagnostics should be cleared before page info or layer lowering can fail',
 );
 requireSnippet(
   pageRendererSource,
@@ -312,8 +328,13 @@ requireSnippet(
 );
 requireSnippet(
   mainSource,
-  /case 'getRendererDiagnostics':[\s\S]*?effectiveBackend:[\s\S]*?backendFallbackReason:[\s\S]*?getCanvasKitRenderDiagnostics\(pageIndex\)/,
+  /rendererInitialized = true;[\s\S]*?case 'getRendererDiagnostics':[\s\S]*?initialized: rendererInitialized[\s\S]*?initializationError:[\s\S]*?effectiveBackend: rendererInitialized \?[\s\S]*?backendFallbackReason:[\s\S]*?getCanvasKitRenderDiagnostics\(pageIndex\)/,
   'Studio iframe API should expose backend selection and page-scoped renderer diagnostics',
+);
+assert.doesNotMatch(
+  mainSource,
+  /effectiveBackend: canvasView\?\.getRenderBackend\(\) \?\? 'canvas2d'/,
+  'Studio diagnostics must not report Canvas2D when no renderer initialized',
 );
 requireSnippet(
   mainSource,
@@ -932,6 +953,25 @@ assert.equal(
 );
 assert.equal(collapsedInkDiff.inkMaskDiffPixels, 1);
 
+const augmentingInkExpected = new PNG({ width: 3, height: 2 });
+augmentingInkExpected.data.fill(255);
+augmentingInkExpected.data.set([0, 0, 0, 255], 4);
+augmentingInkExpected.data.set([0, 0, 0, 255], 12);
+const augmentingInkActual = new PNG({ width: 3, height: 2 });
+augmentingInkActual.data.fill(255);
+augmentingInkActual.data.set([0, 0, 0, 255], 0);
+augmentingInkActual.data.set([0, 0, 0, 255], 8);
+const augmentingInkDiff = await comparePngBuffers(
+  PNG.sync.write(augmentingInkExpected),
+  PNG.sync.write(augmentingInkActual),
+  { inkMaskNeighborhoodRadius: 1, inkMaskMaxDiffPixels: 0 },
+);
+assert.equal(
+  augmentingInkDiff.inkMaskDiffPixels,
+  0,
+  'one-to-one ink matching should find an augmenting path instead of depending on scan order',
+);
+
 const missingInkExpected = new PNG({ width: 3, height: 1 });
 missingInkExpected.data.fill(255);
 const missingInkActual = new PNG({ width: 3, height: 1 });
@@ -949,6 +989,18 @@ const noBudgetDiff = await comparePngBuffers(
   PNG.sync.write(missingInkExpected),
 );
 assert.equal(noBudgetDiff.hasVisualBudget, false, 'readiness requires an explicit visual budget');
+const blankInkDiff = await comparePngBuffers(
+  PNG.sync.write(missingInkExpected),
+  PNG.sync.write(missingInkExpected),
+  { maxDiffPixels: 0, minimumInkPixels: 1 },
+);
+assert.equal(blankInkDiff.passed, false, 'matching blank captures must not pass readiness');
+assert.equal(blankInkDiff.minimumInkBudgetPassed, false);
+assert.match(
+  comparePngBuffers.toString(),
+  /MAX_INK_MASK_MATCH_EDGES/,
+  'ink-mask maximum matching should stop before allocating an unbounded edge graph',
+);
 
 assert.deepEqual(
   rendererBaselineManifest.samples
@@ -960,7 +1012,7 @@ assert.deepEqual(
 );
 requireSnippet(
   rendererBaselineSource,
-  /getCanvasKitRenderDiagnostics\?\.\(targetPageIndex\)[\s\S]*?activeBackend: window\.__renderBackend[\s\S]*?request: window\.__rendererRuntimeRequest/,
+  /getCanvasKitRenderDiagnostics\?\.\(targetPageIndex\)[\s\S]*?canvasPool\?\.getCanvas\?\.\(targetPageIndex\)[\s\S]*?activeBackend: window\.__renderBackend[\s\S]*?request: window\.__rendererRuntimeRequest[\s\S]*?canvasOwnershipTracked/,
   'CanvasKit baseline should read page-scoped diagnostics and effective backend selection',
 );
 requireSnippet(
@@ -975,6 +1027,7 @@ for (const readinessGuard of [
   'canvaskitSurfaceRequestMismatch',
   'canvaskitModeMismatch',
   'canvaskitSurfacePreferenceMismatch',
+  'canvasOwnershipMismatch',
   'diagnosticsUnavailable',
   'runtime:readinessGateFailed',
   'visualThresholdMissing',
@@ -991,9 +1044,39 @@ requireSnippet(
   'CanvasKit readiness baseline should fail after writing its JSON report',
 );
 requireSnippet(
+  rendererBaselineSource,
+  /catch \(error\) \{[\s\S]*?captureError =[\s\S]*?writeFileSync\([\s\S]*?captureError/,
+  'CanvasKit readiness baseline should preserve a JSON report after browser capture failures',
+);
+assert.ok(
+  rendererBaselineSource.includes("--readiness-only cannot be combined with --filter"),
+  'CanvasKit readiness should reject partial filtered corpus runs',
+);
+assert.ok(
+  rendererBaselineSource.includes('BROWSER_PARITY_ALLOWED_THRESHOLDS'),
+  'CanvasKit readiness should validate visual threshold keys and ranges',
+);
+assert.ok(
+  rendererBaselineSource.includes('requires a positive minimumInkPixels threshold'),
+  'CanvasKit readiness samples should require an explicit positive ink floor',
+);
+requireSnippet(
   renderDiffWorkflowSource,
   /Run selected CanvasKit readiness gate[\s\S]*?scripts\/renderer_baseline\.py[\s\S]*?--readiness-only/,
   'render-diff CI should run the selected CanvasKit readiness gate',
+);
+assert.ok(
+  renderDiffWorkflowSource.includes("RHWP_CHROMIUM_BUILD_ID: '1660786'")
+    && renderDiffWorkflowSource.includes('chromium@${RHWP_CHROMIUM_BUILD_ID}'),
+  'render-diff CI should pin the Chromium revision used by hard visual gates',
+);
+assert.ok(
+  !renderDiffWorkflowSource.includes('chromium@latest'),
+  'hard visual gates must not follow a moving Chromium revision',
+);
+assert.ok(
+  rendererBaselineSource.includes('chromiumBuildId'),
+  'CanvasKit readiness artifacts should identify the pinned Chromium snapshot',
 );
 
 console.log('renderer backend contract guard passed');

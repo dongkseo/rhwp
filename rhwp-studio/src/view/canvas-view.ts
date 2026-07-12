@@ -3,7 +3,7 @@ import { EventBus } from '@/core/event-bus';
 import type { PageInfo } from '@/core/types';
 import { VirtualScroll } from './virtual-scroll';
 import { CanvasPool } from './canvas-pool';
-import { PageRenderer, type PageRenderContext } from './page-renderer';
+import { PageRenderer, type PageRenderContext, type PageRenderResult } from './page-renderer';
 import { ViewportManager } from './viewport-manager';
 import { CoordinateSystem } from './coordinate-system';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
@@ -191,9 +191,14 @@ export class CanvasView {
     }
 
     // WASM이 Canvas 크기를 자동 설정한다 (물리 픽셀 = 페이지크기 × zoom × DPR)
-    let renderResult = { needsTextEditStaticLayerVerification: false };
+    let renderResult: PageRenderResult = { needsTextEditStaticLayerVerification: false };
+    let renderedCanvas = canvas;
     try {
       renderResult = this.pageRenderer.renderPage(pageIdx, canvas, renderScale, zoom, dpr, renderContext);
+      if (renderResult.renderedCanvas && renderResult.renderedCanvas !== canvas) {
+        renderedCanvas = renderResult.renderedCanvas;
+        this.canvasPool.replace(pageIdx, canvas, renderedCanvas);
+      }
     } catch (e) {
       console.error(`[CanvasView] 페이지 ${pageIdx} 렌더링 실패:`, e);
       this.pageRenderer.removePageLayers(this.scrollContent, pageIdx);
@@ -202,9 +207,9 @@ export class CanvasView {
     }
 
     // CSS 표시 크기 = 물리 픽셀 / DPR (= 페이지크기 × zoom)
-    canvas.style.width = `${canvas.width / dpr}px`;
-    canvas.style.height = `${canvas.height / dpr}px`;
-    this.renderGridOverlay(pageIdx, canvas);
+    renderedCanvas.style.width = `${renderedCanvas.width / dpr}px`;
+    renderedCanvas.style.height = `${renderedCanvas.height / dpr}px`;
+    this.renderGridOverlay(pageIdx, renderedCanvas);
     if (renderResult.needsTextEditStaticLayerVerification) {
       this.scheduleTextEditStaticLayerVerification(pageIdx);
     } else if (renderContext.reason !== 'text-edit') {

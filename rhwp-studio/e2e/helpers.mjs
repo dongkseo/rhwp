@@ -17,6 +17,7 @@ import os from 'os';
 import { PNG } from 'pngjs';
 import { TestReporter } from './report-generator.mjs';
 
+const MAX_INK_MASK_MATCH_EDGES = 5_000_000;
 const CHROME_CDP = process.env.CHROME_CDP || 'http://172.21.192.1:19222';
 const VITE_URL = process.env.VITE_URL || 'http://localhost:7700';
 const REPORT_DIR = '../output/e2e';
@@ -390,6 +391,7 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
   nonInkMaxDiffRatio = null,
   solidInkMaxDiffPixels = null,
   solidInkMaxDiffRatio = null,
+  minimumInkPixels = null,
 } = {}) {
   const expected = PNG.sync.read(expectedBuffer);
   const actual = PNG.sync.read(actualBuffer);
@@ -418,6 +420,8 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
   const height = expected.height;
   const expectedInkMask = new Uint8Array(totalPixels);
   const actualInkMask = new Uint8Array(totalPixels);
+  let expectedInkPixels = 0;
+  let actualInkPixels = 0;
 
   const isInkPixel = (data, base) => data[base + 3] > inkMaskAlphaThreshold
     && Math.max(
@@ -456,6 +460,8 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
     const base = pixelIndex * 4;
     expectedInkMask[pixelIndex] = isInkPixel(expected.data, base) ? 1 : 0;
     actualInkMask[pixelIndex] = isInkPixel(actual.data, base) ? 1 : 0;
+    expectedInkPixels += expectedInkMask[pixelIndex];
+    actualInkPixels += actualInkMask[pixelIndex];
   }
 
   for (let i = 0; i < expected.data.length; i += 4) {
@@ -494,39 +500,143 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
       actualOnlyInk.push(pixelIndex);
     }
   }
-  const actualOnlyInkMask = new Uint8Array(totalPixels);
-  const matchedActualInkMask = new Uint8Array(totalPixels);
-  for (const pixelIndex of actualOnlyInk) actualOnlyInkMask[pixelIndex] = 1;
-
-  for (const expectedIndex of expectedOnlyInk) {
+  const actualPositionByPixel = new Int32Array(totalPixels);
+  actualPositionByPixel.fill(-1);
+  for (let actualPosition = 0; actualPosition < actualOnlyInk.length; actualPosition++) {
+    actualPositionByPixel[actualOnlyInk[actualPosition]] = actualPosition;
+  }
+  const adjacencyOffsets = new Int32Array(expectedOnlyInk.length + 1);
+  let adjacencyEdgeCount = 0;
+  for (let expectedPosition = 0; expectedPosition < expectedOnlyInk.length; expectedPosition++) {
+    const expectedIndex = expectedOnlyInk[expectedPosition];
     const expectedX = expectedIndex % width;
     const expectedY = (expectedIndex - expectedX) / width;
     const minY = Math.max(0, expectedY - inkMaskNeighborhoodRadius);
     const maxY = Math.min(height - 1, expectedY + inkMaskNeighborhoodRadius);
     const minX = Math.max(0, expectedX - inkMaskNeighborhoodRadius);
     const maxX = Math.min(width - 1, expectedX + inkMaskNeighborhoodRadius);
-    let bestActualIndex = -1;
-    let bestDistanceSquared = Number.POSITIVE_INFINITY;
     for (let actualY = minY; actualY <= maxY; actualY++) {
       for (let actualX = minX; actualX <= maxX; actualX++) {
         const actualIndex = actualY * width + actualX;
-        if (!actualOnlyInkMask[actualIndex] || matchedActualInkMask[actualIndex]) continue;
-        const distanceSquared = (actualX - expectedX) ** 2 + (actualY - expectedY) ** 2;
-        if (distanceSquared < bestDistanceSquared) {
-          bestActualIndex = actualIndex;
-          bestDistanceSquared = distanceSquared;
+        const actualPosition = actualPositionByPixel[actualIndex];
+        if (actualPosition >= 0) {
+          adjacencyEdgeCount++;
+          if (adjacencyEdgeCount > MAX_INK_MASK_MATCH_EDGES) {
+            throw new Error(
+              `ink-mask matching edge budget exceeded: ${adjacencyEdgeCount} > ${MAX_INK_MASK_MATCH_EDGES}`,
+            );
+          }
         }
       }
     }
-    if (bestActualIndex >= 0) {
-      matchedActualInkMask[bestActualIndex] = 1;
-    } else {
-      inkMaskDiffPixels++;
+    adjacencyOffsets[expectedPosition + 1] = adjacencyEdgeCount;
+  }
+
+  // Maximum-cardinality matching keeps the one-to-one ink comparison independent
+  // of row-major traversal order. Each left node has at most (2r + 1)^2 edges.
+  const adjacency = new Int32Array(adjacencyEdgeCount);
+  for (let expectedPosition = 0; expectedPosition < expectedOnlyInk.length; expectedPosition++) {
+    const expectedIndex = expectedOnlyInk[expectedPosition];
+    const expectedX = expectedIndex % width;
+    const expectedY = (expectedIndex - expectedX) / width;
+    const minY = Math.max(0, expectedY - inkMaskNeighborhoodRadius);
+    const maxY = Math.min(height - 1, expectedY + inkMaskNeighborhoodRadius);
+    const minX = Math.max(0, expectedX - inkMaskNeighborhoodRadius);
+    const maxX = Math.min(width - 1, expectedX + inkMaskNeighborhoodRadius);
+    let edgePosition = adjacencyOffsets[expectedPosition];
+    for (let actualY = minY; actualY <= maxY; actualY++) {
+      for (let actualX = minX; actualX <= maxX; actualX++) {
+        const actualPosition = actualPositionByPixel[actualY * width + actualX];
+        if (actualPosition >= 0) adjacency[edgePosition++] = actualPosition;
+      }
     }
   }
-  for (const actualIndex of actualOnlyInk) {
-    if (!matchedActualInkMask[actualIndex]) inkMaskDiffPixels++;
+  const matchedActualByExpected = new Int32Array(expectedOnlyInk.length);
+  const matchedExpectedByActual = new Int32Array(actualOnlyInk.length);
+  const distances = new Int32Array(expectedOnlyInk.length);
+  const queue = new Int32Array(expectedOnlyInk.length);
+  matchedActualByExpected.fill(-1);
+  matchedExpectedByActual.fill(-1);
+  let matchingSize = 0;
+
+  while (expectedOnlyInk.length > 0 && actualOnlyInk.length > 0) {
+    distances.fill(-1);
+    let queueStart = 0;
+    let queueEnd = 0;
+    for (let expectedPosition = 0; expectedPosition < expectedOnlyInk.length; expectedPosition++) {
+      if (matchedActualByExpected[expectedPosition] < 0) {
+        distances[expectedPosition] = 0;
+        queue[queueEnd++] = expectedPosition;
+      }
+    }
+
+    let shortestAugmentingPath = Number.POSITIVE_INFINITY;
+    while (queueStart < queueEnd) {
+      const expectedPosition = queue[queueStart++];
+      const nextDistance = distances[expectedPosition] + 1;
+      if (nextDistance > shortestAugmentingPath) continue;
+      for (
+        let edgePosition = adjacencyOffsets[expectedPosition];
+        edgePosition < adjacencyOffsets[expectedPosition + 1];
+        edgePosition++
+      ) {
+        const actualPosition = adjacency[edgePosition];
+        const pairedExpected = matchedExpectedByActual[actualPosition];
+        if (pairedExpected < 0) {
+          shortestAugmentingPath = Math.min(shortestAugmentingPath, nextDistance);
+        } else if (distances[pairedExpected] < 0 && nextDistance < shortestAugmentingPath) {
+          distances[pairedExpected] = nextDistance;
+          queue[queueEnd++] = pairedExpected;
+        }
+      }
+    }
+    if (!Number.isFinite(shortestAugmentingPath)) break;
+
+    let phaseMatchingCount = 0;
+    for (let root = 0; root < expectedOnlyInk.length; root++) {
+      if (matchedActualByExpected[root] >= 0 || distances[root] !== 0) continue;
+      const expectedStack = [root];
+      const cursorStack = [adjacencyOffsets[root]];
+      let augmented = false;
+      while (expectedStack.length > 0 && !augmented) {
+        const stackIndex = expectedStack.length - 1;
+        const expectedPosition = expectedStack[stackIndex];
+        const edgeEnd = adjacencyOffsets[expectedPosition + 1];
+        let descended = false;
+        while (cursorStack[stackIndex] < edgeEnd) {
+          const actualPosition = adjacency[cursorStack[stackIndex]++];
+          const pairedExpected = matchedExpectedByActual[actualPosition];
+          if (pairedExpected < 0) {
+            if (distances[expectedPosition] + 1 !== shortestAugmentingPath) continue;
+            let nextActual = actualPosition;
+            for (let pathIndex = expectedStack.length - 1; pathIndex >= 0; pathIndex--) {
+              const pathExpected = expectedStack[pathIndex];
+              const previousActual = matchedActualByExpected[pathExpected];
+              matchedActualByExpected[pathExpected] = nextActual;
+              matchedExpectedByActual[nextActual] = pathExpected;
+              nextActual = previousActual;
+            }
+            matchingSize++;
+            phaseMatchingCount++;
+            augmented = true;
+            break;
+          }
+          if (distances[pairedExpected] === distances[expectedPosition] + 1) {
+            expectedStack.push(pairedExpected);
+            cursorStack.push(adjacencyOffsets[pairedExpected]);
+            descended = true;
+            break;
+          }
+        }
+        if (augmented || descended) continue;
+        distances[expectedPosition] = -1;
+        expectedStack.pop();
+        cursorStack.pop();
+      }
+    }
+    if (phaseMatchingCount === 0) break;
   }
+  inkMaskDiffPixels = expectedOnlyInk.length + actualOnlyInk.length - 2 * matchingSize;
 
   const exactDiffRatio = totalPixels > 0 ? exactDiffPixels / totalPixels : 0;
   const rawTolerantDiffRatio = totalPixels > 0 ? tolerantDiffPixels / totalPixels : 0;
@@ -542,6 +652,7 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
   const hasNonInkRatioBudget = nonInkMaxDiffRatio != null;
   const hasSolidInkPixelBudget = solidInkMaxDiffPixels != null;
   const hasSolidInkRatioBudget = solidInkMaxDiffRatio != null;
+  const hasMinimumInkBudget = minimumInkPixels != null;
   const usesTolerantBudget = hasPixelBudget || hasRatioBudget;
   const usesInkMaskBudget = hasInkMaskPixelBudget || hasInkMaskRatioBudget;
   const usesNonInkBudget = hasNonInkPixelBudget || hasNonInkRatioBudget;
@@ -566,11 +677,14 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
   const rasterOnlyBudgetPassed = (!usesInkMaskBudget || inkMaskBudgetPassed)
     && (!usesNonInkBudget || nonInkBudgetPassed)
     && (!usesSolidInkBudget || solidInkBudgetPassed);
-  const passed = usesTolerantBudget
+  const minimumInkBudgetPassed = !hasMinimumInkBudget
+    || (expectedInkPixels >= minimumInkPixels && actualInkPixels >= minimumInkPixels);
+  const parityBudgetPassed = usesTolerantBudget
     ? tolerantBudgetPassed && (!usesRasterOnlyBudget || rasterOnlyBudgetPassed)
     : usesRasterOnlyBudget
       ? rasterOnlyBudgetPassed
       : tolerantDiffPixels === 0;
+  const passed = parityBudgetPassed && minimumInkBudgetPassed;
   const selectedDiffPixels = usesTolerantBudget
     ? Math.max(tolerantDiffPixels, inkMaskDiffPixels, nonInkDiffPixels, solidInkDiffPixels)
     : usesRasterOnlyBudget
@@ -615,6 +729,10 @@ export async function comparePngBuffers(expectedBuffer, actualBuffer, {
     nonInkBudgetPassed,
     solidInkBudgetPassed,
     rasterOnlyBudgetPassed,
+    expectedInkPixels,
+    actualInkPixels,
+    minimumInkPixels,
+    minimumInkBudgetPassed,
     diffPixels: selectedDiffPixels,
     diffRatio: selectedDiffRatio,
     maxChannelDelta,

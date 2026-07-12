@@ -145,6 +145,15 @@ def load_manifest(
         page = int(sample.get("page", 0))
         if readiness_only and sample.get("canvaskitReadinessGate") is not True:
             continue
+        minimum_ink_pixels = (sample.get("browserParityThresholds") or {}).get(
+            "minimumInkPixels"
+        )
+        if readiness_only and (
+            type(minimum_ink_pixels) is not int or minimum_ink_pixels <= 0
+        ):
+            raise SystemExit(
+                f"readiness sample {sample_id} requires a positive minimumInkPixels threshold"
+            )
         if filter_text and not (
             filter_text in str(sample_id).lower()
             or filter_text in str(file_name).lower()
@@ -530,11 +539,19 @@ def write_reports(
                 summary["effectFailuresTotal"] += effect_diagnostics["preprocessFailures"]
 
             if str(backend).startswith("canvaskit"):
-                surface_diagnostics = (item.get("diagnostics") or {}).get(
-                    "surfaceDiagnostics"
-                ) or {}
-                preference = surface_diagnostics.get("preference") or "-"
-                surface_backend = surface_diagnostics.get("backend") or "-"
+                diagnostics = item.get("diagnostics") or {}
+                surface_diagnostics = diagnostics.get("surfaceDiagnostics") or {}
+                render_diagnostics = diagnostics.get("canvaskitRender") or {}
+                preference = (
+                    surface_diagnostics.get("preference")
+                    or render_diagnostics.get("surfacePreference")
+                    or "-"
+                )
+                surface_backend = (
+                    surface_diagnostics.get("backend")
+                    or render_diagnostics.get("surfaceBackend")
+                    or "-"
+                )
                 surface_key = (
                     backend,
                     profile,
@@ -596,6 +613,10 @@ def write_reports(
                     ):
                         surface_summary[target_field].append(failure)
                 last_failure = surface_diagnostics.get("lastFailure")
+                if not last_failure:
+                    last_failure = render_diagnostics.get("surfaceFallbackReason")
+                    if last_failure and surface_backend == "software":
+                        surface_summary["softwareFallbacksTotal"] += 1
                 if (
                     isinstance(last_failure, str)
                     and last_failure
@@ -664,6 +685,16 @@ def write_reports(
         encoding="utf-8",
     )
 
+    browser_metadata = []
+    if browser_data and browser_data.get("browserVersion"):
+        browser_metadata.append(f"- browser: `{browser_data['browserVersion']}`")
+    if browser_data and browser_data.get("chromiumBuildId"):
+        browser_metadata.append(
+            f"- Chromium build ID: `{browser_data['chromiumBuildId']}`"
+        )
+    if browser_data and browser_data.get("captureError"):
+        browser_metadata.append(f"- browser capture error: `{browser_data['captureError']}`")
+
     lines = [
         f"# Renderer Baseline: {manifest.get('label', 'unnamed')}",
         "",
@@ -673,6 +704,7 @@ def write_reports(
         f"- samples: {len(manifest['samples'])}",
         f"- layered profiles: {', '.join(profiles)}",
         f"- CanvasKit surface: `{effective_canvaskit_surface}`",
+        *browser_metadata,
         "",
         "## Sample Matrix",
         "",
@@ -775,7 +807,7 @@ def write_reports(
                     "",
                     "## CanvasKit Surface Diagnostics Summary",
                     "",
-                    "| Backend | Profile | Preference | Surface Backend | Samples | GPU Samples | Created | Reused | WebGPU Attempts | WebGPU Failures | WebGPU Failures Seen | WebGL Attempts | WebGL Failures | WebGL Failures Seen | Software Attempts | Software Failures | Software Fallbacks | Last Failures Seen |",
+                    "| Backend | Profile | Preference | Surface Backend | Samples | Confirmed GPU Samples | Created | Reused | WebGPU Attempts | WebGPU Failures | WebGPU Failures Seen | WebGL Attempts | WebGL Failures | WebGL Failures Seen | Software Attempts | Software Failures | Software Fallbacks | Last Failures Seen |",
                     "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- | ---: | ---: | ---: | --- |",
                 ]
             )
@@ -828,8 +860,8 @@ def write_reports(
                 f"- failed: {summary.get('failed', 0)}",
                 f"- missing: {summary.get('missing', 0)}",
                 "",
-                "| Sample | Category | Backend | Profile | Active Backend | Surface Backend | Surface Fallback | Passed | Blockers | Expected Gaps | Unexpected Gaps | Diff Ratio |",
-                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: |",
+                "| Sample | Category | Backend | Profile | Active Backend | Canvas Owned | Surface Backend | Surface Fallback | Passed | Blockers | Expected Gaps | Unexpected Gaps | Diff Ratio | Expected Ink | Actual Ink | Min Ink | Ink Floor |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for item in browser_canvaskit_readiness.get("checks", []):
@@ -843,6 +875,7 @@ def write_reports(
                         item.get("targetBackend", "-"),
                         item.get("profile", "-"),
                         item.get("activeBackend") or "-",
+                        "yes" if item.get("canvasOwnershipTracked") else "no",
                         item.get("surfaceBackend") or "-",
                         item.get("surfaceFallbackReason") or "-",
                         "yes" if item.get("passed") else "no",
@@ -852,6 +885,10 @@ def write_reports(
                         f"{selected_diff_ratio:.6f}"
                         if isinstance(selected_diff_ratio, (int, float))
                         else "-",
+                        format_count(item.get("expectedInkPixels")),
+                        format_count(item.get("actualInkPixels")),
+                        format_count(item.get("minimumInkPixels")),
+                        "yes" if item.get("minimumInkBudgetPassed") else "no",
                     ]
                 )
                 + " |"
@@ -1244,6 +1281,8 @@ def main() -> None:
         raise SystemExit("--readiness-only requires --canvaskit-surface=auto")
     if args.readiness_only and args.skip_browser:
         raise SystemExit("--readiness-only cannot be combined with --skip-browser")
+    if args.readiness_only and args.filter.strip():
+        raise SystemExit("--readiness-only cannot be combined with --filter")
     ensure_dir(output_root)
 
     manifest = load_manifest(manifest_path, args.filter, args.readiness_only)

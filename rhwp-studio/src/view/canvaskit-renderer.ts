@@ -67,6 +67,10 @@ type SkSurface = Surface;
 type MutablePath = Path & Pick<PathBuilder, 'arcToRotated' | 'close' | 'cubicTo' | 'lineTo' | 'moveTo'>;
 type LayerColorGraph = NonNullable<NonNullable<LayerGlyphOutlineOp['colorLayers']>['paintGraph']>;
 type LayerColorGraphNode = NonNullable<LayerColorGraph['nodes']>[number];
+interface CanvasKitSurfaceTarget {
+  surface: SkSurface;
+  canvas: HTMLCanvasElement;
+}
 
 export interface CanvasKitRenderDiagnostics {
   mode: CanvasKitRenderMode;
@@ -154,7 +158,12 @@ export class CanvasKitLayerRenderer {
     );
   }
 
-  renderPage(tree: PageLayerTree, targetCanvas: HTMLCanvasElement, scale: number, pageInfo?: PageInfo): void {
+  renderPage(
+    tree: PageLayerTree,
+    targetCanvas: HTMLCanvasElement,
+    scale: number,
+    pageInfo?: PageInfo,
+  ): HTMLCanvasElement {
     if (this.disposed) {
       throw new Error('CanvasKit renderer가 이미 dispose되었습니다');
     }
@@ -162,8 +171,11 @@ export class CanvasKitLayerRenderer {
     this.lastRenderError = null;
     this.lastRenderCompleted = false;
     let surface: SkSurface | null = null;
+    let renderedCanvas = targetCanvas;
     try {
-      surface = this.makeSurface(targetCanvas);
+      const surfaceTarget = this.makeSurface(targetCanvas);
+      surface = surfaceTarget.surface;
+      renderedCanvas = surfaceTarget.canvas;
       const canvas = surface.getCanvas();
       let hasPageBackground = false;
       const stack: LayerNode[] = [tree.root];
@@ -211,6 +223,7 @@ export class CanvasKitLayerRenderer {
     } finally {
       surface?.delete();
     }
+    return renderedCanvas;
   }
 
   releaseLayerTree(_tree: PageLayerTree): void {
@@ -244,7 +257,12 @@ export class CanvasKitLayerRenderer {
     };
   }
 
-  recordRenderFailure(error: unknown): void {
+  recordRenderFailure(error: unknown, resetReplayState = false): void {
+    if (resetReplayState) {
+      this.unsupportedOps.clear();
+      this.surfaceBackend = null;
+      this.surfaceFallbackReason = null;
+    }
     this.lastRenderCompleted = false;
     this.lastRenderError = error instanceof Error ? error.message : String(error);
     this.unsupportedOps.add('renderPage');
@@ -260,41 +278,72 @@ export class CanvasKitLayerRenderer {
     this.defaultFontManager?.delete();
   }
 
-  private makeSurface(targetCanvas: HTMLCanvasElement): SkSurface {
+  private makeSurface(
+    targetCanvas: HTMLCanvasElement,
+  ): CanvasKitSurfaceTarget {
     this.surfaceBackend = null;
     this.surfaceFallbackReason = this.surfaceRequest.unsupportedReason ?? null;
-    if (this.surfaceRequest.preference === 'software') {
+    if (this.surfaceRequest.preference === 'webgpu' && this.surfaceFallbackReason === null) {
+      this.surfaceFallbackReason = 'webgpuSurfaceUnsupported';
+    }
+    const reuseSoftwareFallbackCanvas = targetCanvas.classList.contains('ck-replaced');
+    if (this.surfaceRequest.preference === 'software' || reuseSoftwareFallbackCanvas) {
       const swSurface = this.canvasKit.MakeSWCanvasSurface(targetCanvas);
       if (swSurface) {
         this.surfaceBackend = 'software';
-        return swSurface;
+        if (reuseSoftwareFallbackCanvas && this.surfaceFallbackReason === null) {
+          this.surfaceFallbackReason = 'defaultSurfaceUnavailableUsingSoftware';
+        }
+        return { surface: swSurface, canvas: targetCanvas };
       }
       this.surfaceFallbackReason = 'softwareSurfaceUnavailable';
     }
-    if (this.surfaceRequest.preference === 'webgpu') {
-      this.surfaceFallbackReason = 'webgpuSurfaceUnsupported';
-    }
+    const originalParent = targetCanvas.parentElement;
+    const originalChildIndex = originalParent
+      ? Array.prototype.indexOf.call(originalParent.children, targetCanvas)
+      : -1;
     try {
       const surface = this.canvasKit.MakeCanvasSurface(targetCanvas);
       if (surface) {
-        this.surfaceBackend = 'default';
-        if (this.surfaceRequest.preference === 'software') {
-          this.surfaceFallbackReason = 'softwareSurfaceUnavailableUsingDefaultSurface';
+        const replacement = originalParent && originalChildIndex >= 0
+          ? originalParent.children.item(originalChildIndex)
+          : null;
+        if (targetCanvas.parentElement !== originalParent && replacement instanceof HTMLCanvasElement) {
+          this.surfaceBackend = 'software';
+          if (this.surfaceFallbackReason === null) {
+            this.surfaceFallbackReason = 'defaultSurfaceUnavailableUsingSoftware';
+          }
+          return { surface, canvas: replacement };
         }
-        return surface;
+        this.surfaceBackend = 'default';
+        return { surface, canvas: targetCanvas };
       }
     } catch {
       if (this.surfaceFallbackReason === null) {
         this.surfaceFallbackReason = 'defaultSurfaceCreationFailed';
       }
     }
-    const softwareSurface = this.canvasKit.MakeSWCanvasSurface(targetCanvas);
+    const internalReplacement = originalParent && originalChildIndex >= 0
+      ? originalParent.children.item(originalChildIndex)
+      : null;
+    let softwareCanvas = targetCanvas.parentElement !== originalParent
+      && internalReplacement instanceof HTMLCanvasElement
+      ? internalReplacement
+      : targetCanvas;
+    if (softwareCanvas === targetCanvas && targetCanvas.parentElement) {
+      const parent = targetCanvas.parentElement;
+      const replacement = targetCanvas.cloneNode(true) as HTMLCanvasElement;
+      replacement.classList.add('ck-replaced');
+      parent.replaceChild(replacement, targetCanvas);
+      softwareCanvas = replacement;
+    }
+    const softwareSurface = this.canvasKit.MakeSWCanvasSurface(softwareCanvas);
     if (softwareSurface) {
       this.surfaceBackend = 'software';
       if (this.surfaceFallbackReason === null) {
         this.surfaceFallbackReason = 'defaultSurfaceUnavailableUsingSoftware';
       }
-      return softwareSurface;
+      return { surface: softwareSurface, canvas: softwareCanvas };
     }
     throw new Error('CanvasKit surface를 만들 수 없습니다');
   }

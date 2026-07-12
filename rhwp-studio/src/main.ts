@@ -85,6 +85,8 @@ let rendererRuntimeRequest: {
   renderProfile: ReturnType<typeof resolveRenderProfile>;
 } | null = null;
 let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
+let rendererInitializationError: string | null = null;
+let rendererInitialized = false;
 let extensionViewerSettings: ExtensionViewerSettings = {
   disableExternalWebFonts: false,
 };
@@ -417,7 +419,9 @@ async function initialize(): Promise<void> {
       (window as any).__canvaskitSurfaceRequest = canvaskitSurfaceRequest;
       (window as any).__renderProfile = renderProfile;
     }
+    rendererInitialized = true;
   } catch (error) {
+    rendererInitializationError = error instanceof Error ? error.message : String(error);
     msg.textContent = `WASM 초기화 실패: ${error}`;
     console.error('[main] WASM 초기화 실패:', error);
   }
@@ -1185,7 +1189,9 @@ window.addEventListener('message', async (e) => {
         }
         reply({
           request: rendererRuntimeRequest,
-          effectiveBackend: canvasView?.getRenderBackend() ?? 'canvas2d',
+          initialized: rendererInitialized,
+          initializationError: rendererInitializationError,
+          effectiveBackend: rendererInitialized ? canvasView?.getRenderBackend() ?? null : null,
           backendFallbackReason: renderBackendFallbackReason,
           page: {
             index: pageIndex,

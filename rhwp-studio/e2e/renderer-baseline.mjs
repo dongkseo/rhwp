@@ -16,6 +16,31 @@ const DEFAULT_BROWSER_PARITY_THRESHOLDS = {
   ignoreChannelDelta: 8,
   maxDiffRatio: 0.005,
 };
+const BROWSER_PARITY_RATIO_THRESHOLDS = new Set([
+  'threshold',
+  'maxDiffRatio',
+  'inkMaskMaxDiffRatio',
+  'nonInkMaxDiffRatio',
+  'solidInkMaxDiffRatio',
+]);
+const BROWSER_PARITY_PIXEL_THRESHOLDS = new Set([
+  'maxDiffPixels',
+  'inkMaskMaxDiffPixels',
+  'nonInkMaxDiffPixels',
+  'solidInkMaxDiffPixels',
+  'minimumInkPixels',
+]);
+const BROWSER_PARITY_BYTE_THRESHOLDS = new Set([
+  'ignoreChannelDelta',
+  'inkMaskWhiteDelta',
+  'inkMaskAlphaThreshold',
+]);
+const BROWSER_PARITY_ALLOWED_THRESHOLDS = new Set([
+  ...BROWSER_PARITY_RATIO_THRESHOLDS,
+  ...BROWSER_PARITY_PIXEL_THRESHOLDS,
+  ...BROWSER_PARITY_BYTE_THRESHOLDS,
+  'inkMaskNeighborhoodRadius',
+]);
 const ALLOWED_CANVASKIT_SURFACES = new Set(['auto', 'webgpu', 'webgl', 'software']);
 const BACKENDS = [
   {
@@ -63,9 +88,35 @@ function browserParityThresholdsForSample(sample) {
   }
   const thresholds = { ...DEFAULT_BROWSER_PARITY_THRESHOLDS };
   for (const [key, value] of Object.entries(sampleThresholds)) {
-    if (value === null || (typeof value === 'number' && Number.isFinite(value))) {
-      thresholds[key] = value;
+    if (!BROWSER_PARITY_ALLOWED_THRESHOLDS.has(key)) {
+      throw new Error(`unsupported browser parity threshold for ${sample.id}: ${key}`);
     }
+    const nullable = BROWSER_PARITY_PIXEL_THRESHOLDS.has(key)
+      || (BROWSER_PARITY_RATIO_THRESHOLDS.has(key) && key !== 'threshold');
+    if (value === null && nullable) {
+      thresholds[key] = value;
+      continue;
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error(`browser parity threshold ${key} for ${sample.id} must be a finite number`);
+    }
+    if (BROWSER_PARITY_RATIO_THRESHOLDS.has(key) && (value < 0 || value > 1)) {
+      throw new Error(`browser parity threshold ${key} for ${sample.id} must be within 0..1`);
+    }
+    if (BROWSER_PARITY_PIXEL_THRESHOLDS.has(key) && (!Number.isInteger(value) || value < 0)) {
+      throw new Error(`browser parity threshold ${key} for ${sample.id} must be a non-negative integer`);
+    }
+    if (BROWSER_PARITY_BYTE_THRESHOLDS.has(key)
+      && (!Number.isInteger(value) || value < 0 || value > 255)) {
+      throw new Error(`browser parity threshold ${key} for ${sample.id} must be an integer within 0..255`);
+    }
+    if (key === 'inkMaskNeighborhoodRadius'
+      && (!Number.isInteger(value) || value < 0 || value > 16)) {
+      throw new Error(
+        `browser parity threshold ${key} for ${sample.id} must be an integer within 0..16`,
+      );
+    }
+    thresholds[key] = value;
   }
   return thresholds;
 }
@@ -169,13 +220,21 @@ function normalizeSamples(manifest, filterText, readinessOnly) {
     if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) {
       throw new Error(`invalid baseline sample id: ${sample.id}`);
     }
-    return {
+    const normalizedSample = {
       ...sample,
       id,
       file,
       category: sample.category || 'uncategorized',
       page: sample.page ?? 0,
     };
+    const normalizedThresholds = browserParityThresholdsForSample(normalizedSample);
+    if (readinessOnly
+      && normalizedSample.canvaskitReadinessGate === true
+      && (!Number.isInteger(normalizedThresholds.minimumInkPixels)
+        || normalizedThresholds.minimumInkPixels <= 0)) {
+      throw new Error(`readiness sample ${id} requires a positive minimumInkPixels threshold`);
+    }
+    return normalizedSample;
   }).filter((sample) => {
     if (readinessOnly && sample.canvaskitReadinessGate !== true) {
       return false;
@@ -205,11 +264,13 @@ async function readRendererDiagnostics(page, pageIndex) {
     const surfaceDiagnostics = pageRenderer?.canvaskitRenderer?.getSurfaceDiagnostics?.() ?? null;
     const canvaskitRender = window.__canvasView
       ?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
+    const trackedCanvas = window.__canvasView?.canvasPool?.getCanvas?.(targetPageIndex) ?? null;
     return {
       runtime: {
         activeBackend: window.__renderBackend ?? null,
         request: window.__rendererRuntimeRequest ?? null,
         backendFallbackReason: window.__renderBackendFallbackReason ?? null,
+        canvasOwnershipTracked: trackedCanvas instanceof HTMLCanvasElement && trackedCanvas.isConnected,
       },
       imageEffects: {
         canvas2d,
@@ -236,6 +297,9 @@ if (requestedCanvasKitSurface === 'sw' || requestedCanvasKitSurface === 'cpu') {
   );
 }
 const manifest = JSON.parse(fs.readFileSync(options.manifest, 'utf8'));
+if (options.readinessOnly && options.filter.trim()) {
+  throw new Error('--readiness-only cannot be combined with --filter');
+}
 const samples = normalizeSamples(manifest, options.filter, options.readinessOnly);
 const profiles = parseProfiles(options.profiles);
 if (options.readinessOnly && (profiles.length !== 1 || profiles[0] !== 'screen')) {
@@ -255,10 +319,16 @@ if (samples.length === 0) {
 fs.mkdirSync(options.output, { recursive: true });
 
 const results = [];
-const browser = await launchBrowser();
-const page = await createPage(browser, 1280, 900);
+let browser = null;
+let page = null;
+let browserVersion = null;
+const chromiumBuildId = process.env.RHWP_CHROMIUM_BUILD_ID ?? null;
+let captureError = null;
 
 try {
+  browser = await launchBrowser();
+  browserVersion = await browser.version();
+  page = await createPage(browser, 1280, 900);
   for (const sample of samples) {
     if (sample.page !== 0) {
       throw new Error(
@@ -310,9 +380,12 @@ try {
       }
     }
   }
+} catch (error) {
+  captureError = error instanceof Error ? error.message : String(error);
+  console.error(`[baseline] browser capture failed: ${captureError}`);
 } finally {
-  await closePage(page).catch(() => {});
-  await closeBrowser(browser).catch(() => {});
+  if (page) await closePage(page).catch(() => {});
+  if (browser) await closeBrowser(browser).catch(() => {});
 }
 
 const reportPath = path.join(options.output, 'browser-baseline-report.json');
@@ -384,6 +457,10 @@ for (const sample of samples) {
             inkMaskBudgetPassed: diff.inkMaskBudgetPassed,
             nonInkBudgetPassed: diff.nonInkBudgetPassed,
             solidInkBudgetPassed: diff.solidInkBudgetPassed,
+            expectedInkPixels: diff.expectedInkPixels,
+            actualInkPixels: diff.actualInkPixels,
+            minimumInkPixels: diff.minimumInkPixels,
+            minimumInkBudgetPassed: diff.minimumInkBudgetPassed,
             selectedDiffPixels: diff.diffPixels,
             selectedDiffRatio: diff.diffRatio,
             maxChannelDelta: diff.maxChannelDelta,
@@ -547,6 +624,9 @@ for (const result of results.filter((entry) => entry.readinessGateRequired)) {
   if (runtime.backendFallbackReason !== null && runtime.backendFallbackReason !== undefined) {
     blockers.push(`backendFallback:${runtime.backendFallbackReason}`);
   }
+  if (runtime.canvasOwnershipTracked !== true) {
+    blockers.push('canvasOwnershipMismatch');
+  }
   if (renderDiagnostics === null) {
     blockers.push('diagnosticsUnavailable');
   } else {
@@ -582,6 +662,7 @@ for (const result of results.filter((entry) => entry.readinessGateRequired)) {
     passed: blockers.length === 0,
     blockers: [...new Set(blockers)].sort(),
     activeBackend: runtime.activeBackend ?? null,
+    canvasOwnershipTracked: runtime.canvasOwnershipTracked === true,
     request: runtime.request ?? null,
     backendFallbackReason: runtime.backendFallbackReason ?? null,
     expectedUnsupportedOps: renderDiagnostics?.lastExpectedUnsupportedOps ?? [],
@@ -592,11 +673,17 @@ for (const result of results.filter((entry) => entry.readinessGateRequired)) {
     visualComparisonStatus: comparison?.status ?? 'missing',
     visualComparisonPassed: comparison?.diff?.passed ?? false,
     selectedDiffRatio: comparison?.diff?.selectedDiffRatio ?? null,
+    expectedInkPixels: comparison?.diff?.expectedInkPixels ?? null,
+    actualInkPixels: comparison?.diff?.actualInkPixels ?? null,
+    minimumInkPixels: comparison?.diff?.minimumInkPixels ?? null,
+    minimumInkBudgetPassed: comparison?.diff?.minimumInkBudgetPassed ?? false,
   });
 }
 const missingReadinessChecks = options.readinessOnly
   ? Math.max(0, samples.length - canvaskitReadinessChecks.length)
   : 0;
+const failedReadinessChecks = canvaskitReadinessChecks.filter((entry) => !entry.passed).length
+  + missingReadinessChecks;
 const canvaskitReadinessGate = {
   mode: 'selectedCorpus',
   criteria: {
@@ -612,10 +699,10 @@ const canvaskitReadinessGate = {
     total: options.readinessOnly ? samples.length : 0,
     evaluated: canvaskitReadinessChecks.length,
     passed: canvaskitReadinessChecks.filter((entry) => entry.passed).length,
-    failed: canvaskitReadinessChecks.filter((entry) => !entry.passed).length
-      + missingReadinessChecks,
+    failed: captureError && failedReadinessChecks === 0 ? 1 : failedReadinessChecks,
     missing: missingReadinessChecks,
   },
+  captureError,
   checks: canvaskitReadinessChecks,
 };
 
@@ -624,6 +711,9 @@ fs.writeFileSync(
   JSON.stringify(
     {
       manifest: options.manifest,
+      browserVersion,
+      chromiumBuildId,
+      captureError,
       sampleCount: samples.length,
       profiles,
       canvaskitSurface: options.canvaskitSurface,
@@ -642,5 +732,8 @@ if (canvaskitReadinessGate.summary.failed > 0) {
       `[baseline] CanvasKit readiness failed: ${check.sampleId} (${check.blockers.join(', ')})`,
     );
   }
+  process.exitCode = 1;
+}
+if (captureError && !options.readinessOnly) {
   process.exitCode = 1;
 }

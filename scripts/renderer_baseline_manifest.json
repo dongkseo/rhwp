@@ -11,6 +11,7 @@
       "notes": "Basic line segmentation sample from the existing CanvasKit representative suite.",
       "browserParityThresholds": {
         "maxDiffRatio": 0.03,
+        "minimumInkPixels": 5000,
         "inkMaskNeighborhoodRadius": 3,
         "inkMaskMaxDiffRatio": 0.008,
         "nonInkMaxDiffPixels": 0,
@@ -82,6 +83,7 @@
       "notes": "Baseline table layout, borders, and cell clipping.",
       "browserParityThresholds": {
         "maxDiffRatio": 0.045,
+        "minimumInkPixels": 30000,
         "inkMaskNeighborhoodRadius": 3,
         "inkMaskMaxDiffRatio": 0.018,
         "nonInkMaxDiffPixels": 0,
@@ -110,7 +112,8 @@
       "canvaskitReadinessGate": true,
       "notes": "Image crop and fill semantics.",
       "browserParityThresholds": {
-        "maxDiffRatio": 0.02
+        "maxDiffRatio": 0.02,
+        "minimumInkPixels": 20000
       }
     },
     {

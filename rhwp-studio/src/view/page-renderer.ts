@@ -21,6 +21,7 @@ export interface PageRenderContext {
 
 export interface PageRenderResult {
   needsTextEditStaticLayerVerification: boolean;
+  renderedCanvas?: HTMLCanvasElement;
 }
 
 type OverlayLayerKind = 'background' | 'behind' | 'front';
@@ -62,8 +63,8 @@ export class PageRenderer {
   ): PageRenderResult {
     if (this.backend === 'canvaskit') {
       this.layerSummaryCache.delete(pageIdx);
-      this.renderPageCanvasKit(pageIdx, canvas, renderScale);
-      return { needsTextEditStaticLayerVerification: false };
+      const renderedCanvas = this.renderPageCanvasKit(pageIdx, canvas, renderScale);
+      return { needsTextEditStaticLayerVerification: false, renderedCanvas };
     }
 
     const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
@@ -122,34 +123,47 @@ export class PageRenderer {
     pageIdx: number,
     canvas: HTMLCanvasElement,
     renderScale: number,
-  ): void {
+  ): HTMLCanvasElement {
+    this.canvaskitDiagnosticsByPage.delete(pageIdx);
     if (!this.canvaskitRenderer) {
       throw new Error('CanvasKit renderer가 초기화되지 않았습니다');
     }
 
     const parent = canvas.parentElement;
+    const canvasChildIndex = parent
+      ? Array.prototype.indexOf.call(parent.children, canvas)
+      : -1;
     if (parent) {
       this.removePageLayers(parent, pageIdx);
     }
 
-    const pageInfo = this.wasm.getPageInfo(pageIdx);
-    canvas.width = Math.max(1, Math.floor(pageInfo.width * renderScale));
-    canvas.height = Math.max(1, Math.floor(pageInfo.height * renderScale));
-
-    const tree = this.wasm.getPageLayerTreeObject(pageIdx, this.renderProfile);
+    let renderStarted = false;
     try {
-      this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
+      const pageInfo = this.wasm.getPageInfo(pageIdx);
+      canvas.width = Math.max(1, Math.floor(pageInfo.width * renderScale));
+      canvas.height = Math.max(1, Math.floor(pageInfo.height * renderScale));
+      const tree = this.wasm.getPageLayerTreeObject(pageIdx, this.renderProfile);
+      renderStarted = true;
+      const renderedCanvas = this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
+      this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
+      this.cancelReRender(pageIdx);
+      this.imageRetryCounts.delete(pageIdx);
+      return renderedCanvas;
     } catch (error) {
-      this.canvaskitRenderer.recordRenderFailure(error);
+      this.canvaskitRenderer.recordRenderFailure(error, !renderStarted);
       this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       console.error(`[PageRenderer] CanvasKit 페이지 렌더링 실패 (page=${pageIdx}):`, error);
       this.cancelReRender(pageIdx);
       this.imageRetryCounts.delete(pageIdx);
-      return;
+      if (!renderStarted) throw error;
+      const replacement = parent && canvasChildIndex >= 0
+        ? parent.children.item(canvasChildIndex)
+        : null;
+      if (canvas.parentElement !== parent && replacement instanceof HTMLCanvasElement) {
+        return replacement;
+      }
+      return canvas;
     }
-    this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
-    this.cancelReRender(pageIdx);
-    this.imageRetryCounts.delete(pageIdx);
   }
 
   /**
