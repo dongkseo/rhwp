@@ -191,6 +191,20 @@ fn path_rect(doc: &HwpDocument, offset: usize) -> CursorRect {
     serde_json::from_str(&raw).expect("cursor rect json")
 }
 
+fn direct_rect(doc: &HwpDocument, offset: usize) -> CursorRect {
+    let raw = doc
+        .get_cursor_rect_in_cell_native(
+            SECTION,
+            PARENT_PARAGRAPH,
+            TABLE_CONTROL,
+            CELL,
+            TARGET_PARAGRAPH,
+            offset,
+        )
+        .expect("direct cursor rect");
+    serde_json::from_str(&raw).expect("cursor rect json")
+}
+
 fn approx_eq(actual: f64, expected: f64) -> bool {
     (actual - expected).abs() <= 0.2
 }
@@ -254,6 +268,40 @@ fn issue_2214_warm_deferred_tree_and_cursor_are_exact() {
         "warm deferred tree/cursor must be exact:\n{}",
         failures.join("\n")
     );
+}
+
+/// Ignored matrix의 cold/direct/path 및 44/50자 대표 계약을 빠른 GREEN으로 고정한다.
+#[test]
+fn issue_2214_cold_representative_queries_are_exact() {
+    for (label, sample) in [("hwp", HWP_SAMPLE), ("hwpx", HWPX_SAMPLE)] {
+        let mut direct44 = load_sample(sample);
+        insert_sequential(&mut direct44, 44);
+        let direct = direct_rect(&direct44, INSERT_OFFSET + 44);
+        assert_eq!(target_tree_end(&direct44), INSERT_OFFSET + 44);
+        assert_eq!(direct.page_index, 0, "{label}: cold 44 direct page");
+        assert!(approx_eq(direct.x, 569.7), "{label}: cold 44 direct x");
+        assert!(approx_eq(direct.y, 341.9), "{label}: cold 44 direct y");
+        assert!(
+            approx_eq(direct.cell_bounds.h, 945.9),
+            "{label}: cold 44 direct pre-flush bounds"
+        );
+        assert!(!direct.cell_overflowed, "{label}: cold 44 direct overflow");
+        assert_eq!(direct44.page_count(), 115, "{label}: cold 44 pages");
+
+        let mut path50 = load_sample(sample);
+        insert_sequential(&mut path50, 50);
+        let path = path_rect(&path50, INSERT_OFFSET + 50);
+        assert_eq!(target_tree_end(&path50), INSERT_OFFSET + 50);
+        assert_eq!(path.page_index, 0, "{label}: cold 50 path page");
+        assert!(approx_eq(path.x, 629.7), "{label}: cold 50 path x");
+        assert!(approx_eq(path.y, 341.1), "{label}: cold 50 path y");
+        assert!(
+            approx_eq(path.cell_bounds.h, 945.9),
+            "{label}: cold 50 path pre-flush bounds"
+        );
+        assert!(!path.cell_overflowed, "{label}: cold 50 path overflow");
+        assert_eq!(path50.page_count(), 115, "{label}: cold 50 pages");
+    }
 }
 
 /// Production 신호의 입력 권위값: line-count 자체가 아니라 상대 flow advance 변화다.
