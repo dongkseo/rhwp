@@ -371,6 +371,20 @@ pub struct PlaceholderNode {
     pub label: String,
     /// 원본 개체 참조. OLE fallback placeholder 선택/속성 진입에 사용한다.
     pub control_ref: Option<ObjectControlRef>,
+    /// [Task #2225] placeholder 종류 — 한컴은 그림 미지정 placeholder 를
+    /// 편집기에서만(점선 테두리+그림-없음 아이콘) 표시하고 인쇄·인쇄 등가
+    /// 출력에서는 미출력한다. 종류별로 백엔드가 표시/억제를 분기한다.
+    pub kind: PlaceholderKind,
+}
+
+/// [Task #2225] placeholder 의미 구분.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub enum PlaceholderKind {
+    /// 차트/OLE 등 폴백 표시 (기존 동작 — 전 컨텍스트 표시).
+    #[default]
+    Ole,
+    /// 그림 미지정 (bin 참조 실패, 외부 경로 없음) — 편집 뷰 전용 표시.
+    MissingPicture,
 }
 
 impl PlaceholderNode {
@@ -380,6 +394,20 @@ impl PlaceholderNode {
             stroke_color,
             label,
             control_ref: None,
+            kind: PlaceholderKind::default(),
+        }
+    }
+
+    /// [Task #2225] 그림 미지정 placeholder — 한컴 편집기식 점선 테두리 +
+    /// 그림-없음 아이콘으로 표시되고, 인쇄 등가 출력(svg/png/pdf)에서는
+    /// 미출력된다.
+    pub fn missing_picture() -> Self {
+        Self {
+            fill_color: 0x00FFFFFF,
+            stroke_color: 0x00999999,
+            label: String::new(),
+            control_ref: None,
+            kind: PlaceholderKind::MissingPicture,
         }
     }
 
@@ -400,6 +428,7 @@ impl PlaceholderNode {
                 para_index,
                 control_index,
             )),
+            kind: PlaceholderKind::default(),
         }
     }
 
