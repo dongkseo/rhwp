@@ -2,7 +2,7 @@
 
 - 이슈: #2183 / 상위 추적: #2022 / 작성일: 2026-07-13
 - 구현 PR: #2216 / merge commit: `4f9aaaff12a34ad1cb1c5f782311f2f0280ac9a9`
-- 계획: `plans/task_m100_2183.md` + `plans/task_m100_2183_impl.md`
+- 계획: `plans/archives/task_m100_2183.md` + `plans/archives/task_m100_2183_impl.md`
 - 단계 보고: `working/task_m100_2183_stage{1..3}.md`
 
 ## 요약
