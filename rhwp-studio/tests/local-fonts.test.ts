@@ -228,6 +228,59 @@ test('저장된 localStorage snapshot 로드는 queryLocalFonts를 호출하지 
   }
 });
 
+test('저장된 v2 snapshot의 반복 별칭 해석은 전체 face를 다시 정규화하지 않는다', async () => {
+  const g = globalThis as TestGlobals;
+  const originals = {
+    browser: g.browser,
+    chrome: g.chrome,
+    document: g.document,
+    localStorage: g.localStorage,
+    queryLocalFonts: g.queryLocalFonts,
+  };
+  const records = Array.from({ length: 256 }, (_, index) => ({
+    family: `Family ${index}`,
+    fullName: `Family ${index} Regular`,
+    postscriptName: `Family${index}-Regular`,
+    style: 'Regular',
+    displayName: `글꼴 ${index}`,
+    aliases: [`Family ${index}`, `Family ${index} Regular`, `별칭 ${index}`],
+  }));
+  const snapshot: LocalFontSnapshot = {
+    version: 2,
+    detectedAt: '2026-07-12T00:00:00.000Z',
+    families: records.map(record => record.family),
+    fontRecords: records,
+    source: 'local-font-access',
+  };
+  const originalNormalize = String.prototype.normalize;
+  let normalizeCalls = 0;
+
+  resetLocalFontsForTests();
+  g.browser = undefined;
+  g.chrome = undefined;
+  g.localStorage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
+  g.queryLocalFonts = undefined;
+
+  try {
+    await loadStoredLocalFonts();
+    String.prototype.normalize = function(this: string, form?: string): string {
+      normalizeCalls++;
+      return originalNormalize.call(this, form);
+    };
+
+    for (let index = 0; index < 40; index++) {
+      assert.equal(resolveLocalFont('별칭 255')?.postscriptName, 'Family255-Regular');
+      assert.equal(resolveLocalFont('Family 128 Regular')?.family, 'Family 128');
+    }
+    assert.equal(normalizeCalls, 80);
+  } finally {
+    String.prototype.normalize = originalNormalize;
+    await clearStoredLocalFonts();
+    resetLocalFontsForTests();
+    restoreGlobals(originals);
+  }
+});
+
 test('Chrome 확장 컨텍스트에서는 chrome.storage.local snapshot을 우선 사용한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {

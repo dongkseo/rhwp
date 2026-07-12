@@ -123,6 +123,8 @@ const HANGUL_RE = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3]/;
 
 /** 캐시된 로컬 글꼴 snapshot (감지/저장소 로드 전 null) */
 let cachedSnapshot: LocalFontSnapshot | null = null;
+let cachedFontRecords: LocalFontRecord[] = [];
+let cachedFontLookup: LocalFontLookup = emptyLocalFontLookup();
 let storageLoaded = false;
 let lastStorageError: string | null = null;
 /** 현재 페이지 수명 동안만 유지하는 CanvasKit용 SFNT 바이트 조회 캐시. */
@@ -195,6 +197,59 @@ interface SfntFontNames {
   fullNames: string[];
   postscriptNames: string[];
   styles: string[];
+}
+
+interface LocalFontLookup {
+  aliases: Map<string, LocalFontRecord[]>;
+  postscriptNames: Map<string, LocalFontRecord[]>;
+  fullNames: Map<string, LocalFontRecord[]>;
+  familyStyles: Map<string, LocalFontRecord[]>;
+  families: Map<string, LocalFontRecord[]>;
+}
+
+function emptyLocalFontLookup(): LocalFontLookup {
+  return {
+    aliases: new Map(),
+    postscriptNames: new Map(),
+    fullNames: new Map(),
+    familyStyles: new Map(),
+    families: new Map(),
+  };
+}
+
+function addLocalFontLookupRecord(
+  index: Map<string, LocalFontRecord[]>,
+  name: string,
+  record: LocalFontRecord,
+  normalizedNameCache: Map<string, string>,
+): void {
+  let key = normalizedNameCache.get(name);
+  if (key === undefined) {
+    key = normalizeFontAlias(name);
+    normalizedNameCache.set(name, key);
+  }
+  if (!key) return;
+  const records = index.get(key);
+  if (!records) {
+    index.set(key, [record]);
+  } else if (!records.includes(record)) {
+    records.push(record);
+  }
+}
+
+function buildLocalFontLookup(records: readonly LocalFontRecord[]): LocalFontLookup {
+  const lookup = emptyLocalFontLookup();
+  const normalizedNameCache = new Map<string, string>();
+  for (const record of records) {
+    for (const alias of record.aliases) {
+      addLocalFontLookupRecord(lookup.aliases, alias, record, normalizedNameCache);
+    }
+    addLocalFontLookupRecord(lookup.postscriptNames, record.postscriptName, record, normalizedNameCache);
+    addLocalFontLookupRecord(lookup.fullNames, record.fullName, record, normalizedNameCache);
+    addLocalFontLookupRecord(lookup.familyStyles, `${record.family} ${record.style}`, record, normalizedNameCache);
+    addLocalFontLookupRecord(lookup.families, record.family, record, normalizedNameCache);
+  }
+  return lookup;
 }
 
 function emptySfntFontNames(): SfntFontNames {
@@ -380,8 +435,13 @@ function recordsFromFamilies(families: readonly string[]): LocalFontRecord[] {
 
 function snapshotRecords(snapshot: LocalFontSnapshot | null): LocalFontRecord[] {
   if (!snapshot) return [];
-  const records = normalizeLocalFontRecords(snapshot.fontRecords);
-  return records.length > 0 ? records : recordsFromFamilies(snapshot.families);
+  return snapshot.fontRecords?.length ? snapshot.fontRecords : recordsFromFamilies(snapshot.families);
+}
+
+function cacheLocalFontSnapshot(snapshot: LocalFontSnapshot | null): void {
+  cachedSnapshot = snapshot;
+  cachedFontRecords = snapshotRecords(snapshot);
+  cachedFontLookup = buildLocalFontLookup(cachedFontRecords);
 }
 
 async function collectLocalFontRecords(fontDataList: readonly FontData[]): Promise<LocalFontRecord[]> {
@@ -703,14 +763,14 @@ async function removeStoredSnapshot(): Promise<void> {
  */
 export async function loadStoredLocalFonts(): Promise<LocalFontSnapshot | null> {
   const snapshot = await readStoredSnapshot();
-  cachedSnapshot = snapshot;
+  cacheLocalFontSnapshot(snapshot);
   storageLoaded = true;
   return snapshot;
 }
 
 /** 저장된 로컬 글꼴 감지 결과와 런타임 캐시를 초기화한다. */
 export async function clearStoredLocalFonts(): Promise<void> {
-  cachedSnapshot = null;
+  cacheLocalFontSnapshot(null);
   storageLoaded = true;
   localFontBytesByPostscriptName.clear();
   await removeStoredSnapshot();
@@ -746,18 +806,17 @@ export async function detectLocalFonts(options: DetectLocalFontsOptions = {}): P
   if (!snapshot) return [];
 
   localFontBytesByPostscriptName.clear();
-  cachedSnapshot = snapshot;
+  cacheLocalFontSnapshot(snapshot);
   storageLoaded = true;
   await writeStoredSnapshot(snapshot);
-  console.log(`[LocalFonts] ${snapshotRecords(snapshot).length}개 로컬 글꼴 감지됨 (${snapshot.source})`);
+  console.log(`[LocalFonts] ${cachedFontRecords.length}개 로컬 글꼴 감지됨 (${snapshot.source})`);
   return getLocalFonts({ includeRegistered: options.includeRegistered });
 }
 
 /** 캐시된 로컬 글꼴 face 레코드를 반환한다. */
 export function getLocalFontRecords(options: GetLocalFontsOptions = {}): LocalFontRecord[] {
-  const records = snapshotRecords(cachedSnapshot);
-  if (options.includeRegistered) return records;
-  return records.filter(record => !record.aliases.some(name => REGISTERED_FONTS.has(name)));
+  if (options.includeRegistered) return [...cachedFontRecords];
+  return cachedFontRecords.filter(record => !record.aliases.some(name => REGISTERED_FONTS.has(name)));
 }
 
 /** 캐시된 로컬 글꼴 목록을 동기적으로 반환 (감지 전이면 빈 배열) */
@@ -767,28 +826,23 @@ export function getLocalFonts(options: GetLocalFontsOptions = {}): string[] {
 
 /** 캐시된 전체 로컬 글꼴 목록을 반환한다. */
 export function getDetectedLocalFonts(): string[] {
-  return normalizeFamilies(getLocalFontRecords({ includeRegistered: true }).map(record => record.family));
+  return cachedSnapshot ? [...cachedSnapshot.families] : [];
 }
 
 /** HWP/CSS 글꼴명에서 동일한 설치 글꼴 face를 찾는다. */
 export function resolveLocalFont(fontName: string): LocalFontRecord | null {
   const target = normalizeFontAlias(fontName);
   if (!target) return null;
-  const matches = getLocalFontRecords({ includeRegistered: true })
-    .filter(record => record.aliases.some(alias => normalizeFontAlias(alias) === target));
+  const matches = cachedFontLookup.aliases.get(target) ?? [];
   if (matches.length === 0) return null;
 
-  const uniqueMatch = (predicate: (record: LocalFontRecord) => boolean): LocalFontRecord | null => {
-    const candidates = matches.filter(predicate);
-    return candidates.length === 1 ? candidates[0] : null;
-  };
-  return uniqueMatch(record => normalizeFontAlias(record.postscriptName) === target)
-    ?? uniqueMatch(record =>
-      normalizeFontAlias(record.fullName) === target
-      || normalizeFontAlias(`${record.family} ${record.style}`) === target,
-    )
+  const uniqueMatch = (records: readonly LocalFontRecord[] | undefined): LocalFontRecord | null =>
+    records?.length === 1 ? records[0] : null;
+  return uniqueMatch(cachedFontLookup.postscriptNames.get(target))
+    ?? uniqueMatch(cachedFontLookup.fullNames.get(target))
+    ?? uniqueMatch(cachedFontLookup.familyStyles.get(target))
     // family만으로 여러 style face가 매칭되면 임의 face를 고르지 않는다.
-    ?? uniqueMatch(record => normalizeFontAlias(record.family) === target)
+    ?? uniqueMatch(cachedFontLookup.families.get(target))
     ?? (matches.length === 1 ? matches[0] : null);
 }
 
@@ -896,7 +950,7 @@ export function getLocalFontState(): LocalFontState {
 
 /** 테스트 전용: 모듈 내부 캐시를 초기화한다. */
 export function resetLocalFontsForTests(): void {
-  cachedSnapshot = null;
+  cacheLocalFontSnapshot(null);
   storageLoaded = false;
   lastStorageError = null;
   localFontBytesByPostscriptName.clear();
