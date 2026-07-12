@@ -1,12 +1,14 @@
 /**
- * Issue #2214 Stage 1 diagnostic.
+ * Issue #2214 focused GREEN regression and optional diagnostic.
  *
- * This is intentionally a diagnostic runner rather than a RED/GREEN regression
- * test. It uses the real Studio document-open and keyboard input paths, records
- * the model/layout/render timeline, and keeps page-only/full-pagination controls
- * in independent document reloads.
+ * The default path is a focused HWP/HWPX regression that verifies the 44th
+ * cell-flow boundary, pre-cursor pagination, exact tree/caret state, and the
+ * absence of an additional flush through the 50th input. The original
+ * timeline/PNG controls remain available behind --diagnose.
  *
  * Usage:
+ *   node e2e/issue-2214-page-local-repaint.test.mjs --mode=headless
+ *   node e2e/issue-2214-page-local-repaint.test.mjs --mode=headless --runs=1  # local smoke
  *   node e2e/issue-2214-page-local-repaint.test.mjs --mode=headless --diagnose
  *   node e2e/issue-2214-page-local-repaint.test.mjs --mode=headless --diagnose \
  *     --formats=hwp --runs=1
@@ -30,7 +32,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const OUTPUT_ROOT = process.env.ISSUE2214_OUTPUT_ROOT
-  ?? path.join(REPO_ROOT, 'output/poc/task2214/stage2');
+  ?? path.join(REPO_ROOT, 'output/poc/task2214/stage4');
 const TARGET = Object.freeze({
   sectionIndex: 0,
   paragraphIndex: 5,
@@ -305,6 +307,10 @@ async function installTrace(page) {
       cellParaIndex: args[4],
       charOffset: args[5],
       textLength: String(args[6] ?? '').length,
+    }), (result) => ({
+      resultCharOffset: result?.charOffset ?? null,
+      paginationDeferred: result?.paginationDeferred ?? null,
+      cellFlowChanged: result?.cellFlowChanged ?? null,
     }));
     wrap(wasm, 'getCursorRectByPathNear', 'wasm.getCursorRectByPathNear', (args) => ({
       sectionIndex: args[0],
@@ -326,6 +332,11 @@ async function installTrace(page) {
       kind: args[0]?.kind,
       commandType: args[0]?.command?.type,
     }));
+    wrap(input, 'prepareTextMutationBeforeCursor', 'InputHandler.prepareTextMutationBeforeCursor', (args) => ({
+      deferredPagination: args[0]?.deferredPagination ?? null,
+      cellFlowChanged: args[0]?.cellFlowChanged ?? null,
+      paginationCompleted: args[0]?.paginationCompleted ?? null,
+    }), (result) => ({ result }));
     wrap(input, 'refreshAfterOperation', 'InputHandler.refreshAfterOperation', (args) => ({
       requested: args[0],
       fallback: args[1],
@@ -377,6 +388,7 @@ async function collectTrace(page) {
         cursorRectNear: count('wasm.getCursorRectByPathNear'),
         cursorRect: count('wasm.getCursorRectByPath'),
         executeOperation: count('InputHandler.executeOperation'),
+        prepareTextMutation: count('InputHandler.prepareTextMutationBeforeCursor'),
       },
     };
   });
@@ -603,6 +615,7 @@ async function discoverTransition(page, format, bytes, runNumber) {
     };
   });
   return {
+    format,
     runNumber,
     inputPath: 'page.keyboard.type',
     transitionAt,
@@ -652,7 +665,7 @@ async function runTimeline(page, format, bytes, transitionAt) {
   checkpoints.push(await captureCheckpoint(page, directory, 'after-n-plus-2', timelineStart, prepared.clip));
 
   const trace = await collectTrace(page);
-  assert.equal(trace.counts.wasmFlush, 0, `${format}: timeline unexpectedly flushed pagination`);
+  assert.equal(trace.counts.wasmFlush, 1, `${format}: timeline expected one boundary pagination flush`);
   return {
     kind: 'timeline',
     format,
@@ -684,7 +697,7 @@ async function runFullLayerControl(page, format, bytes, transitionAt) {
   await waitTwoRafs(page);
   const after = await captureCheckpoint(page, directory, 'after-full-layer', timelineStart, prepared.clip);
   const trace = await collectTrace(page);
-  assert.equal(trace.counts.wasmFlush, 0, `${format}: full-layer control flushed pagination`);
+  assert.equal(trace.counts.wasmFlush, 1, `${format}: full-layer control expected one boundary pagination flush`);
   return {
     kind: 'full-layer-control',
     format,
@@ -705,7 +718,7 @@ async function runFlushControl(page, format, bytes, transitionAt) {
   await waitTwoRafs(page);
   const before = await captureCheckpoint(page, directory, 'before-explicit-flush', timelineStart, prepared.clip);
   const traceBefore = await collectTrace(page);
-  assert.equal(traceBefore.counts.wasmFlush, 0, `${format}: flush control had a premature pagination flush`);
+  assert.equal(traceBefore.counts.wasmFlush, 1, `${format}: boundary pagination must precede explicit control`);
 
   const explicit = await page.evaluate(() => {
     const input = window.__inputHandler;
@@ -716,11 +729,11 @@ async function runFlushControl(page, format, bytes, transitionAt) {
     window.__eventBus.emit('document-view-changed');
     return { flushed, durationMs: performance.now() - startedAt };
   });
-  assert.equal(explicit.flushed, true, `${format}: explicit pagination control did not flush`);
+  assert.equal(explicit.flushed, false, `${format}: boundary effect must already be consumed`);
   await waitTwoRafs(page);
   const after = await captureCheckpoint(page, directory, 'after-explicit-flush', timelineStart, prepared.clip);
   const trace = await collectTrace(page);
-  assert.equal(trace.counts.wasmFlush, 1, `${format}: explicit control expected exactly one pagination flush`);
+  assert.equal(trace.counts.wasmFlush, 1, `${format}: explicit control must not add a second pagination flush`);
   return {
     kind: 'flush-control',
     format,
@@ -876,7 +889,588 @@ async function runFormat(page, format, bytes, discoveryRuns) {
   return result;
 }
 
-async function main() {
+function assertApprox(actual, expected, label, tolerance = 0.2) {
+  assert.equal(typeof actual, 'number', `${label}: expected a number`);
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${label}: expected ${expected} +/- ${tolerance}, got ${actual}`,
+  );
+}
+
+async function readFocusedSnapshot(page) {
+  return page.evaluate((target) => {
+    const wasm = window.__wasm;
+    const input = window.__inputHandler;
+    const position = input.cursor.getPosition();
+    const rect = input.cursor.getRect();
+    const length = wasm.getCellParagraphLength(
+      target.sectionIndex,
+      target.parentParaIndex,
+      target.controlIndex,
+      target.cellIndex,
+      target.cellParaIndex,
+    );
+    const text = wasm.getTextInCell(
+      target.sectionIndex,
+      target.parentParaIndex,
+      target.controlIndex,
+      target.cellIndex,
+      target.cellParaIndex,
+      0,
+      length,
+    );
+    const lineInfo = wasm.getLineInfoInCell(
+      target.sectionIndex,
+      target.parentParaIndex,
+      target.controlIndex,
+      target.cellIndex,
+      target.cellParaIndex,
+      position.charOffset,
+    );
+    return {
+      model: { length, text, lineCount: lineInfo.lineCount },
+      cursor: { position, rect },
+      pagination: {
+        pending: input.hasDeferredPaginationPending(),
+        pageCount: wasm.pageCount,
+      },
+    };
+  }, TARGET);
+}
+
+function assertFocusedSnapshot(format, runNumber, inserted, snapshot, expectedText) {
+  const prefix = `${format} run ${runNumber} input ${inserted}`;
+  const expectedLength = TARGET.charOffset + inserted;
+  assert.equal(snapshot.model.length, expectedLength, `${prefix}: model length`);
+  assert.equal(snapshot.model.text, expectedText, `${prefix}: model text`);
+  assert.equal(snapshot.model.lineCount, inserted < 44 ? 4 : 5, `${prefix}: line count`);
+  assert.equal(snapshot.pagination.pageCount, 115, `${prefix}: page count`);
+
+  const position = snapshot.cursor.position;
+  assert.equal(position.sectionIndex, TARGET.sectionIndex, `${prefix}: cursor section`);
+  assert.equal(position.parentParaIndex, TARGET.parentParaIndex, `${prefix}: cursor parent paragraph`);
+  assert.equal(position.controlIndex, TARGET.controlIndex, `${prefix}: cursor control`);
+  assert.equal(position.cellIndex, TARGET.cellIndex, `${prefix}: cursor cell`);
+  assert.equal(position.cellParaIndex, TARGET.cellParaIndex, `${prefix}: cursor cell paragraph`);
+  assert.equal(position.charOffset, expectedLength, `${prefix}: cursor offset`);
+  assert.deepEqual(position.cellPath, TARGET.cellPath, `${prefix}: cursor cell path`);
+
+  const rect = snapshot.cursor.rect;
+  assert.equal(rect?.pageIndex, 0, `${prefix}: cursor page`);
+  assert.equal(rect?.cellOverflowed, false, `${prefix}: cursor must not use overflow fallback`);
+  assertApprox(rect?.cellBounds?.h, inserted < 44 ? 945.9 : 971.5, `${prefix}: cell bounds`);
+  assert.equal(
+    snapshot.pagination.pending,
+    inserted !== 44,
+    `${prefix}: deferred pagination pending state`,
+  );
+}
+
+function targetRunStart(op, label) {
+  const match = op.stableSourceKey?.match(/\/char:(\d+)(?:\/|$)/);
+  assert.ok(match, `${label}: target TextRun stableSourceKey lacks char offset`);
+  return Number(match[1]);
+}
+
+function assertExactFocusedState(
+  format,
+  runNumber,
+  state,
+  expectedText,
+  expectedLineCount,
+  expectedBoundsHeight,
+  expectedPending,
+) {
+  const prefix = `${format} run ${runNumber} ${state.label}`;
+  const expectedLength = expectedText.length;
+  assert.equal(state.model.length, expectedLength, `${prefix}: model length`);
+  assert.equal(state.model.text, expectedText, `${prefix}: model text`);
+  assert.equal(state.model.lineCount, expectedLineCount, `${prefix}: line count`);
+  assert.equal(state.pagination.pageCount, 115, `${prefix}: page count`);
+  assert.equal(state.pagination.pending, expectedPending, `${prefix}: pending state`);
+  assert.equal(state.layerTree.pageIndex, 0, `${prefix}: tree page`);
+  assert.equal(state.layerTree.targetText, expectedText, `${prefix}: layer tree text`);
+  assert.equal(state.pageTextLayout.error, null, `${prefix}: page text layout error`);
+  assert.equal(state.pageTextLayout.targetText, expectedText, `${prefix}: page text layout text`);
+
+  const ops = state.layerTree.targetOps;
+  assert.ok(ops.length > 0, `${prefix}: target TextRuns`);
+  let contiguousEnd = 0;
+  for (const [index, op] of ops.entries()) {
+    const start = targetRunStart(op, `${prefix} op ${index}`);
+    assert.equal(start, contiguousEnd, `${prefix}: TextRun ${index} must be contiguous`);
+    const textLength = String(op.text ?? '').length;
+    assert.ok(textLength > 0, `${prefix}: TextRun ${index} must advance`);
+    contiguousEnd = start + textLength;
+  }
+  assert.equal(contiguousEnd, expectedLength, `${prefix}: layer tree UTF-16 end`);
+
+  const position = state.cursor.position;
+  assert.equal(position.charOffset, expectedLength, `${prefix}: cursor offset`);
+  assert.equal(position.sectionIndex, TARGET.sectionIndex, `${prefix}: cursor section`);
+  assert.equal(position.parentParaIndex, TARGET.parentParaIndex, `${prefix}: cursor parent paragraph`);
+  assert.equal(position.controlIndex, TARGET.controlIndex, `${prefix}: cursor control`);
+  assert.equal(position.cellIndex, TARGET.cellIndex, `${prefix}: cursor cell`);
+  assert.equal(position.cellParaIndex, TARGET.cellParaIndex, `${prefix}: cursor cell paragraph`);
+  assert.deepEqual(position.cellPath, TARGET.cellPath, `${prefix}: cursor cell path`);
+
+  const rect = state.cursor.rect;
+  const lastOp = ops.at(-1);
+  assert.equal(rect?.pageIndex, 0, `${prefix}: cursor page`);
+  assert.equal(rect?.cellOverflowed, false, `${prefix}: cursor overflow fallback`);
+  assertApprox(rect?.cellBounds?.h, expectedBoundsHeight, `${prefix}: cell bounds`);
+  assertApprox(rect?.x, lastOp.bbox.x + lastOp.bbox.width, `${prefix}: cursor x at tree end`);
+  assertApprox(rect?.y, lastOp.bbox.y, `${prefix}: cursor y at tree end`);
+  assertApprox(rect?.height, lastOp.bbox.height, `${prefix}: cursor height`);
+
+  assert.ok(state.caret, `${prefix}: DOM caret`);
+  assert.equal(state.caret.display, 'block', `${prefix}: DOM caret display`);
+  assert.ok(state.caret.clientRect?.width > 0, `${prefix}: DOM caret width`);
+  assertApprox(state.caret.clientRect?.height, rect.height, `${prefix}: DOM caret height`);
+}
+
+function assertFocusedTrace(format, runNumber, trace) {
+  const prefix = `${format} run ${runNumber}`;
+  const inserts = trace.events.filter((event) => event.type === 'wasm.insertTextInCellDeferredPagination');
+  const effects = trace.events.filter((event) => event.type === 'InputHandler.prepareTextMutationBeforeCursor');
+  const flushes = trace.events.filter((event) => event.type === 'wasm.flushDeferredPagination');
+  const inputFlushes = trace.events.filter((event) => event.type === 'input.flushDeferredPaginationIfNeeded');
+  const cursorQueries = trace.events.filter((event) => event.type === 'wasm.getCursorRectByPathNear');
+  const operations = trace.events.filter((event) => event.type === 'InputHandler.executeOperation');
+
+  assert.equal(inserts.length, 50, `${prefix}: deferred insert count`);
+  assert.equal(effects.length, 50, `${prefix}: consumed mutation effect count`);
+  assert.equal(flushes.length, 1, `${prefix}: WASM flush count`);
+  assert.equal(inputFlushes.length, 1, `${prefix}: input flush count`);
+  assert.equal(operations.length, 50, `${prefix}: operation count`);
+
+  for (let index = 0; index < inserts.length; index += 1) {
+    const inserted = index + 1;
+    const expectedFlowChange = inserted === 44;
+    assert.equal(inserts[index].charOffset, TARGET.charOffset + index, `${prefix}: input ${inserted} source offset`);
+    assert.equal(inserts[index].resultCharOffset, TARGET.charOffset + inserted, `${prefix}: input ${inserted} result offset`);
+    assert.equal(inserts[index].paginationDeferred, true, `${prefix}: input ${inserted} deferred result`);
+    assert.equal(inserts[index].cellFlowChanged, expectedFlowChange, `${prefix}: input ${inserted} flow result`);
+    assert.equal(effects[index].deferredPagination, true, `${prefix}: input ${inserted} consumed deferred effect`);
+    assert.equal(effects[index].cellFlowChanged, expectedFlowChange, `${prefix}: input ${inserted} consumed flow effect`);
+    assert.equal(effects[index].paginationCompleted, false, `${prefix}: input ${inserted} deferred completion state`);
+  }
+
+  const boundaryInsert = inserts[43];
+  const boundaryFlush = flushes[0];
+  const firstCursorAfterBoundary = cursorQueries.find((event) => event.sequence > boundaryInsert.sequence);
+  assert.ok(firstCursorAfterBoundary, `${prefix}: cursor query after boundary`);
+  assert.ok(
+    boundaryInsert.sequence < boundaryFlush.sequence,
+    `${prefix}: mutation result must precede boundary flush`,
+  );
+  assert.ok(
+    boundaryFlush.sequence < firstCursorAfterBoundary.sequence,
+    `${prefix}: boundary flush must precede cursor query`,
+  );
+
+  const operationDurations = operations.map((event) => event.durationMs);
+  const stableOperationDurations = operationDurations.filter((_, index) => index !== 43);
+  const stableKeyboardDurations = trace.keyboardDurationsMs.filter((_, index) => index !== 43);
+  const cursorDurations = cursorQueries.map((event) => event.durationMs);
+  return {
+    counts: trace.counts,
+    ordering: {
+      boundaryMutationSequence: boundaryInsert.sequence,
+      boundaryFlushSequence: boundaryFlush.sequence,
+      boundaryCursorSequence: firstCursorAfterBoundary.sequence,
+    },
+    timing: {
+      keyboardStable: summarizeDurations(stableKeyboardDurations),
+      keyboardBoundaryMs: trace.keyboardDurationsMs[43],
+      operationStable: summarizeDurations(stableOperationDurations),
+      operationBoundaryMs: operationDurations[43],
+      boundaryFlushMs: boundaryFlush.durationMs,
+      cursorQueries: summarizeDurations(cursorDurations),
+      boundaryCursorMs: firstCursorAfterBoundary.durationMs,
+    },
+  };
+}
+
+async function runFocusedFormat(page, format, bytes, runNumber) {
+  await restoreTrace(page);
+  const load = await openDocumentThroughApp(page, format, bytes);
+  await moveToTarget(page);
+  const timelineStart = await page.evaluate(() => performance.now());
+  const initial = await collectState(page, 'initial-warm', timelineStart);
+  const initialText = initial.model.text;
+  assert.equal(initialText.length, TARGET.charOffset, `${format} run ${runNumber}: initial text length`);
+  assertExactFocusedState(format, runNumber, initial, initialText, 4, 945.9, false);
+  const clip = await resolveCompositedClip(page);
+  const visualDirectory = path.join(OUTPUT_ROOT, 'focused', format, `run-${runNumber}`);
+  const visual = { beforeBoundary: null, boundary: [], comparisons: [] };
+
+  await installTrace(page);
+  const keyboardDurationsMs = [];
+  const checkpoints = { initial };
+  for (let inserted = 1; inserted <= 50; inserted += 1) {
+    const startedAt = performance.now();
+    await page.keyboard.type('1');
+    keyboardDurationsMs.push(performance.now() - startedAt);
+
+    const expectedText = `${initialText}${'1'.repeat(inserted)}`;
+    const snapshot = await readFocusedSnapshot(page);
+    assertFocusedSnapshot(format, runNumber, inserted, snapshot, expectedText);
+
+    if (inserted === 43) {
+      const traceAt43 = await collectTrace(page);
+      assert.equal(traceAt43.counts.wasmFlush, 0, `${format} run ${runNumber}: inputs 1-43 flush count`);
+      await waitTwoRafs(page);
+      checkpoints.at43 = await collectState(page, 'after-43-2raf', timelineStart);
+      assertExactFocusedState(format, runNumber, checkpoints.at43, expectedText, 4, 945.9, true);
+      visual.beforeBoundary = await captureCompositedCrop(
+        page,
+        path.join(visualDirectory, 'after-43.png'),
+        clip,
+      );
+    }
+
+    if (inserted === 44) {
+      const boundaryStates = [];
+      boundaryStates.push(await collectState(page, 'after-44-sync', timelineStart));
+      await waitTwoRafs(page);
+      boundaryStates.push(await collectState(page, 'after-44-2raf', timelineStart));
+      visual.boundary.push(await captureCompositedCrop(
+        page,
+        path.join(visualDirectory, 'after-44-2raf.png'),
+        clip,
+      ));
+      await delay(page, 100);
+      boundaryStates.push(await collectState(page, 'after-44-100ms', timelineStart));
+      visual.boundary.push(await captureCompositedCrop(
+        page,
+        path.join(visualDirectory, 'after-44-100ms.png'),
+        clip,
+      ));
+      await delay(page, 750);
+      boundaryStates.push(await collectState(page, 'after-44-850ms', timelineStart));
+      visual.boundary.push(await captureCompositedCrop(
+        page,
+        path.join(visualDirectory, 'after-44-850ms.png'),
+        clip,
+      ));
+      await delay(page, 750);
+      boundaryStates.push(await collectState(page, 'after-44-1600ms', timelineStart));
+      visual.boundary.push(await captureCompositedCrop(
+        page,
+        path.join(visualDirectory, 'after-44-1600ms.png'),
+        clip,
+      ));
+      for (const state of boundaryStates) {
+        assertExactFocusedState(format, runNumber, state, expectedText, 5, 971.5, false);
+        const traceAtCheckpoint = await collectTrace(page);
+        assert.equal(
+          traceAtCheckpoint.counts.wasmFlush,
+          1,
+          `${format} run ${runNumber} ${state.label}: cumulative flush count`,
+        );
+      }
+      const transitionComparison = comparePng(
+        visual.boundary[0].filePath,
+        visual.beforeBoundary.filePath,
+        path.join(visualDirectory, 'diff-43-vs-44.png'),
+      );
+      assert.equal(transitionComparison.comparable, true, `${format} run ${runNumber}: transition crop comparable`);
+      assert.ok(transitionComparison.changedPixelCount > 0, `${format} run ${runNumber}: boundary crop must change`);
+      visual.comparisons.push({ label: '43-vs-44', ...transitionComparison });
+      for (let index = 1; index < visual.boundary.length; index += 1) {
+        const comparison = comparePng(
+          visual.boundary[index].filePath,
+          visual.boundary[0].filePath,
+          path.join(visualDirectory, `diff-44-${index}.png`),
+        );
+        assert.equal(comparison.comparable, true, `${format} run ${runNumber}: stable crop ${index} comparable`);
+        assert.equal(comparison.changedPixelCount, 0, `${format} run ${runNumber}: boundary crop ${index} stable`);
+        assert.equal(
+          visual.boundary[index].sha256,
+          visual.boundary[0].sha256,
+          `${format} run ${runNumber}: boundary crop ${index} exact hash`,
+        );
+        visual.comparisons.push({ label: `44-stable-${index}`, ...comparison });
+      }
+      checkpoints.at44 = boundaryStates;
+    }
+  }
+
+  await waitTwoRafs(page);
+  const finalText = `${initialText}${'1'.repeat(50)}`;
+  checkpoints.at50 = await collectState(page, 'after-50-2raf', timelineStart);
+  assertExactFocusedState(format, runNumber, checkpoints.at50, finalText, 5, 971.5, true);
+
+  const trace = await collectTrace(page);
+  trace.keyboardDurationsMs = keyboardDurationsMs;
+  assert.equal(trace.counts.wasmFlush, 1, `${format} run ${runNumber}: inputs 45-50 add no flush`);
+  const traceSummary = assertFocusedTrace(format, runNumber, trace);
+  console.log(
+    `  run ${runNumber}: GREEN, flush=1, boundary=${traceSummary.timing.operationBoundaryMs.toFixed(2)}ms, `
+      + `flushTime=${traceSummary.timing.boundaryFlushMs.toFixed(2)}ms, `
+      + `stableP95=${traceSummary.timing.operationStable.p95Ms.toFixed(2)}ms`,
+  );
+
+  return {
+    format,
+    runNumber,
+    load,
+    transitionAt: 44,
+    pageCount: checkpoints.at50.pagination.pageCount,
+    finalLength: checkpoints.at50.model.length,
+    trace: traceSummary,
+    visual,
+  };
+}
+
+function assertRawBoundaryTrace(format, kind, trace) {
+  const prefix = `${format} ${kind} raw boundary`;
+  const inserts = trace.events.filter((event) => event.type === 'wasm.insertTextInCellDeferredPagination');
+  const effects = trace.events.filter((event) => event.type === 'InputHandler.prepareTextMutationBeforeCursor');
+  const flushes = trace.events.filter((event) => event.type === 'wasm.flushDeferredPagination');
+  const cursorQueries = trace.events.filter((event) => event.type === 'wasm.getCursorRectByPathNear');
+
+  assert.equal(inserts.length, 1, `${prefix}: deferred insert count`);
+  assert.equal(inserts[0].charOffset, TARGET.charOffset + 43, `${prefix}: source offset`);
+  assert.equal(inserts[0].resultCharOffset, TARGET.charOffset + 44, `${prefix}: result offset`);
+  assert.equal(inserts[0].paginationDeferred, true, `${prefix}: deferred result`);
+  assert.equal(inserts[0].cellFlowChanged, true, `${prefix}: flow boundary result`);
+  assert.equal(effects.length, 1, `${prefix}: consumed effect count`);
+  assert.equal(effects[0].deferredPagination, true, `${prefix}: consumed deferred effect`);
+  assert.equal(effects[0].cellFlowChanged, true, `${prefix}: consumed flow effect`);
+  assert.equal(effects[0].paginationCompleted, false, `${prefix}: deferred completion state`);
+  assert.equal(flushes.length, 1, `${prefix}: cumulative flush count`);
+
+  const firstCursorQuery = cursorQueries.find((event) => event.sequence > inserts[0].sequence);
+  assert.ok(firstCursorQuery, `${prefix}: cursor query after mutation`);
+  assert.ok(inserts[0].sequence < flushes[0].sequence, `${prefix}: mutation must precede flush`);
+  assert.ok(flushes[0].sequence < firstCursorQuery.sequence, `${prefix}: flush must precede cursor query`);
+}
+
+function assertRawStableTrace(format, kind, trace) {
+  const prefix = `${format} ${kind} raw stable`;
+  const inserts = trace.events.filter((event) => event.type === 'wasm.insertTextInCellDeferredPagination');
+  const effects = trace.events.filter((event) => event.type === 'InputHandler.prepareTextMutationBeforeCursor');
+  const flushes = trace.events.filter((event) => event.type === 'wasm.flushDeferredPagination');
+  const cursorQueries = trace.events.filter((event) => event.type === 'wasm.getCursorRectByPathNear');
+
+  assert.equal(inserts.length, 1, `${prefix}: deferred insert count`);
+  assert.equal(inserts[0].charOffset, TARGET.charOffset, `${prefix}: source offset`);
+  assert.equal(inserts[0].resultCharOffset, TARGET.charOffset + 1, `${prefix}: result offset`);
+  assert.equal(inserts[0].paginationDeferred, true, `${prefix}: deferred result`);
+  assert.equal(inserts[0].cellFlowChanged, false, `${prefix}: stable flow result`);
+  assert.equal(effects.length, 1, `${prefix}: consumed effect count`);
+  assert.equal(effects[0].deferredPagination, true, `${prefix}: consumed deferred effect`);
+  assert.equal(effects[0].cellFlowChanged, false, `${prefix}: consumed stable effect`);
+  assert.equal(effects[0].paginationCompleted, false, `${prefix}: deferred completion state`);
+  assert.equal(flushes.length, 0, `${prefix}: stable input flush count`);
+  assert.ok(
+    cursorQueries.some((event) => event.sequence > inserts[0].sequence),
+    `${prefix}: cursor query after mutation`,
+  );
+}
+
+async function dispatchRawInput(page, kind, text) {
+  await page.evaluate(({ rawKind, rawText }) => {
+    const input = window.__inputHandler;
+    const textarea = input.textarea;
+    if (rawKind === 'ime') {
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+      textarea.value = rawText;
+      textarea.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        data: rawText,
+        inputType: 'insertCompositionText',
+        isComposing: true,
+      }));
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: rawText }));
+      return;
+    }
+
+    input._isIOS = true;
+    textarea.value = rawText;
+    textarea.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: rawText,
+      inputType: 'insertText',
+    }));
+  }, { rawKind: kind, rawText: text });
+}
+
+async function runRawStableSmoke(page, format, bytes, kind) {
+  await restoreTrace(page);
+  await openDocumentThroughApp(page, format, bytes);
+  await moveToTarget(page);
+  const initial = await readFocusedSnapshot(page);
+  const initialText = initial.model.text;
+  assert.equal(initialText.length, TARGET.charOffset, `${format} ${kind} stable: initial text length`);
+
+  await installTrace(page);
+  await dispatchRawInput(page, kind, '1');
+  await delay(page, 150);
+  await waitTwoRafs(page);
+
+  const timelineStart = await page.evaluate(() => performance.now());
+  const finalState = await collectState(page, `${kind}-raw-stable-after-150ms`, timelineStart);
+  assertExactFocusedState(
+    format,
+    `${kind}-raw-stable`,
+    finalState,
+    `${initialText}1`,
+    4,
+    945.9,
+    true,
+  );
+  const trace = await collectTrace(page);
+  assertRawStableTrace(format, kind, trace);
+
+  if (kind === 'ios') {
+    await page.evaluate(() => {
+      window.__inputHandler._isIOS = false;
+    });
+  }
+  await restoreTrace(page);
+  console.log(`  ${kind} raw stable smoke: GREEN, flush=0`);
+  return {
+    format,
+    kind,
+    variant: 'stable',
+    finalLength: finalState.model.length,
+    pageCount: finalState.pagination.pageCount,
+    flushCount: trace.counts.wasmFlush,
+  };
+}
+
+async function runRawBoundarySmoke(page, format, bytes, kind) {
+  await restoreTrace(page);
+  await openDocumentThroughApp(page, format, bytes);
+  await moveToTarget(page);
+  const initial = await readFocusedSnapshot(page);
+  const initialText = initial.model.text;
+  assert.equal(initialText.length, TARGET.charOffset, `${format} ${kind}: initial text length`);
+
+  await typeKeyboardOnes(page, 43);
+  const beforeBoundary = await readFocusedSnapshot(page);
+  assertFocusedSnapshot(
+    format,
+    `${kind}-raw`,
+    43,
+    beforeBoundary,
+    `${initialText}${'1'.repeat(43)}`,
+  );
+
+  await installTrace(page);
+  await dispatchRawInput(page, kind, '1');
+
+  await delay(page, 150);
+  await waitTwoRafs(page);
+  const finalText = `${initialText}${'1'.repeat(44)}`;
+  const timelineStart = await page.evaluate(() => performance.now());
+  const finalState = await collectState(page, `${kind}-raw-after-150ms`, timelineStart);
+  assertExactFocusedState(
+    format,
+    `${kind}-raw`,
+    finalState,
+    finalText,
+    5,
+    971.5,
+    false,
+  );
+  const trace = await collectTrace(page);
+  assertRawBoundaryTrace(format, kind, trace);
+
+  if (kind === 'ios') {
+    await page.evaluate(() => {
+      window.__inputHandler._isIOS = false;
+    });
+  }
+  await restoreTrace(page);
+  console.log(`  ${kind} raw smoke: GREEN, flush=1`);
+  return {
+    format,
+    kind,
+    variant: 'boundary',
+    finalLength: finalState.model.length,
+    pageCount: finalState.pagination.pageCount,
+    flushCount: trace.counts.wasmFlush,
+  };
+}
+
+async function runFocusedMain() {
+  const formats = cliValue('formats', 'hwp,hwpx')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const runs = Number(cliValue('runs', '3'));
+  assert.ok(Number.isInteger(runs) && runs > 0, '--runs must be a positive integer');
+  for (const format of formats) assert.ok(SAMPLES[format], `unsupported format: ${format}`);
+
+  mkdirSync(OUTPUT_ROOT, { recursive: true });
+  const fixtures = Object.fromEntries(formats.map((format) => {
+    const bytes = readFileSync(SAMPLES[format]);
+    return [format, {
+      path: SAMPLES[format],
+      bytes,
+      size: bytes.length,
+      sha256: sha256(bytes),
+    }];
+  }));
+
+  const browser = await launchBrowser();
+  const page = await createPage(browser, 1280, 900);
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning') {
+      console.log(`  [browser:${message.type()}] ${message.text()}`);
+    }
+  });
+  page.on('pageerror', (error) => console.log(`  [browser:pageerror] ${error.message}`));
+
+  const startedAt = new Date().toISOString();
+  const results = [];
+  const rawSmokes = [];
+  try {
+    await loadApp(page);
+    for (const format of formats) {
+      console.log(`\n[${format.toUpperCase()}] focused GREEN (${runs} runs)`);
+      for (let runNumber = 1; runNumber <= runs; runNumber += 1) {
+        results.push(await runFocusedFormat(page, format, fixtures[format].bytes, runNumber));
+      }
+      rawSmokes.push(await runRawStableSmoke(page, format, fixtures[format].bytes, 'ime'));
+      rawSmokes.push(await runRawStableSmoke(page, format, fixtures[format].bytes, 'ios'));
+      rawSmokes.push(await runRawBoundarySmoke(page, format, fixtures[format].bytes, 'ime'));
+      rawSmokes.push(await runRawBoundarySmoke(page, format, fixtures[format].bytes, 'ios'));
+    }
+  } finally {
+    await restoreTrace(page).catch(() => {});
+    await closePage(page).catch(() => {});
+    await closeBrowser(browser).catch(() => {});
+  }
+
+  const summary = {
+    issue: 2214,
+    mode: 'focused-green',
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    environment: {
+      viteUrl: process.env.VITE_URL ?? 'http://localhost:7700',
+      chromePath: process.env.CHROME_PATH ?? process.env.PUPPETEER_EXECUTABLE_PATH ?? null,
+      viewport: { width: 1280, height: 900, deviceScaleFactor: 1 },
+      runs,
+    },
+    fixtures: Object.fromEntries(Object.entries(fixtures).map(([format, value]) => [format, {
+      path: value.path,
+      size: value.size,
+      sha256: value.sha256,
+    }])),
+    results,
+    rawSmokes,
+  };
+  writeJson(path.join(OUTPUT_ROOT, 'focused-summary.json'), summary);
+  console.log(`\nIssue #2214 focused GREEN written to ${OUTPUT_ROOT}`);
+}
+
+async function runDiagnosticMain() {
   assert.ok(process.argv.includes('--diagnose'), 'Stage 1 runner requires --diagnose');
   const formats = cliValue('formats', 'hwp,hwpx')
     .split(',')
@@ -947,7 +1541,8 @@ async function main() {
   console.log(JSON.stringify(summary.formats, null, 2));
 }
 
-main().catch((error) => {
+const selectedMain = process.argv.includes('--diagnose') ? runDiagnosticMain : runFocusedMain;
+selectedMain().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
