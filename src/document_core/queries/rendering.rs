@@ -447,7 +447,6 @@ impl DocumentCore {
 
     /// 페이지 레이어 트리를 생성하여 반환한다 (native bridge / backend replay용).
     pub fn build_page_layer_tree(&self, page_num: u32) -> Result<PageLayerTree, HwpError> {
-        let tree = self.build_page_tree_cached(page_num)?;
         let _overflows = self.layout_engine.take_overflows();
         let output_options = LayerOutputOptions {
             show_paragraph_marks: self.show_paragraph_marks,
@@ -456,9 +455,11 @@ impl DocumentCore {
             clip_enabled: self.clip_enabled,
             debug_overlay: self.debug_overlay,
         };
-        let mut builder =
-            LayerBuilder::new(RenderProfile::Screen).with_output_options(output_options);
-        Ok(builder.build(&tree))
+        self.with_page_tree_cached(page_num, |tree| {
+            let mut builder =
+                LayerBuilder::new(RenderProfile::Screen).with_output_options(output_options);
+            Ok(builder.build(tree))
+        })
     }
 
     /// 바이너리 데이터를 0-based `bin_data_content` 인덱스로 반환한다.
@@ -3812,6 +3813,38 @@ impl DocumentCore {
         }
 
         Ok(tree)
+    }
+
+    /// 캐시된 페이지 렌더 트리를 참조로 사용한다.
+    ///
+    /// 레이어 tree 생성은 페이지 tree를 소유할 필요가 없다. Canvas2D의 layer summary와
+    /// 실제 재생은 같은 페이지를 연속 조회하므로, 캐시 히트마다 큰 tree를 복제하지 않는다.
+    pub(crate) fn with_page_tree_cached<T>(
+        &self,
+        page_num: u32,
+        build: impl FnOnce(&PageRenderTree) -> Result<T, HwpError>,
+    ) -> Result<T, HwpError> {
+        let idx = page_num as usize;
+        let cached = self
+            .page_tree_cache
+            .borrow()
+            .get(idx)
+            .is_some_and(Option::is_some);
+
+        if !cached {
+            let tree = self.build_page_tree(page_num)?;
+            let mut cache = self.page_tree_cache.borrow_mut();
+            if cache.len() <= idx {
+                cache.resize_with(idx + 1, || None);
+            }
+            cache[idx] = Some(tree);
+        }
+
+        let cache = self.page_tree_cache.borrow();
+        let tree = cache[idx]
+            .as_ref()
+            .expect("페이지 tree cache는 채운 뒤에 참조해야 한다");
+        build(tree)
     }
 
     /// 페이지 렌더 트리를 빌드한다.

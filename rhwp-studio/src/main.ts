@@ -77,6 +77,7 @@ let canvasView: CanvasView | null = null;
 let inputHandler: InputHandler | null = null;
 let toolbar: Toolbar | null = null;
 let ruler: Ruler | null = null;
+let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
 let editMode: EditorEditMode = 'normal';
 let rendererRuntimeRequest: {
   backend: ReturnType<typeof resolveRenderBackendRequest>;
@@ -234,6 +235,26 @@ async function updateLoadProgress(percent: number, label: string): Promise<void>
   await waitForNextPaint();
 }
 
+/**
+ * CanvasKit은 browser CSS font fallback을 사용하지 않는다. 초기 페이지를 먼저 표시한 뒤,
+ * 저장된 권한 범위 안에서 필요한 local face를 준비하고 등록된 경우에만 다시 그린다.
+ */
+function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): void {
+  const renderer = canvaskitRenderer;
+  if (!renderer || !fontNames?.length) return;
+  const requestedFonts = [...fontNames];
+  void (async () => {
+    await loadStoredLocalFonts();
+    const registered = await renderer.prepareLocalFonts(requestedFonts);
+    if (registered > 0 && renderer === canvaskitRenderer) {
+      // 글꼴 face만 바뀌므로 문서와 편집 위치는 유지한 채 현재 페이지를 다시 그린다.
+      eventBus.emit('document-view-changed');
+    }
+  })().catch((error) => {
+    console.warn('[CanvasKit] 로컬 Typeface 준비 실패, 기본 fallback으로 계속 표시합니다:', error);
+  });
+}
+
 async function initialize(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -273,8 +294,6 @@ async function initialize(): Promise<void> {
     }
     let renderBackend = renderBackendRequest.backend;
     renderBackendFallbackReason = renderBackendRequest.unsupportedReason ?? null;
-    let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
-
     if (renderBackend === 'canvaskit') {
       msg.textContent = 'CanvasKit 로딩 중...';
       try {
@@ -653,12 +672,6 @@ function setupEventListeners(): void {
     eventBus.emit('command-state-changed');
   });
 
-  eventBus.on('local-fonts-changed', () => {
-    if (wasm.pageCount > 0) {
-      canvasView?.loadDocument();
-    }
-  });
-
   eventBus.on('autosave-settings-changed', () => {
     autosaveManager.updateSchedule(autosaveScheduleFromUserSettings());
   });
@@ -767,18 +780,15 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     console.log('[initDoc] 4. canvasView loadDocument');
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     canvasView?.loadDocument();
+    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     console.log('[initDoc] 5. toolbar setEnabled');
     await updateLoadProgress(90, '도구 모음 준비 중...');
     toolbar?.setEnabled(true);
     console.log('[initDoc] 6. toolbar initFontDropdown + initStyleDropdown');
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
-    console.log('[initDoc] 7. inputHandler activateWithCaretPosition');
-    await updateLoadProgress(96, '편집 상태 초기화 중...');
-    inputHandler?.activateWithCaretPosition();
-    await updateLoadProgress(100, '완료');
-    msg.textContent = displayName;
-    console.log('[initDoc] 8. 완료');
+    console.log('[initDoc] 7. 사전 검증 및 로컬 글꼴 확인');
+    await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
 
     // #177: HWPX 비표준 lineseg 감지 → 경고 있으면 모달로 사용자 선택 요청
     try {
@@ -805,6 +815,14 @@ async function initializeDocument(docInfo: DocumentInfo, displayName: string): P
     }
 
     await promptLocalFontsIfNeeded(docInfo, displayName);
+
+    // 로컬 글꼴 감지 결과가 뷰를 갱신한 뒤에 캐럿을 연결해야 입력 포커스가 재설정과 경합하지 않는다.
+    console.log('[initDoc] 8. inputHandler activateWithCaretPosition');
+    await updateLoadProgress(96, '편집 상태 초기화 중...');
+    inputHandler?.activateWithCaretPosition();
+    // 최종 단계 뒤에는 비동기 작업이 없으므로 100% progress paint를 기다리지 않는다.
+    msg.textContent = displayName;
+    console.log('[initDoc] 9. 완료');
 
     if (normalizedDuringLoad) {
       documentState.markDirty('validation-auto-fix');
@@ -839,6 +857,7 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo, displayName: stri
     });
     const nextReport = analyzeDocumentFonts(docInfo.fontsUsed);
     eventBus.emit('local-fonts-changed', { fonts, report: nextReport });
+    prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     const state = getLocalFontState();
     const resultLabel = state.source === 'font-presence-probe' ? '확인됨' : '감지됨';
     msg.textContent = `${displayName} (로컬 글꼴 ${fonts.length}개 ${resultLabel})`;

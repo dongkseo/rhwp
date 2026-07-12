@@ -14,6 +14,15 @@ import { getGridViewSettings } from './grid-settings';
 
 const TEXT_EDIT_STATIC_LAYER_VERIFY_DELAY_MS = 800;
 
+type DeferredPrefetchTask =
+  | { kind: 'idle'; id: number }
+  | { kind: 'timeout'; id: number };
+
+type IdleCallbackWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (id: number) => void;
+};
+
 export class CanvasView {
   private virtualScroll: VirtualScroll;
   private canvasPool: CanvasPool;
@@ -28,6 +37,8 @@ export class CanvasView {
   private pendingTextEditRefreshes = new Map<number, PageRenderContext>();
   private textEditRefreshRafId: number | null = null;
   private textEditStaticLayerVerifyTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private pendingPrefetchPages = new Set<number>();
+  private deferredPrefetchTask: DeferredPrefetchTask | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -113,6 +124,7 @@ export class CanvasView {
 
     const prefetchPages = this.virtualScroll.getPrefetchPages(scrollY, vpHeight);
     const visiblePages = this.virtualScroll.getVisiblePages(scrollY, vpHeight);
+    const visibleSet = new Set(visiblePages);
 
     // 벗어난 페이지 해제
     const prefetchSet = new Set(prefetchPages);
@@ -127,12 +139,14 @@ export class CanvasView {
       }
     }
 
-    // 새로 보이는 페이지 렌더링
-    for (const pageIdx of prefetchPages) {
+    // 현재 보이는 페이지는 즉시 렌더한다. 인접 페이지는 스크롤 입력 뒤에 처리한다.
+    for (const pageIdx of visiblePages) {
+      this.pendingPrefetchPages.delete(pageIdx);
       if (!this.canvasPool.has(pageIdx)) {
         this.renderPage(pageIdx);
       }
     }
+    this.schedulePrefetchPages(prefetchPages.filter((pageIdx) => !visibleSet.has(pageIdx)));
 
     // 현재 페이지 번호 갱신
     if (visiblePages.length > 0) {
@@ -146,6 +160,52 @@ export class CanvasView {
     }
 
     this.currentVisiblePages = visiblePages;
+  }
+
+  /** 스크롤 중에는 다음 페이지의 선렌더를 idle time으로 미룬다. */
+  private schedulePrefetchPages(pageIndices: readonly number[]): void {
+    const candidateSet = new Set(pageIndices);
+    for (const pageIdx of this.pendingPrefetchPages) {
+      if (!candidateSet.has(pageIdx)) this.pendingPrefetchPages.delete(pageIdx);
+    }
+    for (const pageIdx of pageIndices) {
+      if (!this.canvasPool.has(pageIdx)) this.pendingPrefetchPages.add(pageIdx);
+    }
+    if (this.pendingPrefetchPages.size === 0 || this.deferredPrefetchTask !== null) return;
+
+    const run = () => {
+      this.deferredPrefetchTask = null;
+      const pages = Array.from(this.pendingPrefetchPages);
+      this.pendingPrefetchPages.clear();
+      for (const pageIdx of pages) {
+        if (!this.canvasPool.has(pageIdx)) this.renderPage(pageIdx);
+      }
+    };
+    const idleWindow = window as IdleCallbackWindow;
+    if (typeof idleWindow.requestIdleCallback === 'function') {
+      this.deferredPrefetchTask = {
+        kind: 'idle',
+        id: idleWindow.requestIdleCallback(run, { timeout: 1000 }),
+      };
+      return;
+    }
+    this.deferredPrefetchTask = {
+      kind: 'timeout',
+      id: window.setTimeout(run, 250),
+    };
+  }
+
+  private cancelPendingPrefetch(): void {
+    const task = this.deferredPrefetchTask;
+    this.deferredPrefetchTask = null;
+    this.pendingPrefetchPages.clear();
+    if (!task) return;
+
+    if (task.kind === 'idle') {
+      (window as IdleCallbackWindow).cancelIdleCallback?.(task.id);
+    } else {
+      clearTimeout(task.id);
+    }
   }
 
   /** 단일 페이지를 렌더링한다 */
@@ -416,6 +476,7 @@ export class CanvasView {
   private reset(): void {
     this.cancelPendingTextEditRefresh();
     this.cancelTextEditStaticLayerVerification();
+    this.cancelPendingPrefetch();
     this.pageRenderer.cancelAll();
     this.releaseAllRenderedPages();
     this.currentVisiblePages = [];
