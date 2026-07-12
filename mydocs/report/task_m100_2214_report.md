@@ -10,6 +10,8 @@
 - 실제 cell-flow 경계만 cursor 조회 전에 full pagination을 정확히 1회 수행한다.
 - 기존 약 2초 cursor fallback은 scoped layout-cache coherence로 제거됐다.
 - 저장·재로드와 #2185 한글 줄 나눔, #1949/#2063 대형 문서 회귀를 유지한다.
+- 영구 브라우저 회귀는 npm 진입점과 CI syntax gate를 가지며, cache/pagination/history 계약은
+  troubleshooting·tech·manual 문서에 재사용 가능한 형태로 남겼다.
 
 정확성 우선 경계 flush의 약 0.9초 비용은 의도적으로 남겼다. 이를 bounded/partial paginator로
 대체하는 작업은 #2193 종합 성능의 후속 범위다.
@@ -157,6 +159,8 @@ exact state, 115쪽과 pixel 안정성이다.
 | renderer contract | 통과 |
 | focused browser | HWP/HWPX 3회씩 6/6 GREEN, raw 8/8 GREEN |
 | Stage 4 source/WASM sameness | 구현 source 9개 + package 3개 hash 동일 |
+| Stage 6 npm browser smoke | HWP/HWPX 1회씩 2/2 GREEN, raw 8/8 GREEN |
+| Stage 6 Studio | 214 passed, build·renderer contract·E2E syntax 통과 |
 
 30-case matrix는 case별 기대값을 아직 hard assertion으로 만들지 않았으므로 correctness
 GREEN으로 과장하지 않고 진단 완료로만 기록한다. 최종 필수 계약은 non-ignored native/Studio
@@ -185,6 +189,14 @@ GREEN으로 과장하지 않고 진단 완료로만 기록한다. 최종 필수 
 - `rhwp-studio/tests/input-edit-invalidation.test.ts`
 - `rhwp-studio/e2e/issue-2214-page-local-repaint.test.mjs`
 
+### 재발 방지·실행 진입점
+
+- `rhwp-studio/package.json`
+- `.github/workflows/render-diff.yml`
+- `mydocs/troubleshootings/deferred_cell_edit_cache_coherence.md`
+- `mydocs/tech/edit_action_undo_redo_architecture.md`
+- `mydocs/manual/edit_command_review_checklist.md`
+
 parser/serializer, font metric, 한컴 line-break semantic, paginator와 Canvas production renderer는
 변경하지 않았다.
 
@@ -198,7 +210,8 @@ parser/serializer, font metric, 한컴 line-break semantic, paginator와 Canvas 
 | 3 | `14d31e0e` | scoped cache coherence와 `cellFlowChanged` GREEN |
 | 4 | `8efd562f` | pre-cursor 경계 flush와 Studio 정합 |
 | upstream 통합 | `d9da3b0b` | `upstream/devel@3c1cba96` 문서 전용 변경 병합 |
-| 5 | Stage 5 최종 커밋 | 광역 게이트와 최종 보고 |
+| 5 | `f0596ded` | 광역 게이트와 최종 보고 |
+| 6 | Stage 6 최종 커밋 | E2E npm/CI 발견성과 재발 방지 문서 보강 |
 
 ## 9. 후속 범위
 
@@ -215,3 +228,6 @@ parser/serializer, font metric, 한컴 line-break semantic, paginator와 Canvas 
 이 작업은 한컴 line-break semantic의 완전 복제나 renderer 전면 재작성 없이, 확인된 cache
 coherence와 flow-boundary 계약만 수정했다. 이슈 close는 merge 뒤 작업지시자 승인에 따라
 별도로 수행하며, 현재 단계에서는 push·PR 생성·이슈 close를 하지 않는다.
+
+로컬 진단 JSON/PNG/timeline과 WASM/build cache는 실행별 환경 의존 증거이므로 PR에 포함하지
+않는다. 구조 기대값은 코드 assertion에, 픽셀 안정성은 재생성 가능한 E2E의 동일 실행 비교에 둔다.

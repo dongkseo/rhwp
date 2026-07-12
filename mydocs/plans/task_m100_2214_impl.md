@@ -568,6 +568,73 @@ git status --short
 Task #2214: Stage 5 - 전체 회귀 검증 및 결과 보고
 ```
 
+### Stage 6. E2E 발견성과 재발 방지 문서 보강
+
+#### 목표
+
+Stage 5 뒤 PR 자산 감사를 반영해 #2214 영구 E2E의 실행 진입점과 syntax gate를 추가하고,
+지연 셀 편집의 cache/pagination/history 계약을 이슈 보고서 밖의 재사용 문서에 고정한다.
+
+#### 작업
+
+1. `rhwp-studio/package.json`에 headless #2214 E2E npm script를 추가한다.
+2. Render Diff workflow의 기존 script syntax 단계에서 #2214 E2E도 `node --check`한다.
+   전체 약 95초 E2E는 Linux 통제 환경을 별도로 검증하기 전 필수 CI 실행으로 추가하지 않는다.
+3. `mydocs/troubleshootings/deferred_cell_edit_cache_coherence.md`에 다음 재발 진단법을 정리한다.
+   - model/LINE_SEG, cell layout cache, page tree, cursor, Canvas의 층별 판정
+   - cold/warm 및 direct/path 비교
+   - stable deferred edit와 cell-flow 경계 분리
+   - mutation → pending → boundary flush → cursor → refresh 순서
+   - global clear, post-cursor flush, 환경 의존 timing hard gate 금지
+4. `mydocs/tech/edit_action_undo_redo_architecture.md`에 실제 `TextMutationEffects` side-channel,
+   one-shot 소비, redo 재계산, IME/iOS 누적과 pre-cursor flush 계약을 추가한다.
+5. `mydocs/manual/edit_command_review_checklist.md`에 page-local cache scope와 normal/redo/raw
+   입력의 effect·flush·reset 검토 항목을 추가한다.
+6. Stage 6 보고서, 최종 보고서와 오늘할일을 같은 커밋에서 갱신한다.
+7. raw JSON/PNG/timeline, `pkg/`, `target/`, `node_modules`, 새 fixture와 paginator 설계는
+   포함하지 않는다.
+
+#### 검증
+
+```bash
+cd rhwp-studio
+node --check e2e/issue-2214-page-local-repaint.test.mjs
+npm test
+npm run build
+npm run e2e:renderer-contract
+```
+
+Vite 7714와 기존 Stage 5 WASM을 사용해 npm script가 인자를 전달하는지 HWP/HWPX 각 1회로
+검증한다.
+
+```bash
+VITE_URL=http://127.0.0.1:7714 \
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+CHROME_EXTRA_ARGS="--force-device-scale-factor=1" \
+ISSUE2214_OUTPUT_ROOT=../output/poc/task2214/stage6-smoke \
+npm run e2e:issue-2214 -- --runs=1
+```
+
+```bash
+git diff --check
+git status --short
+```
+
+#### 완료·승인 조건
+
+- production Rust/Studio 동작 source와 Stage 5 WASM hash가 변하지 않아야 한다.
+- #2214 E2E는 npm script로 발견 가능하고 Render Diff workflow에서 syntax를 검사해야 한다.
+- 세 문서는 이슈별 수치 복제가 아니라 재사용 계약과 진단 순서를 담아야 한다.
+- 검증 산출물은 ignored `output/`에만 생성하고 tracked golden으로 추가하지 않는다.
+- Stage 6 보고서, 최종 보고서와 오늘할일 갱신을 같은 커밋에 포함한다.
+- 별도 승인 전 push, PR 생성, 이슈 close를 수행하지 않는다.
+
+커밋 메시지:
+
+```text
+Task #2214: Stage 6 - E2E 발견성 및 재발 방지 문서 보강
+```
+
 ## 7. 전역 검증 계약
 
 ### 모델·저장
@@ -617,7 +684,8 @@ Task #2214: Stage 5 - 전체 회귀 검증 및 결과 보고
 - 커밋 메시지는 `Task #2214: ...` 형식을 사용한다.
 - 각 Stage 완료 후 작업지시자 승인 없이 다음 Stage로 넘어가지 않는다.
 - 기능에 무관한 포맷, 다른 worktree 산출물, `scripts/frontend-metrics/`는 포함하지 않는다.
-- 최종 보고서와 오늘할일 상태는 Stage 5 커밋에 포함한다.
+- 최종 보고서와 오늘할일 상태는 Stage 5 커밋에 포함한다. PR 자산 감사로 승인된 Stage 6에서는
+  Stage 6 보고서와 함께 최종 보고서·오늘할일을 보정한다.
 - 이슈 close, 원격 push, PR 생성, 브랜치 통합은 별도 승인 전 수행하지 않는다.
 
 본 구현계획 승인 전에는 소스 코드와 테스트를 수정하거나 런타임 의존성을 설치하지 않는다.
