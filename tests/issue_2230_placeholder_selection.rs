@@ -100,3 +100,87 @@ fn normal_image_control_has_no_missing_marker() {
         normal[0]
     );
 }
+
+/// 1×1 투명 PNG (object_ops/picture.rs 테스트 픽스처와 동일).
+fn minimal_png() -> Vec<u8> {
+    vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+        0x44, 0xAE, 0x42, 0x60, 0x82,
+    ]
+}
+
+/// [2단계] 그림 지정 커맨드: placeholder → 실그림 전환 + 컨트롤 레이아웃 정합.
+#[test]
+fn assign_picture_image_converts_placeholder_to_image() {
+    let mut doc = load_doc();
+
+    // 1단계 방출 실측 좌표: sec=0, parentParaIdx=0, cellPath=[{2,3,0}], ci=0
+    // (wasm 래퍼는 오류 경로에서 JsValue 를 생성해 비-wasm 타겟에서 abort
+    // 하므로 native 를 직접 호출한다.)
+    let cell_path: &[(usize, usize, usize)] = &[(2, 3, 0)];
+    let result = doc
+        .assign_picture_image_native(0, 0, cell_path, 0, &minimal_png(), 1, 1, "png")
+        .expect("그림 지정 실패");
+    assert!(
+        result.contains("\"ok\":true") && result.contains("\"binDataId\":"),
+        "지정 결과 형식 불일치: {result}"
+    );
+
+    // 컨트롤 레이아웃: missing 마커 소멸 + 일반 image 2건(로고 + 심볼)
+    let json = doc
+        .get_page_control_layout(0)
+        .expect("컨트롤 레이아웃 조회 실패");
+    assert!(
+        !json.contains("\"missing\":true"),
+        "지정 후에도 missing 마커가 남아 있다: {json}"
+    );
+    let images: Vec<&str> = control_chunks(&json)
+        .into_iter()
+        .filter(|c| c.starts_with("{\"type\":\"image\""))
+        .collect();
+    assert_eq!(
+        images.len(),
+        2,
+        "지정 후 image 컨트롤 2건이어야 한다: {json}"
+    );
+
+    // 지정된 그림이 placeholder 자리(실측 x≈646.2, 틀 크기 유지)에 배치된다
+    assert!(
+        images
+            .iter()
+            .any(|c| c.contains("\"x\":646.") && c.contains("\"w\":75.6")),
+        "심볼 자리의 image 컨트롤 부재(틀 크기 유지 실패): {json}"
+    );
+}
+
+/// [2단계] 대상 검증 실패 시 문서 무변형 (BinData 미등록).
+#[test]
+fn assign_picture_image_invalid_target_leaves_document_unchanged() {
+    let mut doc = load_doc();
+    let before = doc
+        .get_page_control_layout(0)
+        .expect("컨트롤 레이아웃 조회 실패");
+
+    // 존재하지 않는 컨트롤 인덱스 → 오류
+    let cell_path: &[(usize, usize, usize)] = &[(2, 3, 0)];
+    assert!(
+        doc.assign_picture_image_native(0, 0, cell_path, 99, &minimal_png(), 1, 1, "png")
+            .is_err(),
+        "잘못된 컨트롤 인덱스가 성공 처리됐다"
+    );
+
+    // 빈 이미지 데이터 → 오류
+    assert!(
+        doc.assign_picture_image_native(0, 0, cell_path, 0, &[], 1, 1, "png")
+            .is_err(),
+        "빈 이미지 데이터가 성공 처리됐다"
+    );
+
+    let after = doc
+        .get_page_control_layout(0)
+        .expect("컨트롤 레이아웃 조회 실패");
+    assert_eq!(before, after, "실패 호출 후 레이아웃이 변형됐다");
+}
