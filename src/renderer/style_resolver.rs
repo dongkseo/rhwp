@@ -808,9 +808,15 @@ fn resolve_single_para_style(
     dpi: f64,
     is_hwp3_variant: bool,
 ) -> ResolvedParaStyle {
+    // [#2070] 비-Percent 줄간격(Fixed/SpaceOnly/Minimum)도 여백·문단간격·탭과
+    // 동일하게 저장값이 유효 HWPUNIT 의 2배다 — 통제 사다리(#2197)로 확정한
+    // 계약과 실문서 이중 실증: 시장구조조사 본문 ps Fixed 3320HU, 한글 PDF
+    // 줄 pitch 22.1px = 3320/2 (rhwp 종전 44.3px = 2배 팽창); 편람 한컴 HWPX
+    // case FIXED=1560/default=3120 (case=유효, default=저장). HWPX 파서도
+    // case×2 적재라 양 포맷 IR 동일 스케일 — 일괄 /2 가 정합.
     let line_spacing = match ps.line_spacing_type {
         LineSpacingType::Percent => ps.line_spacing as f64,
-        _ => hwpunit_to_px(ps.line_spacing, dpi),
+        _ => hwpunit_to_px(ps.line_spacing, dpi) / 2.0,
     };
 
     // 기본 탭 간격: HWP 기본값 80pt (8000 HWPUNIT)
@@ -1186,8 +1192,9 @@ mod tests {
             LineSpacingType::Percent
         );
 
-        // 고정 타입: 1200 HWPUNIT → px 변환
-        let expected = hwpunit_to_px(1200, DEFAULT_DPI);
+        // 고정 타입: 저장값 1200 HWPUNIT 은 유효값의 2배(여백·문단간격·탭과 동일
+        // 규약, #2070/#2197) → resolve 시 /2 후 px 변환
+        let expected = hwpunit_to_px(1200, DEFAULT_DPI) / 2.0;
         assert!((styles.para_styles[1].line_spacing - expected).abs() < 0.01);
         assert_eq!(
             styles.para_styles[1].line_spacing_type,

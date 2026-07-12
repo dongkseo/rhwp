@@ -20,19 +20,23 @@
 
 - `composer.rs`: 분할 판정 폭에서 행미 공백 제외 + 공백-단독 분할 조각 흡수
 - `model/table.rs`: aim=true `!= 0` → `>= 0` (음수 결측 센티널만 폴백)
+- `style_resolver.rs`: **비-Percent 줄간격(Fixed/SpaceOnly/Minimum) /2** —
+  저장값이 유효의 2배 (통제 사다리 #2197 계약 + 실문서 이중 실증: 본문 ps
+  Fixed 3320HU, 한글 PDF 줄 pitch 22.1px=3320/2, rhwp 종전 44.3px; 편람 한컴
+  HWPX case 1560/default 3120). 여백·문단간격·탭과 동일 규약으로 정렬.
 - `issue_1785` 규칙 테스트 갱신, `table-text` golden 갱신(≤1px justify 재분배)
 
 ## 검증 (한글 2022 COM per-pi 오라클 8건 + 전체 게이트)
 
 | 문서 | 수정 전 | 수정 후 | 기준 |
 |---|---|---|---|
-| 시장구조조사 | 606 | **357** | 315 (잔여 +42) |
+| 시장구조조사 | 606 | **307** | 315 (잔여 −8, 과소 반전 — 별도 서브축) |
 | issue2063 화성시 별표2 | 159 | 159 | 162 (잔여 −3) |
 | 80168 / 80250 / sample16 / exam_kor | 157/17/64/20 | 동일 | 쪽수 정합 유지 |
 | byeolpyo4 / KTX | 26/27 | 동일 | 기존 잔차 불변 |
 
 - cargo test 전체 green (규칙·golden 갱신 포함) / fmt 0 / clippy 0
-- 핀: `tests/issue_2070_rowbreak_density.rs` (시장구조조사 357 잠정·issue2063 159 잠정 — 기준 PDF 값 복귀가 목표)
+- 핀: `tests/issue_2070_rowbreak_density.rs` (시장구조조사 307 잠정·issue2063 159 잠정 — 기준 PDF 값 복귀가 목표)
 
 ## PR #2198 리뷰 지적 처리
 
@@ -41,7 +45,7 @@
   `pdf/task2070/...-2022.pdf`(315쪽, COM HPrint 1-up) ✓ — 원문 타깃 축은 기존
   `samples/issue2063_huge_cellbreak_table.hwp` + `pdf/issue2063_...-2020.pdf`(162쪽)를
   핀 테스트로 연결 ✓
-- 잔여 기록: 시장구조조사 +42, issue2063 −3, 80168 p108 `line_band_drift`/
+- 잔여 기록: 시장구조조사 −8(과소), issue2063 −3, 80168 p108 `line_band_drift`/
   `render_tree_frame_tail_overflow` 후보 (visual sweep), 76076/86712 잠정
   기대값은 #2195/#2197 소관
 - #2110/#2136/#2137/#2138 문서 혼입: 각 이슈의 정식 산출물로 저장소 유지가
