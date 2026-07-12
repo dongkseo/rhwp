@@ -4877,6 +4877,29 @@ impl LayoutEngine {
         row_units
     }
 
+    /// [Issue #2214] 표 단위 nested-text flag에 대한 문단 로컬 기여 여부.
+    /// 편집 경로와 table-wide 계산이 같은 predicate를 사용하도록 단일화한다.
+    pub(crate) fn paragraph_contributes_to_table_nested_text_flag(paragraph: &Paragraph) -> bool {
+        !paragraph.text.trim().is_empty()
+            && paragraph
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::Table(_)))
+    }
+
+    /// [Issue #2063] 표에 "가시 텍스트 + 중첩 표"를 가진 셀이 하나라도 있는지 직접 계산한다.
+    /// predicate table scan과 test counter는 이 helper에만 둔다.
+    fn compute_table_nested_text_flag(&self, table: &crate::model::table::Table) -> bool {
+        #[cfg(test)]
+        self.table_nested_text_flag_scan_count
+            .set(self.table_nested_text_flag_scan_count.get() + 1);
+        table.cells.iter().any(|cell| {
+            cell.paragraphs
+                .iter()
+                .any(Self::paragraph_contributes_to_table_nested_text_flag)
+        })
+    }
+
     /// [Issue #2063] 표에 "가시 텍스트 + 중첩 표"를 가진 셀이 하나라도 있는지(표 단위 불변량).
     /// `cell_units_uncached` 안에서 셀마다 계산되면 O(셀²)(52,694² ≈ 28억)로 폭증하므로
     /// 표 포인터를 키로 1회만 계산해 캐시한다(`cell_units_cache` 와 동일 조판 경계에서 clear).
@@ -4885,19 +4908,61 @@ impl LayoutEngine {
         if let Some(&cached) = self.table_nested_text_flag_cache.borrow().get(&key) {
             return cached;
         }
-        #[cfg(test)]
-        self.table_nested_text_flag_scan_count
-            .set(self.table_nested_text_flag_scan_count.get() + 1);
-        let flag = table.cells.iter().any(|cell| {
-            cell.paragraphs.iter().any(|p| {
-                !p.text.trim().is_empty()
-                    && p.controls.iter().any(|c| matches!(c, Control::Table(_)))
-            })
-        });
+        let flag = self.compute_table_nested_text_flag(table);
         self.table_nested_text_flag_cache
             .borrow_mut()
             .insert(key, flag);
         flag
+    }
+
+    /// [Issue #2214] 텍스트 삽입 뒤 edited cell의 memoized units를 국소 무효화한다.
+    /// 삽입은 local contribution을 true→false로 바꾸지 않는 단조 연산이다.
+    ///
+    /// cached owner flag가 false인데 edited paragraph가 false→true가 된 경우에만
+    /// owner의 직접 cell units를 모두 제거하고, local witness로 flag를 true로 갱신한다.
+    /// 이 direct-key 제거는 predicate 재스캔이 아니며 nested/unrelated table cache는 보존한다.
+    pub(crate) fn invalidate_cell_units_after_text_insert(
+        &self,
+        edited_cell: &crate::model::table::Cell,
+        owner_table: &crate::model::table::Table,
+        local_before: bool,
+        local_after: bool,
+    ) {
+        debug_assert!(
+            !local_before || local_after,
+            "text insert cannot remove a nested-text contribution"
+        );
+
+        let edited_cell_key = edited_cell as *const crate::model::table::Cell as usize;
+        let owner_table_key = owner_table as *const crate::model::table::Table as usize;
+        let cached_owner_flag = self
+            .table_nested_text_flag_cache
+            .borrow()
+            .get(&owner_table_key)
+            .copied();
+        let local_became_true = !local_before && local_after;
+
+        if local_became_true && cached_owner_flag == Some(false) {
+            let mut cell_cache = self.cell_units_cache.borrow_mut();
+            for cell in &owner_table.cells {
+                let key = cell as *const crate::model::table::Cell as usize;
+                cell_cache.remove(&key);
+            }
+            drop(cell_cache);
+            self.table_nested_text_flag_cache
+                .borrow_mut()
+                .insert(owner_table_key, true);
+            return;
+        }
+
+        self.cell_units_cache.borrow_mut().remove(&edited_cell_key);
+        if local_became_true && cached_owner_flag.is_none() {
+            // cell_units entry가 있으면 owner flag도 먼저 warm된다는 현재 cache invariant에
+            // 따라 owner-wide eviction은 불필요하다. local witness로 future scan도 피한다.
+            self.table_nested_text_flag_cache
+                .borrow_mut()
+                .insert(owner_table_key, true);
+        }
     }
 
     /// [Task #1949] `cell_units_uncached` 의 메모이즈 래퍼. 거대 셀이 RowBreak 로
@@ -8136,12 +8201,11 @@ mod row_cut_tests {
         assert!(cont.fully_consumed);
     }
 
-    /// [Issue #2214 Stage 2 RED] 실제 deferred insert 호출부가 edited cell만 제거하는지
+    /// [Issue #2214 Stage 3] 실제 deferred insert 호출부가 edited cell만 제거하는지
     /// 고정한다. #2214 fixture의 owner table-wide nested-text flag는 입력 전후 불변이므로
     /// flag와 same-table sibling identity를 함께 보존해야 한다.
     #[test]
-    #[ignore = "RED contract: deferred insert must perform scoped layout-cache eviction"]
-    fn issue2214_deferred_insert_uses_scoped_cache_eviction_red() {
+    fn issue2214_deferred_insert_uses_scoped_cache_eviction() {
         use crate::document_core::DocumentCore;
 
         fn owner_table(core: &DocumentCore) -> &Table {
@@ -8317,12 +8381,11 @@ mod row_cut_tests {
         );
     }
 
-    /// [Issue #2214 Stage 2 RED] 실제 deferred insert가 빈 nested-table host를 non-empty로
+    /// [Issue #2214 Stage 3] 실제 deferred insert가 빈 nested-table host를 non-empty로
     /// 바꿔 owner flag가 false→true가 되는 경우, owner table의 모든 cell units를 evict하고
     /// flag를 true로 갱신하되 nested table 자체의 cache는 보존해야 한다.
     #[test]
-    #[ignore = "RED contract: deferred flag change must evict every owner cell"]
-    fn issue2214_deferred_insert_flag_change_evicts_owner_cells_red() {
+    fn issue2214_deferred_insert_flag_change_evicts_owner_cells() {
         use crate::document_core::DocumentCore;
 
         fn owner_table(core: &DocumentCore) -> &Table {
@@ -8522,12 +8585,10 @@ mod row_cut_tests {
         );
     }
 
-    /// [Issue #2214 Stage 2 RED] owner table-wide flag가 불변인 편집에서도 generic global
-    /// clear는 편집과 무관한 셀·표의 memoization까지 제거한다. Stage 3에서 edited cell만
-    /// evict하고 cached owner flag를 보존한 뒤 이 계약을 GREEN으로 바꾼다.
+    /// [Issue #2214 Stage 3] owner table-wide flag가 불변이면 edited cell만 evict하고
+    /// cached owner flag와 sibling/unrelated cache를 보존한다.
     #[test]
-    #[ignore = "RED contract: global clear currently drops unrelated layout caches"]
-    fn issue2214_global_clear_drops_unrelated_cache_red() {
+    fn issue2214_scoped_eviction_retains_unrelated_cache() {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let edited_table = table(vec![
@@ -8559,7 +8620,12 @@ mod row_cut_tests {
             &unrelated_table.cells[0] as *const crate::model::table::Cell as usize;
         let owner_table_key = &edited_table as *const crate::model::table::Table as usize;
         let unrelated_table_key = &unrelated_table as *const crate::model::table::Table as usize;
-        eng.clear_layout_caches();
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[0],
+            &edited_table,
+            false,
+            false,
+        );
 
         let cell_cache = eng.cell_units_cache.borrow();
         let flag_cache = eng.table_nested_text_flag_cache.borrow();
@@ -8595,12 +8661,53 @@ mod row_cut_tests {
         );
     }
 
-    /// [Issue #2214 Stage 2 RED] 다른 host가 이미 owner flag=true를 만든 상태에서 두 번째
+    /// [Issue #2214 Stage 3] cold false→true는 기존 owner cell cache가 없으므로
+    /// owner-wide key 순회 없이 local witness로 flag=true를 기록한다.
+    #[test]
+    fn issue2214_cold_local_change_records_true_without_table_scan() {
+        let eng = LayoutEngine::new(96.0);
+        let nested_table = table(vec![cell(0, 0, vec![visible_text_para(1, 0)])]);
+        let mut nested_host = text_para(1, 0);
+        nested_host.text.clear();
+        nested_host.char_count = 0;
+        nested_host
+            .controls
+            .push(Control::Table(Box::new(nested_table)));
+        let mut owner_table = rowbreak_table(vec![
+            cell(0, 0, vec![nested_host]),
+            cell(0, 1, vec![visible_text_para(2, 0)]),
+        ]);
+        let owner_table_key = &owner_table as *const Table as usize;
+
+        assert!(eng.cell_units_cache.borrow().is_empty());
+        assert!(eng.table_nested_text_flag_cache.borrow().is_empty());
+        eng.table_nested_text_flag_scan_count.set(0);
+
+        owner_table.cells[0].paragraphs[0].insert_text_at(0, "x");
+        eng.invalidate_cell_units_after_text_insert(
+            &owner_table.cells[0],
+            &owner_table,
+            false,
+            true,
+        );
+
+        assert!(eng.cell_units_cache.borrow().is_empty());
+        assert_eq!(
+            eng.table_nested_text_flag_cache
+                .borrow()
+                .get(&owner_table_key)
+                .copied(),
+            Some(true)
+        );
+        assert!(eng.table_has_visible_text_with_nested_table(&owner_table));
+        assert_eq!(eng.table_nested_text_flag_scan_count.get(), 0);
+    }
+
+    /// [Issue #2214 Stage 3] 다른 host가 이미 owner flag=true를 만든 상태에서 두 번째
     /// empty nested host가 non-empty가 되어도 table-wide 값은 불변이다. 이 branch는 edited
     /// cell만 evict하고 owner flag·다른 owner cells·unrelated cache를 보존해야 한다.
     #[test]
-    #[ignore = "RED contract: cached-true local change must retain owner sibling caches"]
-    fn issue2214_cached_true_local_change_evicts_edited_cell_only_red() {
+    fn issue2214_cached_true_local_change_evicts_edited_cell_only() {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
 
@@ -8653,7 +8760,12 @@ mod row_cut_tests {
         eng.table_nested_text_flag_scan_count.set(0);
 
         edited_table.cells[1].paragraphs[0].insert_text_at(0, "x");
-        eng.clear_layout_caches();
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[1],
+            &edited_table,
+            false,
+            true,
+        );
 
         let membership = {
             let cell_cache = eng.cell_units_cache.borrow();
@@ -8695,12 +8807,11 @@ mod row_cut_tests {
         );
     }
 
-    /// [Issue #2214 Stage 2 RED] owner table-wide nested-text flag가 바뀌면 같은 표의 모든
+    /// [Issue #2214 Stage 3] owner table-wide nested-text flag가 바뀌면 같은 표의 모든
     /// cell units가 stale할 수 있다. 이때 owner-table-wide eviction은 허용하되 unrelated
     /// table cache는 보존해야 한다.
     #[test]
-    #[ignore = "RED contract: flag-changing edit must retain unrelated layout caches"]
-    fn issue2214_table_flag_change_evicts_owner_cells_only_red() {
+    fn issue2214_table_flag_change_evicts_owner_cells_only() {
         let eng = LayoutEngine::new(96.0);
         let styles = ResolvedStyleSet::default();
         let nested_table = table(vec![cell(0, 0, vec![visible_text_para(1, 0)])]);
@@ -8754,7 +8865,12 @@ mod row_cut_tests {
             &unrelated_table.cells[0] as *const crate::model::table::Cell as usize;
         let owner_table_key = &edited_table as *const crate::model::table::Table as usize;
         let unrelated_table_key = &unrelated_table as *const crate::model::table::Table as usize;
-        eng.clear_layout_caches();
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[0],
+            &edited_table,
+            false,
+            true,
+        );
 
         let membership = {
             let cell_cache = eng.cell_units_cache.borrow();

@@ -107,6 +107,17 @@ fn shift_paragraph_vpos_origin(para: &mut Paragraph, target_vpos: i32) {
     }
 }
 
+/// [Issue #2214] 문단 첫 줄을 원점으로 한 상대 flow advance.
+/// line count가 아니라 후속 문단의 배치 위치를 실제로 바꾸는 높이 신호다.
+fn relative_paragraph_flow_advance(paragraph: &Paragraph) -> Option<i64> {
+    let first = paragraph.line_segs.first()?;
+    let last = paragraph.line_segs.last()?;
+    Some(
+        i64::from(last.vertical_pos) + i64::from(last.line_height) + i64::from(last.line_spacing)
+            - i64::from(first.vertical_pos),
+    )
+}
+
 #[derive(Clone, Copy)]
 struct FieldEndInsertion {
     control_idx: usize,
@@ -719,6 +730,7 @@ impl DocumentCore {
     }
 
     /// 표 셀 내부 단일 텍스트 삽입 후 전체 페이지네이션을 호출자가 지연한다.
+    /// 결과 JSON의 `cellFlowChanged`는 상대 line advance 변화 여부다.
     pub fn insert_text_in_cell_native_deferred_pagination(
         &mut self,
         section_idx: usize,
@@ -762,6 +774,11 @@ impl DocumentCore {
             cell_idx,
             cell_para_idx,
         )?;
+        let flow_advance_before = relative_paragraph_flow_advance(cell_para);
+        let local_contribution_before =
+            crate::renderer::layout::LayoutEngine::paragraph_contributes_to_table_nested_text_flag(
+                cell_para,
+            );
         let new_chars_count = text.chars().count();
         let outside_insertions = inactive_field_end_insertions(
             cell_para,
@@ -806,6 +823,41 @@ impl DocumentCore {
             None,
         );
 
+        let cell_para_after = self
+            .get_cell_paragraph_ref(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+            )
+            .ok_or_else(|| {
+                HwpError::RenderError("삽입 뒤 셀 문단을 다시 찾을 수 없습니다".to_string())
+            })?;
+        let flow_advance_after = relative_paragraph_flow_advance(cell_para_after);
+        let local_contribution_after =
+            crate::renderer::layout::LayoutEngine::paragraph_contributes_to_table_nested_text_flag(
+                cell_para_after,
+            );
+        let cell_flow_changed = flow_advance_before != flow_advance_after;
+
+        // Table의 일반 cell만 pointer-key layout cache의 owner다. 표 캡션 sentinel과
+        // Shape/Picture 텍스트 경로에는 cell_units cache가 없으므로 적용하지 않는다.
+        if cell_idx != 65534 {
+            let control = &self.document.sections[section_idx].paragraphs[parent_para_idx].controls
+                [control_idx];
+            if let Control::Table(table) = control {
+                if let Some(edited_cell) = table.cells.get(cell_idx) {
+                    self.layout_engine.invalidate_cell_units_after_text_insert(
+                        edited_cell,
+                        table,
+                        local_contribution_before,
+                        local_contribution_after,
+                    );
+                }
+            }
+        }
+
         // raw 스트림 무효화, 재페이지네이션 (셀 편집 → composed 불변, section dirty만 설정)
         self.document.sections[section_idx].raw_stream = None;
         self.mark_section_dirty(section_idx);
@@ -821,10 +873,15 @@ impl DocumentCore {
             ctrl: control_idx,
             cell: cell_idx,
         });
-        Ok(super::super::helpers::json_ok_with(&format!(
-            "\"charOffset\":{}",
-            new_offset
-        )))
+        let result_fields = if paginate_immediately {
+            format!("\"charOffset\":{}", new_offset)
+        } else {
+            format!(
+                "\"charOffset\":{},\"cellFlowChanged\":{}",
+                new_offset, cell_flow_changed
+            )
+        };
+        Ok(super::super::helpers::json_ok_with(&result_fields))
     }
 
     /// 표 셀 내부 문단에서 텍스트 삭제 (네이티브)
@@ -948,6 +1005,12 @@ impl DocumentCore {
                 Ok(&mut cell.paragraphs[cell_para_idx])
             }
             Control::Shape(shape) => {
+                if cell_idx != 0 {
+                    return Err(HwpError::RenderError(format!(
+                        "글상자 셀 인덱스는 0이어야 합니다 (요청: {})",
+                        cell_idx
+                    )));
+                }
                 let tb =
                     super::super::helpers::get_textbox_from_shape_mut(shape).ok_or_else(|| {
                         HwpError::RenderError(
@@ -1094,10 +1157,19 @@ impl DocumentCore {
             .get_mut(control_idx)
         {
             Some(Control::Table(table)) => {
-                if let Some(cell) = table.cells.get_mut(cell_idx) {
-                    if let Some(cell_para) = cell.paragraphs.get_mut(cell_para_idx) {
-                        reflow_line_segs(cell_para, final_width, &styles, self.dpi);
-                    }
+                let cell_para = if cell_idx == 65534 {
+                    table
+                        .caption
+                        .as_mut()
+                        .and_then(|caption| caption.paragraphs.get_mut(cell_para_idx))
+                } else {
+                    table
+                        .cells
+                        .get_mut(cell_idx)
+                        .and_then(|cell| cell.paragraphs.get_mut(cell_para_idx))
+                };
+                if let Some(cell_para) = cell_para {
+                    reflow_line_segs(cell_para, final_width, &styles, self.dpi);
                 }
             }
             Some(Control::Shape(shape)) => {

@@ -1864,12 +1864,137 @@ fn test_insert_text_in_cell() {
     let json = result.unwrap();
     assert!(json.contains("\"ok\":true"));
     assert!(json.contains("\"charOffset\":3"));
+    assert!(
+        !json.contains("cellFlowChanged"),
+        "immediate insert response schema must remain unchanged"
+    );
 
     if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
         assert_eq!(table.cells[0].paragraphs[0].text, "셀추가A");
     } else {
         panic!("표 컨트롤을 찾을 수 없음");
     }
+}
+
+#[test]
+fn issue2214_deferred_table_caption_reports_flow_change() {
+    use crate::model::shape::{Caption, CaptionDirection};
+
+    fn caption_paragraph(doc: &HwpDocument) -> &Paragraph {
+        match &doc.document.sections[0].paragraphs[0].controls[0] {
+            Control::Table(table) => &table.caption.as_ref().expect("table caption").paragraphs[0],
+            other => panic!("table control expected: {other:?}"),
+        }
+    }
+
+    fn relative_flow(paragraph: &Paragraph) -> Option<i64> {
+        let first = paragraph.line_segs.first()?;
+        let last = paragraph.line_segs.last()?;
+        Some(
+            i64::from(last.vertical_pos)
+                + i64::from(last.line_height)
+                + i64::from(last.line_spacing)
+                - i64::from(first.vertical_pos),
+        )
+    }
+
+    let mut doc = create_doc_with_table();
+    match &mut doc.document.sections[0].paragraphs[0].controls[0] {
+        Control::Table(table) => {
+            table.caption = Some(Caption {
+                direction: CaptionDirection::Bottom,
+                width: 2_000,
+                max_width: 2_000,
+                paragraphs: vec![Paragraph {
+                    text: "가".to_string(),
+                    char_count: 1,
+                    char_offsets: make_char_offsets("가"),
+                    line_segs: vec![LineSeg {
+                        line_height: 400,
+                        baseline_distance: 320,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+        other => panic!("table control expected: {other:?}"),
+    }
+    doc.reflow_cell_paragraph(0, 0, 0, 65534, 0);
+
+    let mut saw_boundary = false;
+    for inserted in 0..32 {
+        let before = relative_flow(caption_paragraph(&doc));
+        let raw = doc
+            .insert_text_in_cell_native_deferred_pagination(0, 0, 0, 65534, 0, 1 + inserted, "가")
+            .expect("deferred caption insert");
+        let after = relative_flow(caption_paragraph(&doc));
+        let result: Value = serde_json::from_str(&raw).expect("caption edit result json");
+        let reported = result["cellFlowChanged"]
+            .as_bool()
+            .expect("caption flow result");
+        assert_eq!(
+            reported,
+            before != after,
+            "caption input {} flow signal",
+            inserted + 1
+        );
+        if reported {
+            saw_boundary = true;
+            assert!(
+                caption_paragraph(&doc).line_segs.len() > 1,
+                "caption flow boundary must add a line"
+            );
+            break;
+        }
+    }
+    assert!(
+        saw_boundary,
+        "caption deferred input must report a wrapping flow boundary"
+    );
+}
+
+#[test]
+fn issue2214_invalid_shape_cell_index_does_not_mutate_text() {
+    let mut doc = HwpDocument::create_empty();
+    let inserted = doc
+        .create_shape_control_native(
+            0,
+            0,
+            0,
+            21_600,
+            7_200,
+            0,
+            0,
+            true,
+            "TopAndBottom",
+            "textbox",
+            false,
+            false,
+            &[],
+        )
+        .expect("create textbox shape");
+    let inserted: Value = serde_json::from_str(&inserted).expect("shape result json");
+    let para_idx = inserted["paraIdx"].as_u64().expect("shape paraIdx") as usize;
+    let control_idx = inserted["controlIdx"].as_u64().expect("shape controlIdx") as usize;
+    let before = doc
+        .get_cell_paragraph_ref(0, para_idx, control_idx, 0, 0)
+        .expect("textbox paragraph")
+        .text
+        .clone();
+
+    let result =
+        doc.insert_text_in_cell_native_deferred_pagination(0, para_idx, control_idx, 1, 0, 0, "x");
+
+    assert!(result.is_err(), "nonzero Shape cell index must fail");
+    assert_eq!(
+        doc.get_cell_paragraph_ref(0, para_idx, control_idx, 0, 0)
+            .expect("textbox paragraph after invalid call")
+            .text,
+        before,
+        "invalid Shape cell index must fail before mutation"
+    );
 }
 
 #[test]
@@ -24191,11 +24316,10 @@ fn issue2214_assert_cut_continuity(label: &str, state: &str, cuts: &[Issue2214Ta
     }
 }
 
-/// #2214 진단 전용: pagination은 유지한 채 LayoutEngine 캐시만 비우면
-/// warm deferred edit의 stale tree가 복구되는지 격리한다.
+/// #2214 Stage 3: scoped cache coherence는 deferred pagination geometry를 유지하면서
+/// warm tree/cursor만 최신 edit으로 복구하고, explicit flush에서만 cut/bounds를 갱신한다.
 #[test]
-#[ignore = "diagnostic cache-isolation probe"]
-fn issue2214_layout_cache_clear_without_pagination_probe() {
+fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
     use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
     fn target_tree_ranges(doc: &HwpDocument) -> Vec<(u32, usize, usize)> {
@@ -24227,16 +24351,13 @@ fn issue2214_layout_cache_clear_without_pagination_probe() {
             }
         }
 
+        let page = 0;
+        let tree = doc
+            .build_page_render_tree(page)
+            .unwrap_or_else(|e| panic!("page {page} tree: {e}"));
         let mut ranges = Vec::new();
-        for page in 0..doc.page_count() {
-            let tree = doc
-                .build_page_render_tree(page)
-                .unwrap_or_else(|e| panic!("page {page} tree: {e}"));
-            let mut page_ranges = Vec::new();
-            visit(&tree.root, page, &mut page_ranges);
-            page_ranges.sort_unstable_by_key(|(_, start, end)| (*start, *end));
-            ranges.extend(page_ranges);
-        }
+        visit(&tree.root, page, &mut ranges);
+        ranges.sort_unstable_by_key(|(_, start, end)| (*start, *end));
         assert!(!ranges.is_empty(), "target paragraph ranges");
         let mut contiguous_end = 0;
         for (page, start, end) in &ranges {
@@ -24269,36 +24390,24 @@ fn issue2214_layout_cache_clear_without_pagination_probe() {
         );
         doc.get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 130)
             .expect("warm target cursor");
+        let initial_cuts = issue2214_target_cuts(&doc);
+        issue2214_assert_cut_continuity(label, "initial", &initial_cuts);
 
         for inserted in 0..44 {
             doc.insert_text_in_cell_native_deferred_pagination(0, 0, 2, 2, 5, 130 + inserted, "1")
                 .expect("deferred sequential insert");
         }
-        let stale_cuts = issue2214_target_cuts(&doc);
-        issue2214_assert_cut_continuity(label, "stale", &stale_cuts);
-        let stale_cut = stale_cuts[0].clone();
-        let stale_ranges = target_tree_ranges(&doc);
-        let stale_max = stale_ranges
+        let transient_cuts = issue2214_target_cuts(&doc);
+        issue2214_assert_cut_continuity(label, "transient", &transient_cuts);
+        let transient_cut = transient_cuts[0].clone();
+        let transient_ranges = target_tree_ranges(&doc);
+        let transient_max = transient_ranges
             .last()
             .map(|(_, _, end)| *end)
-            .expect("stale target end");
-        let stale_rect = doc
+            .expect("transient target end");
+        let transient_rect = doc
             .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 174)
-            .expect("stale direct rect");
-
-        // 전체 pagination 없이 page/layer/LayoutEngine 캐시만 비운다.
-        doc.invalidate_page_tree_cache();
-        let clear_only_cuts = issue2214_target_cuts(&doc);
-        issue2214_assert_cut_continuity(label, "cache-only", &clear_only_cuts);
-        let clear_only_cut = clear_only_cuts[0].clone();
-        let clear_only_ranges = target_tree_ranges(&doc);
-        let clear_only_max = clear_only_ranges
-            .last()
-            .map(|(_, _, end)| *end)
-            .expect("cache-only target end");
-        let clear_only_rect = doc
-            .get_cursor_rect_in_cell_native(0, 0, 2, 2, 5, 174)
-            .expect("clear-only direct rect");
+            .expect("transient direct rect");
 
         doc.flush_deferred_pagination()
             .expect("explicit pagination control");
@@ -24315,29 +24424,25 @@ fn issue2214_layout_cache_clear_without_pagination_probe() {
             .expect("flushed direct rect");
 
         eprintln!(
-            "#2214 {label}: stale max={stale_max} rect={stale_rect}; clear-only max={clear_only_max} rect={clear_only_rect}; flushed max={flushed_max} rect={flushed_rect}; cuts stale={stale_cut:?} clear={clear_only_cut:?} flushed={flushed_cut:?}"
+            "#2214 {label}: transient max={transient_max} rect={transient_rect}; flushed max={flushed_max} rect={flushed_rect}; cuts transient={transient_cut:?} flushed={flushed_cut:?}"
         );
 
-        assert_eq!(stale_max, 129, "{label}: warm stale reproduction");
-        assert_eq!(
-            clear_only_max, 174,
-            "{label}: cache clear must recover without pagination"
-        );
+        assert_eq!(transient_max, 174, "{label}: scoped warm tree coherence");
         assert_eq!(flushed_max, 174, "{label}: flush oracle");
         assert_eq!(
-            clear_only_ranges, flushed_ranges,
-            "{label}: cache-only target UTF-16 ranges must equal flush oracle"
+            transient_ranges, flushed_ranges,
+            "{label}: transient target UTF-16 ranges must equal flush oracle"
         );
         assert_eq!(
-            stale_cut, clear_only_cut,
-            "{label}: cache clear must not change pagination cut"
+            initial_cuts, transient_cuts,
+            "{label}: scoped eviction must not change pagination fragments"
         );
+        assert_eq!(transient_cut.start_cut, Vec::<usize>::new());
         assert_eq!(
-            stale_cuts, clear_only_cuts,
-            "{label}: cache clear must not change any page fingerprint"
+            transient_cut.end_cut,
+            vec![37],
+            "{label}: transient page-zero cut"
         );
-        assert_eq!(stale_cut.start_cut, Vec::<usize>::new());
-        assert_eq!(stale_cut.end_cut, vec![37], "{label}: stale page-zero cut");
         assert_eq!(flushed_cut.start_cut, Vec::<usize>::new());
         assert_eq!(
             flushed_cut.end_cut,
@@ -24345,21 +24450,22 @@ fn issue2214_layout_cache_clear_without_pagination_probe() {
             "{label}: flushed page-zero cut"
         );
         assert_ne!(
-            clear_only_cut, flushed_cut,
+            transient_cut, flushed_cut,
             "{label}: explicit pagination should update cut"
         );
-        let changed_pages = clear_only_cuts
+        let changed_pages = transient_cuts
             .iter()
             .zip(&flushed_cuts)
             .enumerate()
-            .filter_map(|(page, (clear, flushed))| (clear != flushed).then_some(page))
+            .filter_map(|(page, (transient, flushed))| (transient != flushed).then_some(page))
             .collect::<Vec<_>>();
         eprintln!(
-            "#2214 {label}: PartialTable fragments={} changed_after_flush={changed_pages:?}",
-            clear_only_cuts.len(),
+            "#2214 {label}: PartialTable fragments={} changed_after_flush_count={}",
+            transient_cuts.len(),
+            changed_pages.len(),
         );
         assert_eq!(
-            clear_only_cuts.len(),
+            transient_cuts.len(),
             flushed_cuts.len(),
             "{label}: page fingerprint count"
         );
@@ -24372,25 +24478,35 @@ fn issue2214_layout_cache_clear_without_pagination_probe() {
             (0..doc.page_count() as usize).collect::<Vec<_>>(),
             "{label}: flow-boundary flush must update all target-table page fingerprints"
         );
-        let clear_rect_json: Value =
-            serde_json::from_str(&clear_only_rect).expect("clear-only rect json");
+        let transient_rect_json: Value =
+            serde_json::from_str(&transient_rect).expect("transient rect json");
         let flushed_rect_json: Value =
             serde_json::from_str(&flushed_rect).expect("flushed rect json");
         for key in ["pageIndex", "x", "y", "height", "cellOverflowed"] {
             assert_eq!(
-                clear_rect_json.get(key),
+                transient_rect_json.get(key),
                 flushed_rect_json.get(key),
-                "{label}: cache-only cursor field {key} must equal flush oracle"
+                "{label}: transient cursor field {key} must equal flush oracle"
             );
         }
         assert_ne!(
-            clear_rect_json.get("cellBounds"),
+            transient_rect_json.get("cellBounds"),
             flushed_rect_json.get("cellBounds"),
-            "{label}: cache-only control must preserve deferred cell bounds"
+            "{label}: transient control must preserve deferred cell bounds"
         );
-        assert_ne!(
-            stale_rect, flushed_rect,
-            "{label}: stale rect should differ from oracle"
+        let transient_bounds_h = transient_rect_json["cellBounds"]["h"]
+            .as_f64()
+            .expect("transient bounds h");
+        let flushed_bounds_h = flushed_rect_json["cellBounds"]["h"]
+            .as_f64()
+            .expect("flushed bounds h");
+        assert!(
+            (transient_bounds_h - 945.9).abs() <= 0.2,
+            "{label}: transient bounds h={transient_bounds_h}"
+        );
+        assert!(
+            (flushed_bounds_h - 971.5).abs() <= 0.2,
+            "{label}: flushed bounds h={flushed_bounds_h}"
         );
         assert_eq!(doc.page_count(), 115, "{label}: page count");
     }

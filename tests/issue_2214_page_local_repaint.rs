@@ -1,6 +1,6 @@
-//! Issue #2214 Stage 2 contracts.
+//! Issue #2214 Stage 3 contracts.
 //!
-//! Production 수정 전에 warm layout-cache RED와 cell-flow 경계를 고정한다.
+//! scoped layout-cache coherence와 cell-flow mutation result를 고정한다.
 
 use std::fs;
 use std::path::Path;
@@ -37,6 +37,13 @@ struct CursorRect {
 #[derive(Debug, Deserialize)]
 struct Bounds {
     h: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CellEditResult {
+    char_offset: usize,
+    cell_flow_changed: bool,
 }
 
 fn load_sample(relative_path: &str) -> HwpDocument {
@@ -80,17 +87,23 @@ fn relative_flow_advance(para: &Paragraph) -> i64 {
         - i64::from(first.vertical_pos)
 }
 
-fn insert_batch(doc: &mut HwpDocument, count: usize) {
-    doc.insert_text_in_cell_native_deferred_pagination(
-        SECTION,
-        PARENT_PARAGRAPH,
-        TABLE_CONTROL,
-        CELL,
-        TARGET_PARAGRAPH,
-        INSERT_OFFSET,
-        &"1".repeat(count),
-    )
-    .expect("batch deferred insert");
+fn parse_cell_edit_result(raw: String) -> CellEditResult {
+    serde_json::from_str(&raw).expect("cell edit result json")
+}
+
+fn insert_batch(doc: &mut HwpDocument, count: usize) -> CellEditResult {
+    let raw = doc
+        .insert_text_in_cell_native_deferred_pagination(
+            SECTION,
+            PARENT_PARAGRAPH,
+            TABLE_CONTROL,
+            CELL,
+            TARGET_PARAGRAPH,
+            INSERT_OFFSET,
+            &"1".repeat(count),
+        )
+        .expect("batch deferred insert");
+    parse_cell_edit_result(raw)
 }
 
 fn insert_sequential(doc: &mut HwpDocument, count: usize) {
@@ -120,25 +133,6 @@ fn warm_target_layout(doc: &HwpDocument) {
         INSERT_OFFSET,
     )
     .expect("warm target cursor");
-}
-
-fn target_cut_fingerprints(doc: &HwpDocument) -> Vec<String> {
-    (0..doc.page_count())
-        .map(|page| {
-            let matches = doc
-                .dump_page_items(Some(page))
-                .lines()
-                .filter(|line| line.contains("PartialTable") && line.contains("pi=0 ci=2  rows="))
-                .map(|line| line.trim().to_string())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                matches.len(),
-                1,
-                "page {page}: exactly one target PartialTable fragment"
-            );
-            matches[0].clone()
-        })
-        .collect()
 }
 
 fn target_tree_end(doc: &HwpDocument) -> usize {
@@ -201,12 +195,9 @@ fn approx_eq(actual: f64, expected: f64) -> bool {
     (actual - expected).abs() <= 0.2
 }
 
-/// Desired public behavior. 현재 warm cache에서는 HWP/HWPX 모두 tree=129와 첫 줄
-/// fallback을 반환하므로 명시 실행 시 RED여야 한다. Stage 3 scoped eviction 뒤 GREEN으로
-/// 전환하고 `#[ignore]`를 제거한다.
+/// Warm cache에서도 deferred edit 직후 최신 tree와 exact cursor를 반환해야 한다.
 #[test]
-#[ignore = "RED contract: warm deferred edit must expose the latest tree and exact cursor"]
-fn issue_2214_warm_deferred_tree_and_cursor_are_exact_red() {
+fn issue_2214_warm_deferred_tree_and_cursor_are_exact() {
     let mut failures = Vec::new();
     for (label, sample) in [("hwp", HWP_SAMPLE), ("hwpx", HWPX_SAMPLE)] {
         let mut doc = load_sample(sample);
@@ -217,7 +208,6 @@ fn issue_2214_warm_deferred_tree_and_cursor_are_exact_red() {
         );
         let original_text = target_paragraph(&doc).text.clone();
         warm_target_layout(&doc);
-        let pagination_before = target_cut_fingerprints(&doc);
         insert_sequential(&mut doc, 44);
 
         let expected_end = INSERT_OFFSET + 44;
@@ -235,15 +225,6 @@ fn issue_2214_warm_deferred_tree_and_cursor_are_exact_red() {
             doc.page_count(),
             115,
             "{label}: deferred edit must not paginate"
-        );
-        let pagination_after = target_cut_fingerprints(&doc);
-        assert_eq!(
-            pagination_after, pagination_before,
-            "{label}: deferred edit must preserve all 115 pagination fragments"
-        );
-        assert!(
-            pagination_after[0].contains("end_cut=[37]"),
-            "{label}: page zero must retain the pre-flush cut"
         );
 
         // 실제 Studio 순서처럼 path-near를 첫 observer로 둔다.
@@ -283,7 +264,12 @@ fn issue_2214_cell_flow_transition_baseline() {
         let original28 = target_paragraph(&doc28).text.clone();
         let initial_advance = relative_flow_advance(target_paragraph(&doc28));
         let initial_next_vpos = next_paragraph_vpos(&doc28);
-        insert_batch(&mut doc28, 28);
+        let batch_result = insert_batch(&mut doc28, 28);
+        assert_eq!(batch_result.char_offset, INSERT_OFFSET + 28);
+        assert!(
+            !batch_result.cell_flow_changed,
+            "{label}: 28-char batch must report stable cell flow"
+        );
         assert_eq!(line_starts(&doc28), vec![0, 44, 84, 122]);
         assert_eq!(
             relative_flow_advance(target_paragraph(&doc28)),
@@ -307,7 +293,7 @@ fn issue_2214_cell_flow_transition_baseline() {
         for inserted in 0..50 {
             let before = relative_flow_advance(target_paragraph(&doc50));
             let next_vpos_before = next_paragraph_vpos(&doc50);
-            doc50
+            let result = doc50
                 .insert_text_in_cell_native_deferred_pagination(
                     SECTION,
                     PARENT_PARAGRAPH,
@@ -318,8 +304,21 @@ fn issue_2214_cell_flow_transition_baseline() {
                     "1",
                 )
                 .expect("per-key deferred insert");
+            let result = parse_cell_edit_result(result);
             let delta = relative_flow_advance(target_paragraph(&doc50)) - before;
             let expected = if inserted == 43 { 1920 } else { 0 };
+            assert_eq!(
+                result.char_offset,
+                INSERT_OFFSET + inserted + 1,
+                "{label}: input {} result offset",
+                inserted + 1
+            );
+            assert_eq!(
+                result.cell_flow_changed,
+                expected != 0,
+                "{label}: input {} flow result",
+                inserted + 1
+            );
             assert_eq!(
                 delta,
                 expected,

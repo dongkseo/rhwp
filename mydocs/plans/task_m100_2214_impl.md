@@ -300,16 +300,13 @@ production을 수정하지 않고 cold/warm 원인, cache-only와 full-flush ora
 
 #### 검증
 
+아래 intentional RED 개별 이름은 Stage 2 commit `7272115c`의 역사적 계약이며 Stage 3에서
+non-ignored GREEN으로 승격하면서 제거됐다. 현재 브랜치에서 옛 `_red`/`--ignored` 필터를
+재실행하지 않고 `mydocs/working/task_m100_2214_stage2.md`의 당시 결과를 증거로 사용한다.
+
 ```bash
 cargo test --profile release-test --test issue_2214_cache_matrix_probe -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_layout_cache_clear_without_pagination_probe -- --ignored --nocapture
 cargo test --profile release-test --test issue_2214_page_local_repaint issue_2214_cell_flow_transition_baseline -- --nocapture
-cargo test --profile release-test --test issue_2214_page_local_repaint issue_2214_warm_deferred_tree_and_cursor_are_exact_red -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_deferred_insert_uses_scoped_cache_eviction_red -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_deferred_insert_flag_change_evicts_owner_cells_red -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_global_clear_drops_unrelated_cache_red -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_cached_true_local_change_evicts_edited_cell_only_red -- --ignored --nocapture
-cargo test --profile release-test --lib issue2214_table_flag_change_evicts_owner_cells_only_red -- --ignored --nocapture
 cargo test --profile release-test --test issue_2185_korean_break_unit -- --nocapture
 ```
 
@@ -345,13 +342,17 @@ Task #2214: Stage 2 - warm cache 및 cell-flow 회귀 계약 고정
 
 1. `LayoutEngine`에 편집 cell과 소유 table을 받는 scoped invalidation API를 추가한다.
    - table-wide predicate 계산은 단일 helper에만 두고 test-only scan counter도 그 helper에 둔다.
-     mutation 구현에 별도 `table.cells` 전수 스캔을 추가하지 않는다.
+     mutation 구현에 별도 paragraph/control predicate 전수 스캔을 추가하지 않는다.
+     cached false→true branch의 direct owner-cell key 제거 순회는 predicate scan이 아니라
+     필요한 eviction 범위이며 허용한다.
    - full-table rescan 대신 edited paragraph의 pre/post local contribution
      (`trim-visible text && nested table`)을 mutation과 함께 계산
    - cached owner flag=true 또는 local contribution 불변: edited cell entry만 제거, cached
      owner flag와 same-table sibling identity 보존
    - deferred insert가 cached false를 true로 바꾸는 경우에만 owner table의 모든 cell entries를
      제거하고 owner flag cache를 `true`로 갱신
+   - false→true인데 owner flag cache가 없으면 cell-units cache도 없다는 invariant에 따라
+     edited cell만 제거하고 local witness로 owner flag `true`를 기록
    - unrelated table cell/flag cache는 두 branch 모두 보존
 2. deferred cell insert에서 mutation 전후 target paragraph의 상대 flow advance를 계산한다.
 
@@ -388,8 +389,16 @@ last.vertical_pos + last.line_height + last.line_spacing - first.vertical_pos
 ```bash
 cargo test --profile release-test --test issue_2214_page_local_repaint -- --nocapture
 cargo test --profile release-test --test issue_2185_korean_break_unit -- --nocapture
-cargo test --profile release-test --lib layout_cache -- --nocapture
+cargo test --profile release-test --lib issue2214 -- --nocapture
+cargo test --profile release-test --lib test_insert_text_in_cell -- --nocapture
+cargo test --profile release-test --lib issue2214_deferred_table_caption_reports_flow_change -- --nocapture
+cargo test --profile release-test --lib issue2214_invalid_shape_cell_index_does_not_mutate_text -- --nocapture
+cargo test --profile release-test --test issue_2063 -- --nocapture
+cargo test --profile release-test --test issue_1949_giant_cell_render_perf -- --nocapture
 ```
+
+`--lib layout_cache` 필터는 기존 이름과 일치하지 않아 `0 passed; 1 ignored` false-green이므로
+Stage 3 검증에서 사용하지 않는다.
 
 #### 완료·중단 조건
 
