@@ -1,6 +1,11 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile } from '@/core/types';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
+import {
+  collectFlowImagePaintOps,
+  visibleFlowImageBbox,
+  type FlowImagePaintOp,
+} from './flow-image-clip';
 import type { RenderBackend } from './render-backend';
 
 interface LayerPlaneSummary {
@@ -41,16 +46,6 @@ interface LayerSummaryCacheEntry {
 interface ReRenderJob {
   fallbackTimer: ReturnType<typeof setTimeout>;
   completed: boolean;
-}
-
-interface FlowImagePaintOp {
-  bbox: { x: number; y: number; width: number; height: number };
-  mime: string;
-  base64: string;
-  crop: { left: number; top: number; right: number; bottom: number } | null;
-  rotation: number;
-  horzFlip: boolean;
-  vertFlip: boolean;
 }
 
 const IMAGE_RE_RENDER_FALLBACK_DELAY_MS = 1500;
@@ -369,10 +364,33 @@ export class PageRenderer {
     layer.style.background = 'var(--doc-paper)';
 
     for (const image of images) {
+      const visibleBbox = visibleFlowImageBbox(image);
+      if (!visibleBbox) continue;
+
+      // clip이 실제 그림보다 작을 때만 별도 wrapper를 둔다. 일반 그림은 기존 DOM
+      // 경로를 그대로 사용해 정적 이미지 분리의 비용 이점을 유지한다.
+      const needsClipWrapper = image.clip !== null && (
+        visibleBbox.x !== image.bbox.x ||
+        visibleBbox.y !== image.bbox.y ||
+        visibleBbox.width !== image.bbox.width ||
+        visibleBbox.height !== image.bbox.height ||
+        image.rotation !== 0
+      );
+      const clipHost = needsClipWrapper ? document.createElement('div') : layer;
+      if (needsClipWrapper) {
+        clipHost.style.position = 'absolute';
+        clipHost.style.left = `${visibleBbox.x * displayScale}px`;
+        clipHost.style.top = `${visibleBbox.y * displayScale}px`;
+        clipHost.style.width = `${visibleBbox.width * displayScale}px`;
+        clipHost.style.height = `${visibleBbox.height * displayScale}px`;
+        clipHost.style.overflow = 'hidden';
+        clipHost.style.pointerEvents = 'none';
+      }
+
       const frame = document.createElement('div');
       frame.style.position = 'absolute';
-      frame.style.left = `${image.bbox.x * displayScale}px`;
-      frame.style.top = `${image.bbox.y * displayScale}px`;
+      frame.style.left = `${(image.bbox.x - (needsClipWrapper ? visibleBbox.x : 0)) * displayScale}px`;
+      frame.style.top = `${(image.bbox.y - (needsClipWrapper ? visibleBbox.y : 0)) * displayScale}px`;
       frame.style.width = `${image.bbox.width * displayScale}px`;
       frame.style.height = `${image.bbox.height * displayScale}px`;
       frame.style.overflow = 'hidden';
@@ -390,7 +408,8 @@ export class PageRenderer {
       element.addEventListener('load', applyCrop, { once: true });
       applyCrop();
       frame.appendChild(element);
-      layer.appendChild(frame);
+      clipHost.appendChild(frame);
+      if (needsClipWrapper) layer.appendChild(clipHost);
     }
     return layer;
   }
@@ -553,9 +572,10 @@ export class PageRenderer {
     }
     try {
       const root = JSON.parse(json)?.root;
-      const images: FlowImagePaintOp[] = [];
-      collectFlowImagePaintOps(root, images, null);
-      return images;
+      return collectFlowImagePaintOps(
+        root,
+        (op, layer) => op.type === 'image' && layerReplayPlane(op, layer) === 'flow',
+      );
     } catch {
       return [];
     }
@@ -996,70 +1016,6 @@ function layerReplayPlane(op: any, layer: any): 'background' | 'behindText' | 'f
     if (op.wrap === 'inFrontOfText') return 'inFrontOfText';
   }
   return 'flow';
-}
-
-function collectFlowImagePaintOps(
-  node: any,
-  images: FlowImagePaintOp[],
-  inheritedLayer: any,
-): void {
-  if (!node || typeof node !== 'object') return;
-  const activeLayer = node.layer ?? inheritedLayer;
-  if (Array.isArray(node.ops)) {
-    for (const op of node.ops) {
-      if (
-        op?.type !== 'image' ||
-        layerReplayPlane(op, activeLayer) !== 'flow' ||
-        typeof op.mime !== 'string' ||
-        typeof op.base64 !== 'string' ||
-        !isFiniteBbox(op.bbox)
-      ) {
-        continue;
-      }
-      images.push({
-        bbox: op.bbox,
-        mime: op.mime,
-        base64: op.base64,
-        crop: isFiniteCrop(op.crop) ? op.crop : null,
-        rotation: finiteNumber(op.transform?.rotation),
-        horzFlip: op.transform?.horzFlip === true,
-        vertFlip: op.transform?.vertFlip === true,
-      });
-    }
-  }
-  if (Array.isArray(node.children)) {
-    for (const child of node.children) {
-      collectFlowImagePaintOps(child, images, activeLayer);
-    }
-  }
-  if (node.child) {
-    collectFlowImagePaintOps(node.child, images, activeLayer);
-  }
-}
-
-function isFiniteBbox(value: any): value is FlowImagePaintOp['bbox'] {
-  return (
-    Number.isFinite(value?.x) &&
-    Number.isFinite(value?.y) &&
-    Number.isFinite(value?.width) &&
-    Number.isFinite(value?.height)
-  );
-}
-
-function finiteNumber(value: unknown): number {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : 0;
-}
-
-function isFiniteCrop(value: any): value is NonNullable<FlowImagePaintOp['crop']> {
-  return (
-    Number.isFinite(value?.left) &&
-    Number.isFinite(value?.top) &&
-    Number.isFinite(value?.right) &&
-    Number.isFinite(value?.bottom) &&
-    value.right > value.left &&
-    value.bottom > value.top
-  );
 }
 
 function applyFlowImageCrop(
