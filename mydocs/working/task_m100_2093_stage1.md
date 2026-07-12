@@ -23,9 +23,9 @@
 
 ## 구현 방향
 
-원본 fixture와 기준 PDF는 바꾸지 않는다. 순수 텍스트 줄의 저장 높이와 text height가
-스타일상 가능한 줄 advance의 40배를 모두 넘는 경우만 재조판 metrics로 전환한다.
-구역/단 정의/책갈피 control은 줄 높이에 영향을 주지 않는 메타데이터로 취급하고,
+원본 fixture와 기준 PDF는 바꾸지 않는다. `SectionDef`와 `ColumnDef`가 함께 있는 HWPX
+구역 첫 순수 텍스트 줄의 저장 높이와 text height가 스타일상 가능한 줄 advance의 40배를
+모두 넘는 경우만 재조판 metrics로 전환한다. 책갈피는 추가 메타데이터로 허용하되,
 표·그림·글상자·필드와 정상 text height를 가진 큰 line box는 보존한다.
 
 ## 구현 및 검증 결과
@@ -36,6 +36,11 @@
   near-top vpos reset을 새 쪽 증거로 오인하지 않는다.
 - `target/release-test/rhwp dump-pages ...`: 1쪽에 pi=0~2 모두 배치됐다.
 - `cargo test --profile release-test --test issue_2093_saved_single_line_spacing_after --test issue_2093_1192000_real_doc_pin`: 통과했다.
+- `issue_2098_margin_boundary_split`(의도된 55000HU 큰 구역 첫 줄의 footer 2쪽)과
+  `issue_1692` HWPX 미주 페이지 범위도 통과했다.
+- `CARGO_INCREMENTAL=0 cargo test --profile release-test --tests --quiet`: 2200 passed,
+  0 failed, 7 ignored으로 통과했다.
+- `wasm-pack build --target web --out-dir pkg`: 통과했다.
 - 기준 PDF와 visual sweep: SVG 1쪽, PDF 1쪽, 페이지/줄 순서/frame/tail 후보 0건.
   글꼴 fallback 차이로 `visual_accuracy_proxy_percent`는 10.51101이므로 글리프 모양
   일치 수치로 해석하지 않는다.
