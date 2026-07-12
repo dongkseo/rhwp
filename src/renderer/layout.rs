@@ -7002,6 +7002,12 @@ impl LayoutEngine {
                         None
                     }
                 });
+                // [Task #2220] 저장 host lh 가 표 outer_margin 을 포함하는 증거
+                // (lh ≥ 표 선언높이 + om 상하합, 주보 p1: 24700 = 22996 + 852×2).
+                // 이 경우 저장 lh 기반 advance 는 문단 줄 상단(para_y) 기준이어야
+                // 하며, om_top 선가산분·om_bottom 후가산(#521)을 겹치면 om 상하합
+                // (1704HU=22.7px)만큼 후속 본문이 밀려 단 하단이 절단된다.
+                let mut stored_lh_covers_om = false;
                 if let Some(seg) = host_seg {
                     if seg.line_spacing > 0 {
                         y_offset += hwpunit_to_px(seg.line_spacing, self.dpi);
@@ -7010,7 +7016,22 @@ impl LayoutEngine {
                         // 표 렌더 높이가 아닌, 일반 문단과 동일한 lh+ls advance 사용
                         let advance =
                             hwpunit_to_px(seg.line_height + seg.line_spacing, self.dpi).max(0.0);
-                        y_offset = tac_table_y_before + advance;
+                        stored_lh_covers_om = matches!(
+                            para.controls.get(control_index),
+                            Some(Control::Table(t))
+                                if t.common.height < 0x8000_0000
+                                    && i64::from(seg.line_height)
+                                        >= t.common.height as i64
+                                            + t.outer_margin_top as i64
+                                            + t.outer_margin_bottom as i64
+                                            - 10
+                                    && t.outer_margin_top as i64 + t.outer_margin_bottom as i64 > 0
+                        );
+                        y_offset = if stored_lh_covers_om {
+                            para_y_for_table + advance
+                        } else {
+                            tac_table_y_before + advance
+                        };
                     }
                 }
                 let comp = composed.get(para_index);
@@ -7033,7 +7054,9 @@ impl LayoutEngine {
                     } else {
                         0.0
                     };
-                if outer_margin_bottom_px > 0.0 {
+                // [Task #2220] 저장 lh 가 om 을 포함한 advance 를 썼으면 om_bottom
+                // 은 이미 반영됨 — #521 후가산은 그 외 경로에만 적용.
+                if outer_margin_bottom_px > 0.0 && !stored_lh_covers_om {
                     y_offset += outer_margin_bottom_px;
                 }
                 return (y_offset, true);
