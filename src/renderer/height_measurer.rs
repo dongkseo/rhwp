@@ -1176,11 +1176,38 @@ impl HeightMeasurer {
                 } else {
                     0.0
                 };
+                // [Task #2221] layout resolve_row_heights 의 relaxed_pad 미러 —
+                // 중첩(depth>0)/TAC 표에서 저장 LINE_SEG 보유 텍스트 셀의 줄 흐름은
+                // pad 미가산 (#2211과 동일 규칙). layout 만 정정하고 측정을 남겨두면
+                // 하단앵커 배치(측정 높이)와 렌더 행합이 어긋난다 (36389312 pi=6
+                // 결재란: 측정 320.4 vs 렌더 316.7 = 3.73px 드리프트). 상위 분할/
+                // 앵커 표(depth=0, 비-tac)는 기존 회계 유지 — #1748 컷 예산 캘리브
+                // 비접촉. 상위 TAC 표는 렌더가 measured 행높이를 그대로 쓰므로
+                // (mt 우선) 측정·렌더가 이미 일관 — tac 을 미러에 포함하면 실제
+                // 지오메트리가 이동한다 (KTX/exam_kor/복학원서 golden). depth>0 만.
+                let relaxed_pad_mirror = depth > 0
+                    && cell.text_direction == 0
+                    && !has_nested_table_in_cell
+                    && !cell.paragraphs.is_empty()
+                    && cell
+                        .paragraphs
+                        .iter()
+                        .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
                 let required_height = if cell_h_px > 0.0
                     && total_pad > cell_h_px * 0.5
                     && content_height <= cell_h_px
                 {
                     cell_h_px
+                } else if relaxed_pad_mirror {
+                    let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
+                    let object_based =
+                        non_inline_h.max(self.cell_wrap_objects_bottom_height(&cell.paragraphs));
+                    let object_req = if object_based > 0.0 {
+                        object_based + total_pad
+                    } else {
+                        0.0
+                    };
+                    text_height.max(object_req)
                 } else {
                     content_height + total_pad
                 };
@@ -1519,10 +1546,30 @@ impl HeightMeasurer {
                 let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
                 let nested_bottom =
                     self.cell_nested_controls_bottom(&cell.paragraphs, styles, depth);
-                let content_height = (text_height + non_inline_h)
-                    .max(nested_bottom)
-                    .max(self.cell_wrap_objects_bottom_height(&cell.paragraphs));
-                let required_height = content_height + pad_top + pad_bottom;
+                let wrap_bottom = self.cell_wrap_objects_bottom_height(&cell.paragraphs);
+                // [Task #2221] 단일행과 동일 — 중첩/TAC 표의 저장 LINE_SEG 텍스트
+                // 셀은 pad 미가산 (layout 2-b relaxed_pad 미러).
+                let relaxed_pad_mirror = depth > 0
+                    && cell.text_direction == 0
+                    && !cell.paragraphs.is_empty()
+                    && cell
+                        .paragraphs
+                        .iter()
+                        .all(|p| !crate::renderer::para_has_no_stored_line_segs(p));
+                let required_height = if relaxed_pad_mirror {
+                    let object_based = non_inline_h.max(nested_bottom).max(wrap_bottom);
+                    let object_req = if object_based > 0.0 {
+                        object_based + pad_top + pad_bottom
+                    } else {
+                        0.0
+                    };
+                    text_height.max(object_req)
+                } else {
+                    let content_height = (text_height + non_inline_h)
+                        .max(nested_bottom)
+                        .max(wrap_bottom);
+                    content_height + pad_top + pad_bottom
+                };
                 let combined: f64 = (r..r + span).map(|i| row_heights[i]).sum();
                 if required_height > combined {
                     let deficit = required_height - combined;

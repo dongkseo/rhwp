@@ -50,10 +50,10 @@ fn bottom_anchored_tables_render_flush_with_body_bottom() {
     for pi in [5usize, 6usize] {
         let table = find_table(&tree.root, pi).unwrap_or_else(|| panic!("pi={pi} 표"));
         let bottom = table.bbox.y + table.bbox.height;
-        // 허용오차 6px: MeasuredTable 총높이와 렌더 행합의 측정 드리프트(#1759 계열,
-        // 본 fixture pi=6 = 3.7px). 수정 전 오프셋은 40.5px 로 확실히 구분된다.
+        // [Task #2221] 측정·렌더 pad 회계 일관화로 pi=6 드리프트 3.7px→0 —
+        // 허용오차 6px→2px 강화. 수정 전 오프셋은 40.5px 로 확실히 구분된다.
         assert!(
-            (bottom - body_bottom).abs() <= 6.0,
+            (bottom - body_bottom).abs() <= 2.0,
             "#1858: pi={pi} 하단앵커 표 하단({bottom:.1})이 body 하단({body_bottom:.1})에 \
              밀착하지 않음 — 선언높이 기준 top 배치(블록 상향 부유) 회귀",
         );
