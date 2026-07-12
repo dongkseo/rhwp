@@ -175,7 +175,14 @@ impl LayoutEngine {
             parent_node.children.push(RenderNode::new(
                 ph_id,
                 RenderNodeType::Placeholder(
-                    crate::renderer::render_tree::PlaceholderNode::missing_picture(),
+                    // [Task #2230] 문서 좌표 + 셀 경로 배선 — 편집 뷰 클릭
+                    // 선택·그림 지정의 대상 특정에 사용.
+                    crate::renderer::render_tree::PlaceholderNode::missing_picture(
+                        section_index,
+                        para_index,
+                        control_index,
+                        cell_ctx.cloned(),
+                    ),
                 ),
                 BoundingBox::new(pic_x, pic_y, pic_width, pic_height),
             ));
@@ -476,7 +483,13 @@ impl LayoutEngine {
             parent_node.children.push(RenderNode::new(
                 ph_id,
                 RenderNodeType::Placeholder(
-                    crate::renderer::render_tree::PlaceholderNode::missing_picture(),
+                    // [Task #2230] 본문 picture — 셀 경로 없음(None).
+                    crate::renderer::render_tree::PlaceholderNode::missing_picture(
+                        Some(section_index),
+                        Some(para_index),
+                        Some(control_index),
+                        None,
+                    ),
                 ),
                 BoundingBox::new(adjusted_pic_x, pic_y, pic_width, pic_height),
             ));

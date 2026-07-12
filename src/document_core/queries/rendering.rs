@@ -2113,6 +2113,59 @@ impl DocumentCore {
                         ));
                         return;
                     }
+                    // [Task #2230] 그림 미지정 placeholder(kind="picture") 를
+                    // image 컨트롤로 방출 — findPictureAtClick 가 기존 image
+                    // 로직으로 hit 해 클릭 선택이 성립한다. missing 마커는
+                    // studio 가 더블클릭 시 그림 지정 진입을 분기하는 근거.
+                    // cellIdx/cellParaIdx/cellPath 는 Image 분기와 동일 포맷.
+                    if let Some(control_ref) = placeholder_node
+                        .control_ref
+                        .as_ref()
+                        .filter(|control_ref| control_ref.kind == "picture")
+                    {
+                        let (cell_str, cell_path_str) = match &placeholder_node.cell_context {
+                            Some(ctx) => {
+                                let (cei, cpi, _) = ctx.last_image_indices();
+                                let cell_str = match (cei, cpi) {
+                                    (Some(cei), Some(cpi)) => {
+                                        format!(",\"cellIdx\":{},\"cellParaIdx\":{}", cei, cpi)
+                                    }
+                                    _ => String::new(),
+                                };
+                                let entries: Vec<String> = ctx
+                                    .path
+                                    .iter()
+                                    .map(|e| {
+                                        format!(
+                                            "{{\"controlIndex\":{},\"cellIndex\":{},\"cellParaIndex\":{}}}",
+                                            e.control_index, e.cell_index, e.cell_para_index
+                                        )
+                                    })
+                                    .collect();
+                                let cell_path_str = format!(
+                                    ",\"parentParaIdx\":{},\"cellPath\":[{}]",
+                                    ctx.parent_para_index,
+                                    entries.join(",")
+                                );
+                                (cell_str, cell_path_str)
+                            }
+                            None => (String::new(), String::new()),
+                        };
+                        controls.push(format!(
+                            "{{\"type\":\"image\",\"missing\":true,\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1},\"secIdx\":{},\"paraIdx\":{},\"controlIdx\":{}{}{}{}}}",
+                            node.bbox.x,
+                            node.bbox.y,
+                            node.bbox.width,
+                            node.bbox.height,
+                            control_ref.section_index,
+                            control_ref.para_index,
+                            control_ref.control_index,
+                            cell_str,
+                            cell_path_str,
+                            layer_str
+                        ));
+                        return;
+                    }
                 }
                 RenderNodeType::Group(group_node) => {
                     if let (Some(si), Some(pi), Some(ci)) = (
