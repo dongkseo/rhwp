@@ -625,14 +625,43 @@ impl LayoutEngine {
     }
 
     pub(crate) fn calc_cell_wrap_objects_bottom_height(&self, paragraphs: &[Paragraph]) -> f64 {
+        // [Task #2226] TopAndBottom flow 개체 보유 문단의 para_top 은 사다리 기반
+        // 문단 시작 — height_measurer::cell_wrap_objects_bottom_height 와 동일 정정.
+        let mut prev_extent = 0.0f64;
         paragraphs
             .iter()
             .map(|p| {
-                let para_top = p
+                let first_vpos = p
                     .line_segs
                     .first()
                     .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
                     .unwrap_or(0.0);
+                // 개체가 문단 시작~줄 상단 구간을 채우는 배치(줄이 개체 아래로
+                // 밀림)면 first_vpos 는 문단 시작이 아니다 — 기하 판정으로 전환.
+                let probe_object_bottom = p
+                    .controls
+                    .iter()
+                    .map(|ctrl| match ctrl {
+                        Control::Picture(pic) => self.cell_wrap_object_visual_bottom(&pic.common),
+                        Control::Shape(shape) => {
+                            self.cell_wrap_object_visual_bottom(shape.common())
+                        }
+                        _ => 0.0,
+                    })
+                    .fold(0.0f64, f64::max);
+                let objects_above_line = probe_object_bottom > 0.0
+                    && prev_extent + probe_object_bottom <= first_vpos + 0.5;
+                let para_top = if objects_above_line {
+                    prev_extent
+                } else {
+                    first_vpos
+                };
+                let para_extent = p
+                    .line_segs
+                    .iter()
+                    .map(|s| hwpunit_to_px(s.vertical_pos + s.line_height.max(0), self.dpi))
+                    .fold(prev_extent, f64::max);
+                prev_extent = para_extent;
                 let object_bottom = p
                     .controls
                     .iter()
@@ -2952,7 +2981,19 @@ impl LayoutEngine {
                                 pic.common.vert_rel_to,
                                 crate::model::shape::VertRelTo::Para
                             );
-                            let anchor_y = if top_and_bottom_para || overlay_para {
+                            // [Task #2226] 텍스트 없는 문단에서 seg.vpos > 0 이면 그
+                            // 줄은 flow 그림에 밀려난 위치다 — 그림 오프셋의 원점은
+                            // 문단 시작이므로 앵커에 vpos 를 더하면 그림이 셀 아래로
+                            // 이탈한다 (주보 p2 로고 표 붓글씨 셀: line vpos 51.3px).
+                            let displaced_empty_line_para = para.text.trim().is_empty()
+                                && para
+                                    .line_segs
+                                    .first()
+                                    .is_some_and(|seg| seg.vertical_pos > 0);
+                            let anchor_y = if displaced_empty_line_para {
+                                // Square 포함 모든 비인라인 그림 — 원점은 문단 시작.
+                                content_cell_y + pad_top
+                            } else if top_and_bottom_para || overlay_para {
                                 para.line_segs
                                     .first()
                                     .filter(|seg| seg.vertical_pos >= 0)

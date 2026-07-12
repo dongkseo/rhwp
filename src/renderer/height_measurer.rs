@@ -321,14 +321,45 @@ impl HeightMeasurer {
     }
 
     fn cell_wrap_objects_bottom_height(&self, paragraphs: &[Paragraph]) -> f64 {
+        // [Task #2226] 같은 문단에 TopAndBottom flow 개체가 있으면 첫 seg vpos 는
+        // 개체에 밀려난 줄 위치라 문단 시작이 아니다 — para_top 을 사다리(이전
+        // 문단 extent, 첫 문단 0)로 잡아야 개체 오프셋(문단 기준)과 원점이 맞는다.
+        // (주보 p2 로고 표: line vpos 10087 + 그림 bottom 10087 = 269px 이중 계상)
+        let mut prev_extent = 0.0f64;
         paragraphs
             .iter()
             .map(|p| {
-                let para_top = p
+                let first_vpos = p
                     .line_segs
                     .first()
                     .map(|s| hwpunit_to_px(s.vertical_pos, self.dpi))
                     .unwrap_or(0.0);
+                // 개체가 문단 시작~줄 상단 구간을 채우는 배치(줄이 개체 아래로
+                // 밀림)면 first_vpos 는 문단 시작이 아니다 — 기하 판정으로 전환.
+                let probe_object_bottom = p
+                    .controls
+                    .iter()
+                    .map(|ctrl| match ctrl {
+                        Control::Picture(pic) => self.cell_wrap_object_visual_bottom(&pic.common),
+                        Control::Shape(shape) => {
+                            self.cell_wrap_object_visual_bottom(shape.common())
+                        }
+                        _ => 0.0,
+                    })
+                    .fold(0.0f64, f64::max);
+                let objects_above_line = probe_object_bottom > 0.0
+                    && prev_extent + probe_object_bottom <= first_vpos + 0.5;
+                let para_top = if objects_above_line {
+                    prev_extent
+                } else {
+                    first_vpos
+                };
+                let para_extent = p
+                    .line_segs
+                    .iter()
+                    .map(|s| hwpunit_to_px(s.vertical_pos + s.line_height.max(0), self.dpi))
+                    .fold(prev_extent, f64::max);
+                prev_extent = para_extent;
                 let object_bottom = p
                     .controls
                     .iter()
@@ -1161,8 +1192,53 @@ impl HeightMeasurer {
                 } else {
                     // 단, 비-인라인 이미지/도형은 LINE_SEG에 미포함이므로 별도 합산
                     let non_inline_h = self.measure_non_inline_controls_height(&cell.paragraphs);
-                    (text_height + non_inline_h)
-                        .max(self.cell_wrap_objects_bottom_height(&cell.paragraphs))
+                    let wrap_bottom = self.cell_wrap_objects_bottom_height(&cell.paragraphs);
+                    // [Task #2226] 저장 LINE_SEG 흐름 extent 가 additive 합보다 작으면
+                    // 저장 지오메트리 신뢰 — TopAndBottom flow 그림의 배치는 저장 vpos
+                    // 사다리(줄이 그림 아래로 밀림)에 이미 반영되어 있어, 별도 합산은
+                    // 이중 계상이다 (주보 p2 로고 표 셀: 그림 2개 합산 112.8px vs 저장
+                    // extent 65.9px → 행 1.9× 팽창, 2행 텍스트 페이지 밖 소실).
+                    // layout trust_stored_cell_flow 와 동일 원리·가드 (#2211 계보).
+                    let stored_extent = if !cell.paragraphs.is_empty()
+                        && cell
+                            .paragraphs
+                            .iter()
+                            .all(|pp| !crate::renderer::para_has_no_stored_line_segs(pp))
+                    {
+                        cell.paragraphs
+                            .iter()
+                            .flat_map(|pp| pp.line_segs.iter())
+                            .filter(|seg| seg.vertical_pos >= 0 && seg.line_height > 0)
+                            .map(|seg| hwpunit_to_px(seg.vertical_pos + seg.line_height, self.dpi))
+                            .fold(0.0f64, f64::max)
+                    } else {
+                        0.0
+                    };
+                    let additive = text_height + non_inline_h;
+                    // trust 는 "저장 ladder 가 개체 밀림을 이미 반영한" 셀에만 —
+                    // 증거: 텍스트-빈 문단의 첫 seg vpos > 0 (줄이 개체 아래로 밀림).
+                    // 반례 캘리브: KTX TOC(개체 없음 — additive 가 한컴 쪽),
+                    // #1282 쪽영역제한 ON(텍스트 문단 vpos 0, 저장 h < 그림 —
+                    // 한컴이 행을 그림만큼 키움).
+                    let ladder_absorbed_objects = cell.paragraphs.iter().any(|pp| {
+                        pp.text.trim().is_empty()
+                            && pp.line_segs.first().is_some_and(|seg| seg.vertical_pos > 0)
+                            && pp.controls.iter().any(|c| {
+                                matches!(c, Control::Picture(pic) if !pic.common.treat_as_char)
+                                    || matches!(c, Control::Shape(sh) if !sh.common().treat_as_char)
+                            })
+                    });
+                    let trust_stored = (depth > 0 || table.common.treat_as_char)
+                        && non_inline_h > 0.0
+                        && ladder_absorbed_objects
+                        && stored_extent > 0.0
+                        && stored_extent + 0.5 < additive
+                        && wrap_bottom <= stored_extent + 0.5;
+                    if trust_stored {
+                        stored_extent
+                    } else {
+                        additive.max(wrap_bottom)
+                    }
                 };
 
                 // 패딩 포함 총 필요 높이
