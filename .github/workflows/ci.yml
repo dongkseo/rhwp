@@ -296,7 +296,11 @@ jobs:
               if (directoryPrefixes.some((prefix) => filename.startsWith(prefix))) {
                 return true;
               }
-              if (filename === 'src/wasm_api.rs' || filename === '.github/workflows/ci.yml') {
+              if (
+                filename === 'Cargo.lock'
+                || filename === 'src/wasm_api.rs'
+                || filename === '.github/workflows/ci.yml'
+              ) {
                 return true;
               }
               return filename.startsWith('scripts/frontend-') && filename.endsWith('.mjs');

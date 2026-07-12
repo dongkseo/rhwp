@@ -201,3 +201,20 @@ fallback의 GitHub 실측을 인위적으로 만들지는 않았고, fork run의
 결론적으로 최신 upstream의 전체 CI와 후속 review-only fast-pass가 모두 PASS했다. #2183의 구현·로컬 gate·
 GitHub Actions 실측 범위에서 남은 실패는 없으며, trusted `devel` push의 frontend cargo cache save만 merge 후
 관찰 항목으로 남는다.
+
+## 12. maintainer 승인과 merge 전 보정
+
+maintainer는 2026-07-12 PR review `#pullrequestreview-4679480288`에서 구현과 검증을 승인했다. merge 전 필수
+요청은 최신 `devel` rebase와 `mydocs/orders/20260712.md` 충돌 해소 1건이며, 다음 두 항목은 비차단
+제안으로 남겼다.
+
+1. `Cargo.lock` 변경도 fresh dev WASM 산출에 영향을 줄 수 있으므로 frontend trigger에 추가 검토
+2. Actions installer와 Docker의 wasm-pack 버전 pin 통일
+
+첫 항목은 #2183 detector의 직접 누락이므로 root `Cargo.lock` exact-file trigger와 fixture를 이번 PR에
+추가한다. 두 번째 항목은 frontend·release WASM·Render Diff 공통 toolchain 정책이므로 이 PR에서 installer를
+변경하지 않고 별도 후속 이슈로 분리한다.
+
+최신 `upstream/devel@c7864c62`로 rebase하고 upstream의 PR #2216 승인 기록과 기존 #2183 실행 행을 모두
+보존해 orders 충돌을 해소했다. 보정 후 workflow 정적 검증과 전체 GitHub Actions를 다시 통과한 뒤에만
+merge 가능한 상태로 판단한다.

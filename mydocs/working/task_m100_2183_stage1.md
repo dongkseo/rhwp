@@ -31,6 +31,7 @@ package source, lockfile, release WASM job, Rust worker profile, branch protecti
 - `npm/editor/**`
 - `scripts/frontend-*.mjs`
 - `web/**`
+- `Cargo.lock`
 - `src/wasm_api.rs`
 - `.github/workflows/ci.yml`
 
@@ -78,7 +79,7 @@ generated `pkg/`와 `dist/`는 artifact로 upload하거나 commit하지 않는�
 |------|------|------|
 | `actionlint .github/workflows/ci.yml` | PASS | YAML, job dependency, expression, shell 정적 검사 |
 | `git diff --check` | PASS | whitespace 오류 없음 |
-| frontend detector fixture | 12/12 PASS | PR frontend/Rust-only/rename/empty/3,000 boundary, push frontend/Rust-only/300 boundary/zero SHA/tag, manual, API 오류 |
+| frontend detector fixture | 13/13 PASS | PR frontend/Cargo.lock/Rust-only/rename/empty/3,000 boundary, push frontend/Rust-only/300 boundary/zero SHA/tag, manual, API 오류 |
 | `Build & Test` aggregate fixture | 8/8 PASS | fast-pass, required success/failure, skip, preflight/Rust 실패, unknown output |
 
 fixture는 workflow의 inline script와 aggregate shell을 파일에서 직접 추출해 실행했다. 별도 복제 구현을

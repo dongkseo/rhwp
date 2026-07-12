@@ -95,6 +95,7 @@ rhwp-shared/**
 npm/editor/**
 scripts/frontend-*.mjs
 web/**
+Cargo.lock
 src/wasm_api.rs
 .github/workflows/ci.yml
 ```
