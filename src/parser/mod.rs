@@ -23,6 +23,7 @@ pub mod control;
 pub mod crypto;
 pub mod doc_info;
 pub mod header;
+pub mod hml;
 pub mod hwp3;
 pub mod hwpx;
 pub mod ingest;
@@ -45,8 +46,8 @@ pub enum FileFormat {
     Hwpx,
     /// HWP 3.0 바이너리
     Hwp3,
-    /// Legacy raw HWPML XML (미지원 — 감지만, Issue #1053)
-    LegacyHwpml,
+    /// Standalone HWPML XML
+    Hml,
     /// DRM/보안 컨테이너로 보호된 문서 (미지원 — 감지만, Issue #1982)
     /// Fasoo(`\x9b DRMONE`) / SoftCamp SCDSA(`SCDSA00x`) 등. 복호화는 범위 밖.
     DrmProtected,
@@ -56,12 +57,9 @@ pub enum FileFormat {
     Unknown,
 }
 
-const FORMAT_PROBE_SCAN_LIMIT: usize = 4096;
-const UNSUPPORTED_HWPML_CODE: &str = "UNSUPPORTED_HWPML";
 const UNSUPPORTED_FILE_FORMAT_CODE: &str = "UNSUPPORTED_FILE_FORMAT";
-const SUPPORTED_FORMATS_HINT: &str = "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다.";
-const UNSUPPORTED_HWPML_HINT: &str =
-    "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다. 한컴오피스에서 HWP 5.0 또는 HWPX로 다시 저장한 뒤 열어주세요.";
+const SUPPORTED_FORMATS_HINT: &str =
+    "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0, HWPML 2.9 문서를 지원합니다.";
 const DRM_PROTECTED_CODE: &str = "DRM_PROTECTED";
 const DRM_PROTECTED_HINT: &str =
     "DRM/보안 컨테이너로 보호된 문서입니다. 한컴오피스 등 DRM 클라이언트에서 보호를 해제한 뒤 저장해 열어주세요.";
@@ -99,82 +97,10 @@ pub fn detect_format(data: &[u8]) -> FileFormat {
     if data.len() >= 17 && &data[0..17] == b"HWP Document File" {
         return FileFormat::Hwp3;
     }
-    if detect_legacy_hwpml(data) {
-        return FileFormat::LegacyHwpml;
+    if hml::detect_hml_signature(data) {
+        return FileFormat::Hml;
     }
     FileFormat::Unknown
-}
-
-fn format_probe_prefix(data: &[u8]) -> &[u8] {
-    &data[..data.len().min(FORMAT_PROBE_SCAN_LIMIT)]
-}
-
-fn trim_format_probe_prefix(data: &[u8]) -> &[u8] {
-    let mut start = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        3
-    } else {
-        0
-    };
-    while start < data.len() && data[start].is_ascii_whitespace() {
-        start += 1;
-    }
-    &data[start..]
-}
-
-fn ascii_lower(byte: u8) -> u8 {
-    if byte.is_ascii_uppercase() {
-        byte + 32
-    } else {
-        byte
-    }
-}
-
-fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right.iter())
-            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
-}
-
-fn starts_with_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
-    data.get(..needle.len())
-        .is_some_and(|head| ascii_eq_ignore_case(head, needle))
-}
-
-fn contains_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && data
-            .windows(needle.len())
-            .any(|window| ascii_eq_ignore_case(window, needle))
-}
-
-fn detect_legacy_hwpml(data: &[u8]) -> bool {
-    let prefix = trim_format_probe_prefix(format_probe_prefix(data));
-    let looks_like_xml = starts_with_ascii_ignore_case(prefix, b"<?xml")
-        || starts_with_ascii_ignore_case(prefix, b"<hwpml");
-
-    looks_like_xml && contains_ascii_ignore_case(prefix, b"<hwpml")
-}
-
-fn detect_legacy_hwpml_format_name(data: &[u8]) -> &'static str {
-    let prefix = format_probe_prefix(data);
-    let versions: &[(&[u8], &'static str)] = &[
-        (b"version=\"2.1\"", "HWPML 2.1"),
-        (b"version='2.1'", "HWPML 2.1"),
-        (b"hwpml=\"2.1\"", "HWPML 2.1"),
-        (b"hwpml='2.1'", "HWPML 2.1"),
-        (b"version=\"2.0\"", "HWPML 2.0"),
-        (b"version='2.0'", "HWPML 2.0"),
-        (b"version=\"1.0\"", "HWPML 1.0"),
-        (b"version='1.0'", "HWPML 1.0"),
-    ];
-    for (needle, format_name) in versions {
-        if contains_ascii_ignore_case(prefix, needle) {
-            return format_name;
-        }
-    }
-    "HWPML"
 }
 
 /// 파싱 에러 (통합)
@@ -187,6 +113,7 @@ pub enum ParseError {
     CryptoError(crypto::CryptoError),
     HwpxError(hwpx::HwpxError),
     Hwp3Error(hwp3::Hwp3Error),
+    HmlError(hml::HmlError),
     EncryptedDocument,
     /// 감지는 되었으나 지원하지 않는 포맷
     UnsupportedFormat {
@@ -206,6 +133,7 @@ impl std::fmt::Display for ParseError {
             ParseError::CryptoError(e) => write!(f, "암호 오류: {}", e),
             ParseError::HwpxError(e) => write!(f, "HWPX 오류: {}", e),
             ParseError::Hwp3Error(e) => write!(f, "HWP 3.0 오류: {}", e),
+            ParseError::HmlError(e) => write!(f, "HML 오류: {}", e),
             ParseError::EncryptedDocument => write!(f, "암호화된 문서는 지원하지 않습니다"),
             ParseError::UnsupportedFormat { code, format, hint } => {
                 write!(
@@ -228,6 +156,12 @@ impl From<hwpx::HwpxError> for ParseError {
 impl From<hwp3::Hwp3Error> for ParseError {
     fn from(e: hwp3::Hwp3Error) -> Self {
         ParseError::Hwp3Error(e)
+    }
+}
+
+impl From<hml::HmlError> for ParseError {
+    fn from(error: hml::HmlError) -> Self {
+        ParseError::HmlError(error)
     }
 }
 
@@ -1030,17 +964,55 @@ impl DocumentParser for Hwp3Parser {
     }
 }
 
-/// 포맷 자동 감지 후 적절한 파서로 파싱
-pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
+/// Standalone HWPML XML parser.
+pub struct HmlParser;
+
+impl DocumentParser for HmlParser {
+    fn parse(&self, data: &[u8]) -> Result<Document, ParseError> {
+        hml::parse_hml(data)
+            .map(|result| result.document)
+            .map_err(ParseError::from)
+    }
+}
+
+/// HML 입력에서만 제공되는 열기 메타데이터와 손실 진단.
+pub struct HmlImportMetadata {
+    pub hwpml_version: Option<String>,
+    pub sub_version: Option<String>,
+    pub style: Option<String>,
+    pub encoding: hml::HmlEncoding,
+    pub resource_count: usize,
+    pub warnings: Vec<hml::HmlWarning>,
+    pub preserved_fragments: Vec<hml::PreservedFragment>,
+}
+
+/// 공통 IR과 입력 포맷 전용 열기 메타데이터를 분리해 전달한다.
+pub struct ParsedDocument {
+    pub document: Document,
+    pub hml_metadata: Option<HmlImportMetadata>,
+}
+
+/// 포맷 자동 감지 후 공통 IR과 입력 메타데이터를 파싱한다.
+pub fn parse_document_with_metadata(data: &[u8]) -> Result<ParsedDocument, ParseError> {
     match detect_format(data) {
-        FileFormat::Hwp => HwpParser.parse(data),
-        FileFormat::Hwpx => HwpxParser.parse(data),
-        FileFormat::Hwp3 => Hwp3Parser.parse(data),
-        FileFormat::LegacyHwpml => Err(ParseError::UnsupportedFormat {
-            code: UNSUPPORTED_HWPML_CODE,
-            format: detect_legacy_hwpml_format_name(data),
-            hint: UNSUPPORTED_HWPML_HINT,
-        }),
+        FileFormat::Hwp => HwpParser.parse(data).map(without_hml_metadata),
+        FileFormat::Hwpx => HwpxParser.parse(data).map(without_hml_metadata),
+        FileFormat::Hwp3 => Hwp3Parser.parse(data).map(without_hml_metadata),
+        FileFormat::Hml => {
+            let result = hml::parse_hml(data).map_err(ParseError::from)?;
+            Ok(ParsedDocument {
+                document: result.document,
+                hml_metadata: Some(HmlImportMetadata {
+                    hwpml_version: result.metadata.hwpml_version,
+                    sub_version: result.metadata.sub_version,
+                    style: result.metadata.style,
+                    encoding: result.metadata.encoding,
+                    resource_count: result.metadata.resource_count,
+                    warnings: result.warnings,
+                    preserved_fragments: result.preserved_fragments,
+                }),
+            })
+        }
         FileFormat::DrmProtected => Err(ParseError::UnsupportedFormat {
             code: DRM_PROTECTED_CODE,
             format: drm_format_name(data),
@@ -1057,6 +1029,18 @@ pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
             hint: SUPPORTED_FORMATS_HINT,
         }),
     }
+}
+
+fn without_hml_metadata(document: Document) -> ParsedDocument {
+    ParsedDocument {
+        document,
+        hml_metadata: None,
+    }
+}
+
+/// 포맷 자동 감지 후 공통 IR만 반환하는 호환 진입점.
+pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
+    parse_document_with_metadata(data).map(|parsed| parsed.document)
 }
 
 /// DRM 벤더 시그니처로 사람이 읽을 이름을 고른다 (Issue #1982).
@@ -1504,13 +1488,13 @@ mod tests {
     fn test_detect_format_legacy_hwpml_21() {
         let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
 <HWPML Version="2.1"></HWPML>"#;
-        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+        assert_eq!(detect_format(hwpml), FileFormat::Hml);
     }
 
     #[test]
-    fn test_detect_format_legacy_hwpml_with_bom_and_space() {
+    fn test_detect_format_rejects_lowercase_generic_xml_root() {
         let hwpml = b"\xEF\xBB\xBF  \n<?xml version='1.0'?><hwpml version='2.1'></hwpml>";
-        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+        assert_eq!(detect_format(hwpml), FileFormat::Unknown);
     }
 
     #[test]
@@ -1528,21 +1512,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_document_legacy_hwpml_returns_unsupported_code() {
+    fn test_parse_document_reports_unsupported_hwpml_version() {
         let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
 <HWPML Version="2.1"></HWPML>"#;
         let err = parse_document(hwpml).unwrap_err();
         match err {
-            ParseError::UnsupportedFormat { code, format, hint } => {
-                assert_eq!(code, "UNSUPPORTED_HWPML");
-                assert_eq!(format, "HWPML 2.1");
-                assert!(
-                    hint.contains("HWP 5.0"),
-                    "hint must explain support: {hint}"
-                );
+            ParseError::HmlError(hml::HmlError::UnsupportedVersion(version)) => {
+                assert_eq!(version, "2.1");
             }
-            other => panic!("expected UnsupportedFormat, got {other:?}"),
+            other => panic!("expected HML unsupported version, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_document_with_metadata_preserves_hml_import_diagnostics() {
+        let parsed =
+            parse_document_with_metadata(include_bytes!("../../samples/hml/formatting_table.hml"))
+                .expect("real HML fixture should parse");
+        let metadata = parsed
+            .hml_metadata
+            .expect("HML import metadata should be retained");
+
+        assert_eq!(metadata.hwpml_version.as_deref(), Some("2.91"));
+        assert_eq!(metadata.encoding, hml::HmlEncoding::Utf8);
+        assert_eq!(metadata.resource_count, 0);
+        assert!(metadata
+            .warnings
+            .iter()
+            .any(|warning| warning.xml_path == "/HWPML/TAIL/SCRIPTCODE"));
     }
 
     #[test]

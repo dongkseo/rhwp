@@ -15579,11 +15579,11 @@ impl TypesetEngine {
 
     /// 문단에 블록 표 컨트롤이 있는지 감지
     fn paragraph_has_table(&self, para: &Paragraph) -> bool {
-        use crate::renderer::height_measurer::is_tac_table_inline;
+        use crate::renderer::height_measurer::is_tac_table_inline_in_para;
         let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
         para.controls.iter().any(|c| {
             matches!(c, Control::Table(t) if t.attr & 0x01 == 0
-                || (t.attr & 0x01 != 0 && !is_tac_table_inline(t, seg_width, &para.text, &para.controls)))
+                || (t.attr & 0x01 != 0 && !is_tac_table_inline_in_para(t, seg_width, para)))
         })
     }
 
