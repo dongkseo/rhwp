@@ -6,8 +6,8 @@ use crate::model::shape::TextWrap;
 use crate::model::style::{ImageFillMode, UnderlineType};
 use crate::paint::{
     paint_op_replay_plane_with_layer, CacheHint, ClipKind, LayerNode, LayerNodeKind, PageLayerTree,
-    PaintOp, PaintReplayPlane, ResolvedImageKind, ResolvedImagePayload, TextDecorationKind,
-    TextVariantKind,
+    PaintOp, PaintReplayPlane, RenderProfile, ResolvedImageKind, ResolvedImagePayload,
+    TextDecorationKind, TextVariantKind,
 };
 use crate::renderer::composer::expand_pua_display_text;
 use crate::renderer::layer_renderer::{
@@ -171,6 +171,8 @@ pub fn analyze_canvaskit_replay_plan(
         TextVariantSelectionOptions {
             backend: VariantSelectionBackend::CanvasKit,
             allow_colrv1_stage1_color_graph: true,
+            allow_bitmap_glyph: true,
+            allow_svg_glyph: true,
             ..TextVariantSelectionOptions::canvaskit()
         },
     );
@@ -189,7 +191,7 @@ pub fn analyze_canvaskit_replay_plan(
             ))
         })
         .collect::<BTreeMap<_, _>>();
-    let mut builder = CanvasKitReplayPlanBuilder::new(mode, selected_variants);
+    let mut builder = CanvasKitReplayPlanBuilder::new(mode, tree.profile, selected_variants);
     builder.visit_node(&tree.root, "root", None);
     let text_variants = variant_reports
         .into_iter()
@@ -227,6 +229,7 @@ struct SelectedTextVariant {
 struct CanvasKitReplayPlanBuilder {
     mode: CanvasKitReplayMode,
     policy: CanvasKitReplayPolicy,
+    profile: RenderProfile,
     selected_variants: BTreeMap<String, SelectedTextVariant>,
     summary: CanvasKitReplaySummary,
     items: Vec<CanvasKitReplayItem>,
@@ -235,11 +238,13 @@ struct CanvasKitReplayPlanBuilder {
 impl CanvasKitReplayPlanBuilder {
     fn new(
         mode: CanvasKitReplayMode,
+        profile: RenderProfile,
         selected_variants: BTreeMap<String, SelectedTextVariant>,
     ) -> Self {
         Self {
             mode,
             policy: mode.policy(),
+            profile,
             selected_variants,
             summary: CanvasKitReplaySummary::default(),
             items: Vec::new(),
@@ -356,12 +361,8 @@ impl CanvasKitReplayPlanBuilder {
                 image, resolved, ..
             } => self.image_item(path, image, resolved.as_deref()),
             PaintOp::Equation { .. } => {
-                let mut item = self.transition_overlay_item(
-                    path,
-                    "equation",
-                    CanvasKitReplayFeature::Equation,
-                );
-                item.detail = Some("unsupportedDirectReplay".to_string());
+                let mut item = direct_item(path, "equation", CanvasKitReplayFeature::Equation);
+                item.detail = Some("layoutBoxFallback".to_string());
                 item
             }
             PaintOp::FormObject { .. } => {
@@ -378,10 +379,25 @@ impl CanvasKitReplayPlanBuilder {
                 item.detail = Some("unsupportedDirectReplay".to_string());
                 item
             }
-            PaintOp::Placeholder { .. } => {
+            PaintOp::Placeholder { placeholder, .. } => {
                 let mut item =
                     direct_item(path, "placeholder", CanvasKitReplayFeature::Placeholder);
-                item.detail = Some("basicStaticReplay".to_string());
+                item.detail = Some(match placeholder.kind {
+                    crate::renderer::render_tree::PlaceholderKind::Ole => {
+                        "basicStaticReplay".to_string()
+                    }
+                    crate::renderer::render_tree::PlaceholderKind::MissingPicture
+                        if matches!(
+                            self.profile,
+                            RenderProfile::Print | RenderProfile::HighQuality
+                        ) =>
+                    {
+                        "missingPictureSuppressedPrintEquivalent".to_string()
+                    }
+                    crate::renderer::render_tree::PlaceholderKind::MissingPicture => {
+                        "missingPictureEditorVisual".to_string()
+                    }
+                });
                 item
             }
             PaintOp::TextRun { run, .. } => self.text_run_item(path, run),
@@ -1134,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn object_fragment_replay_gaps_use_runtime_diagnostic_detail() {
+    fn equation_layout_is_direct_while_raw_svg_remains_a_replay_gap() {
         let tree = tree_with_ops(vec![
             PaintOp::equation(bbox(), equation_node()),
             PaintOp::raw_svg(
@@ -1145,13 +1161,11 @@ mod tests {
 
         let plan = analyze_canvaskit_replay_plan(&tree, CanvasKitReplayMode::Default);
 
-        assert_eq!(plan.summary.direct_required_items, 2);
+        assert_eq!(plan.summary.direct_items, 1);
+        assert_eq!(plan.summary.direct_required_items, 1);
         assert_eq!(plan.items[0].op_type, "equation");
         assert_eq!(plan.items[0].feature, CanvasKitReplayFeature::Equation);
-        assert_eq!(
-            plan.items[0].detail.as_deref(),
-            Some("unsupportedDirectReplay")
-        );
+        assert_eq!(plan.items[0].detail.as_deref(), Some("layoutBoxFallback"));
         assert_eq!(plan.items[1].op_type, "rawSvg");
         assert_eq!(
             plan.items[1].feature,
@@ -1319,6 +1333,34 @@ mod tests {
                 .map(|item| item.detail.as_deref())
                 .collect::<Vec<_>>(),
             vec![Some("basicStaticReplay"), Some("basicStaticReplay")]
+        );
+    }
+
+    #[test]
+    fn missing_picture_policy_tracks_editor_and_print_equivalent_profiles() {
+        let op = PaintOp::placeholder(
+            bbox(),
+            PlaceholderNode::missing_picture(None, None, None, None),
+        );
+        let screen = analyze_canvaskit_replay_plan(
+            &tree_with_ops(vec![op.clone()]),
+            CanvasKitReplayMode::Default,
+        );
+        let print_tree = PageLayerTree::with_profile(
+            100.0,
+            100.0,
+            LayerNode::leaf(bbox(), None, vec![op]),
+            RenderProfile::Print,
+        );
+        let print = analyze_canvaskit_replay_plan(&print_tree, CanvasKitReplayMode::Default);
+
+        assert_eq!(
+            screen.items[0].detail.as_deref(),
+            Some("missingPictureEditorVisual")
+        );
+        assert_eq!(
+            print.items[0].detail.as_deref(),
+            Some("missingPictureSuppressedPrintEquivalent")
         );
     }
 
