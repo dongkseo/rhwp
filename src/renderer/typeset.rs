@@ -13692,6 +13692,23 @@ impl TypesetEngine {
                 // 부족) 통째로 다음 페이지로 미뤄 잔여 overflow 를 피한다(기존 동작).
                 // 페이지 시작 행(r==cursor_row)은 더 미룰 수 없으므로 무조건 분할.
                 let genuinely_page_larger = block_h > st.base_available_height();
+                // [#2097 진단] 블록 컷/이월 결정 입력 — 동작 불변.
+                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                    eprintln!(
+                        "DIAG_SCAN BLOCK_DECIDE r={} b={}..{} block_h={:.1} rest={:.1} budget={:.1} cut_h={:.1} fully={} hard={} rbrb={} pglarger={}",
+                        r,
+                        b_start,
+                        b_end,
+                        block_h,
+                        avail_for_rows - consumed,
+                        budget,
+                        res.consumed_height,
+                        res.fully_consumed,
+                        res.hit_hard_break,
+                        rowbreak_rowspan_block,
+                        genuinely_page_larger
+                    );
+                }
                 let allow_block_split = if rowbreak_rowspan_block {
                     r == cursor_row
                         || (res.hit_hard_break && res.consumed_height >= MIN_TOP_KEEP_PX)
@@ -13699,11 +13716,67 @@ impl TypesetEngine {
                     r == cursor_row
                         || (genuinely_page_larger && res.consumed_height >= MIN_TOP_KEEP_PX)
                 };
-                if can_intra_split && !res.fully_consumed && allow_block_split {
-                    end_row = if rowbreak_use_row_offsets {
+                // [#2097] RowBreak rowspan 블록 쪽 하단 밴드 필: plain 컷 walk 는
+                // 셀-로컬 높이만 보고 행 시작 y 를 무시해, 블록 밴드가 잔여를
+                // 초과해도 fully_consumed 로 오판해 분할이 기각된다 (3248363
+                // b=6..8: block_h 661.8 > 잔여 540.7 인데 fully=true/cut_h 376).
+                // 한글은 이 경계에서 행 오프셋 기준 밴드 컷으로 쪽을 채운다
+                // (한글 PDF p2 만충 + p3 상단 셀 내용 중간 재개 실측). hard-break
+                // 없는 쪽 하단 경계 한정으로 오프셋 컷을 재시도한다.
+                let mut band_fill = None;
+                if res.fully_consumed
+                    && mt.allows_row_break_split()
+                    && can_intra_split
+                    && !rowbreak_use_row_offsets
+                    && r > cursor_row
+                    && blk_start_cut.is_empty()
+                    && block_h > budget + 0.5
+                    && budget >= MIN_TOP_KEEP_PX
+                {
+                    let mut offsets = Vec::with_capacity(block_size);
+                    let mut top = 0.0;
+                    for br in b_start..b_end {
+                        offsets.push(top);
+                        top += cut_row_h[br] + if br + 1 < b_end { cs } else { 0.0 };
+                    }
+                    let res2 = layout_engine.advance_row_block_cut_with_row_offsets(
+                        table,
+                        b_start,
+                        b_end,
+                        blk_start_cut,
+                        budget,
+                        &offsets,
+                        styles,
+                    );
+                    if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                        eprintln!(
+                            "DIAG_SCAN BLOCK_BAND? r={} b={}..{} budget={:.1} cut_h={:.1} fully={} end_cut={:?}",
+                            r,
+                            b_start,
+                            b_end,
+                            budget,
+                            res2.consumed_height,
+                            res2.fully_consumed,
+                            res2.end_cut
+                        );
+                    }
+                    if !res2.fully_consumed && res2.consumed_height >= MIN_TOP_KEEP_PX {
+                        band_fill = Some((res2, offsets));
+                    }
+                }
+                if can_intra_split
+                    && ((!res.fully_consumed && allow_block_split) || band_fill.is_some())
+                {
+                    let (cut_res, cut_offsets) = if let Some((ref res2, ref offsets)) = band_fill {
+                        (res2, offsets.as_slice())
+                    } else {
+                        (&res, block_row_offsets.as_slice())
+                    };
+                    let use_offsets = rowbreak_use_row_offsets || band_fill.is_some();
+                    end_row = if use_offsets {
                         let mut render_end = b_start + 1;
-                        for (idx, row_top) in block_row_offsets.iter().enumerate() {
-                            if *row_top < res.consumed_height - 0.1 {
+                        for (idx, row_top) in cut_offsets.iter().enumerate() {
+                            if *row_top < cut_res.consumed_height - 0.1 {
                                 render_end = b_start + idx + 1;
                             }
                         }
@@ -13711,18 +13784,18 @@ impl TypesetEngine {
                     } else {
                         b_end
                     };
-                    split_end_cut = res.end_cut.clone();
-                    split_end_limit = res.consumed_height;
+                    split_end_cut = cut_res.end_cut.clone();
+                    split_end_limit = cut_res.consumed_height;
                     split_block_start = Some(b_start);
-                    let split_total = if rowbreak_use_row_offsets {
-                        block_fragment_height(end_row, blk_start_cut, &res.end_cut)
+                    let split_total = if use_offsets {
+                        block_fragment_height(end_row, blk_start_cut, &cut_res.end_cut)
                     } else {
                         layout_engine.row_block_content_height(
                             table,
                             b_start,
                             b_end,
                             blk_start_cut,
-                            &res.end_cut,
+                            &cut_res.end_cut,
                             styles,
                         )
                     };
