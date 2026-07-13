@@ -49,6 +49,20 @@
   (한글 2022 COM, Print 액션 1-up 강제 출력 1쪽 = 편집기 PageCount 1 정합).
 - 검증: `cargo test --test issue_2097_1730000_real_doc_pin`
 
+## 3248363_upmu_bunjang.hwpx / 21217935_simsa_jipyo.hwp / 18095317_eogu_geumji.hwp (실문서 — 블록 밴드 필 핀)
+
+- 출처: hwpdocs 코퍼스 `admrul_downloads/문화체육관광부/3248363_[별표 2] 부·전속단체별
+  업무분장표(국립중앙극장 기본운영규정).hwpx` / `ordin_downloads/구례군/21217935_[별표 1]
+  장기요양기관 지정 심사지표 및 기준(...).hwp` / `law_downloads/해양수산부/18095317_[별표 7]
+  어업의 종류별 어구사용의 금지구역 및 금지기간(...).hwp` (원본 그대로 복사).
+- #2097 잔존 계열(RowBreak rowspan 블록 통이월) 대표 실결함 문서: 블록이 쪽 하단
+  잔여를 초과할 때 plain 블록 컷 walk 가 행 시작 y 를 무시해 fully_consumed 로
+  오판 → 분할 기각 → 통이월로 쪽이 절반가량만 참. 수정(행 오프셋 컷 재시도 밴드
+  필) 후 3248363 5→**4쪽**, 21217935 11→**8쪽**, 18095317 22→**21쪽** (모두 한글
+  2022 COM PageCount 실측 일치, 3248363 은 쪽 2/3 경계 내용의 한글 PDF 글자 단위
+  정합 확인).
+- 검증: `cargo test --test issue_2097_band_fill`
+
 ## 3080901_pii_ledger.hwp (실문서 — 중간-쪽 RowBreak 한글 정합 권위 검증)
 - 출처: hwpdocs 코퍼스 `admrul_downloads/지식재산처/3080901_[별지 2] 개인정보의
   목적 외 이용 및 제3자 제공 대장(지식재산처 개인정보보호 세부지침).hwp`
