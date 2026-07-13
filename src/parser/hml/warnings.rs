@@ -2,6 +2,7 @@
 pub enum HmlWarningCode {
     UnsupportedElement,
     UnsupportedAttribute,
+    UnsupportedEquationSemantics,
     MissingResource,
     ExternalResourceBlocked,
     InvalidReference,
@@ -33,6 +34,15 @@ impl HmlWarning {
             code: HmlWarningCode::UnsupportedAttribute,
             xml_path,
             message: format!("지원하지 않는 HML 속성을 건너뛰었습니다: {attribute}"),
+            preserved: false,
+        }
+    }
+
+    pub(crate) fn unsupported_equation_semantics(xml_path: String, semantics: &str) -> Self {
+        Self {
+            code: HmlWarningCode::UnsupportedEquationSemantics,
+            xml_path,
+            message: format!("보존할 수 없는 HML 수식 의미를 건너뛰었습니다: {semantics}"),
             preserved: false,
         }
     }

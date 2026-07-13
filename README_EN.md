@@ -61,15 +61,15 @@ Foundation  Typeset   Collab    Complete
 > Reverse-engineering complete, read/write foundation established
 
 - HWP 5.0 / HWPX parser, rendering for paragraphs, tables, equations, images, charts
-- HML (HWPML 2.9/2.91) import: text, formatting, tables, and rectangle text boxes; save as HWP/HWPX
+- HML (HWPML 2.9/2.91) import: text, formatting, tables, rectangle text boxes, and supported equations; loss-safe HML/HWP/HWPX save
 - Pagination (multi-column split, table row split), headers/footers, master pages, footnotes
 - SVG export (CLI) + Canvas rendering (WASM/Web)
 - Web editor + hwpctl-compatible API (30 Actions, Field API)
 - 1,100+ tests
 
-> HML support is import-first and intentionally limited. Only HWPML 2.9/2.91 structures verified
-> by the current real-file corpus are imported. Pictures, equations, and embedded/external resources
-> are skipped with warnings. The original HML is never overwritten; use Save As HWP or HWPX.
+> HML support is limited to HWPML 2.9/2.91 structures verified by the current real-file corpus.
+> Supported equations can be imported and edited; HML-origin documents can be saved back to HML
+> after a preservation preflight. Pictures and embedded/external resources remain blocked from lossy save.
 
 #### v0.7.18 Cycle (2026-07-11)
 

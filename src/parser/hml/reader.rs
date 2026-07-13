@@ -14,11 +14,26 @@ use crate::model::Padding;
 
 use super::envelope::PreservedFragment;
 use super::error::HmlError;
-use super::warnings::HmlWarning;
+use super::warnings::{HmlWarning, HmlWarningCode};
 
 const LANGUAGE_NAMES: [&str; 7] = [
     "Hangul", "Latin", "Hanja", "Japanese", "Other", "Symbol", "User",
 ];
+
+const MAX_EQUATION_DIAGNOSTIC_CHARS: usize = 256;
+
+fn bounded_equation_semantics(name: &str, value: &str) -> String {
+    let semantics = format!("{name}={value}");
+    if semantics.chars().count() <= MAX_EQUATION_DIAGNOSTIC_CHARS {
+        return semantics;
+    }
+    let mut bounded = semantics
+        .chars()
+        .take(MAX_EQUATION_DIAGNOSTIC_CHARS - 1)
+        .collect::<String>();
+    bounded.push('…');
+    bounded
+}
 
 #[derive(Debug, Clone)]
 pub struct HmlLimits {
@@ -77,8 +92,20 @@ pub(crate) struct HmlParagraph {
 
 #[derive(Debug)]
 pub(crate) enum HmlControl {
+    Equation(HmlEquation),
     Rectangle(HmlRectangle),
     Table(HmlTable),
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct HmlEquation {
+    pub script: String,
+    pub font_size: u32,
+    pub color: u32,
+    pub baseline: i16,
+    pub version_info: String,
+    pub font_name: String,
+    script_count: usize,
 }
 
 #[derive(Debug, Default)]
@@ -145,6 +172,8 @@ struct ReadState<'a> {
     source: HmlSource,
     pending_capture: Option<PendingCapture>,
     paragraphs: Vec<HmlParagraph>,
+    equations: Vec<HmlEquation>,
+    accepted_script_depth: Option<usize>,
     rectangles: Vec<HmlRectangle>,
     tables: Vec<HmlTable>,
     cells: Vec<HmlCell>,
@@ -164,6 +193,8 @@ impl<'a> ReadState<'a> {
             source: HmlSource::default(),
             pending_capture: None,
             paragraphs: Vec::new(),
+            equations: Vec::new(),
+            accepted_script_depth: None,
             rectangles: Vec::new(),
             tables: Vec::new(),
             cells: Vec::new(),
@@ -189,7 +220,7 @@ impl<'a> ReadState<'a> {
             return Ok(());
         }
         let modeled_siblings_before = self.modeled_siblings_before();
-        let preserve_target = self.warn_if_unsupported(&name);
+        let preserve_target = self.warn_if_unsupported(&name, element)?;
         self.note_modeled_child(&name);
         if self.is_unsupported_inline(&name) {
             self.reserve_control_slot()?;
@@ -222,7 +253,7 @@ impl<'a> ReadState<'a> {
             return Ok(());
         }
         let modeled_siblings_before = self.modeled_siblings_before();
-        let preserve_target = self.warn_if_unsupported(&name);
+        let preserve_target = self.warn_if_unsupported(&name, element)?;
         self.note_modeled_child(&name);
         if self.is_unsupported_inline(&name) {
             self.reserve_control_slot()?;
@@ -361,6 +392,10 @@ impl<'a> ReadState<'a> {
             "PAGEMARGIN" => self.capture_page_margin(element),
             "P" => self.start_paragraph(element),
             "TEXT" => self.start_text_run(element),
+            "EQUATION" if self.stack.iter().rev().nth(1).map(String::as_str) == Some("TEXT") => {
+                self.start_equation(element)
+            }
+            "SCRIPT" => self.start_equation_script(element),
             "RECTANGLE" => self.start_rectangle(element),
             "SHAPEOBJECT" => self.capture_shape_object(element),
             "SHAPECOMPONENT" => self.capture_shape_component(element),
@@ -386,6 +421,10 @@ impl<'a> ReadState<'a> {
             "FONTFACE" => self.font_language = None,
             "BORDERFILL" => self.current_border_fill = None,
             "P" => self.finish_paragraph()?,
+            "EQUATION" if self.stack.iter().rev().nth(1).map(String::as_str) == Some("TEXT") => {
+                self.finish_equation()?
+            }
+            "SCRIPT" => self.finish_equation_script(),
             "RECTANGLE" => self.finish_rectangle()?,
             "CELL" => self.finish_cell()?,
             "TABLE" => self.finish_table()?,
@@ -646,6 +685,88 @@ impl<'a> ReadState<'a> {
         Ok(())
     }
 
+    fn start_equation(&mut self, element: &BytesStart<'_>) -> Result<(), HmlError> {
+        self.reserve_control_slot()?;
+        let path = format!("/{}", self.stack.join("/"));
+        for item in element.attributes() {
+            let attr = item.map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+            let name = std::str::from_utf8(attr.key.as_ref())
+                .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute name".to_string()))?;
+            if !matches!(
+                name,
+                "BaseLine" | "BaseUnit" | "TextColor" | "Version" | "Font"
+            ) {
+                let raw = std::str::from_utf8(attr.value.as_ref())
+                    .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
+                let value = quick_xml::escape::unescape(raw)
+                    .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+                self.source
+                    .warnings
+                    .push(HmlWarning::unsupported_equation_semantics(
+                        format!("{path}/@{name}"),
+                        &bounded_equation_semantics(name, &value),
+                    ));
+            }
+        }
+        self.equations.push(HmlEquation {
+            baseline: parse_attribute(element, b"BaseLine")?.unwrap_or(0),
+            font_size: parse_attribute(element, b"BaseUnit")?.unwrap_or(1000),
+            color: parse_attribute(element, b"TextColor")?.unwrap_or(0),
+            version_info: attribute(element, b"Version")?.unwrap_or_default(),
+            font_name: attribute(element, b"Font")?.unwrap_or_default(),
+            ..Default::default()
+        });
+        Ok(())
+    }
+
+    fn start_equation_script(&mut self, element: &BytesStart<'_>) -> Result<(), HmlError> {
+        if self.stack.iter().rev().nth(1).map(String::as_str) != Some("EQUATION") {
+            return Ok(());
+        }
+        let equation = self
+            .equations
+            .last_mut()
+            .ok_or_else(|| HmlError::InvalidXml("SCRIPT outside EQUATION".to_string()))?;
+        equation.script_count += 1;
+        if equation.script_count == 1 {
+            self.accepted_script_depth = Some(self.stack.len());
+        } else {
+            self.source
+                .warnings
+                .push(HmlWarning::unsupported_equation_semantics(
+                    format!("/{}[{}]", self.stack.join("/"), equation.script_count),
+                    "SCRIPT",
+                ));
+        }
+        let path = if equation.script_count == 1 {
+            format!("/{}", self.stack.join("/"))
+        } else {
+            format!("/{}[{}]", self.stack.join("/"), equation.script_count)
+        };
+        for item in element.attributes() {
+            let attr = item.map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+            let name = std::str::from_utf8(attr.key.as_ref())
+                .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute name".to_string()))?;
+            let raw = std::str::from_utf8(attr.value.as_ref())
+                .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
+            let value = quick_xml::escape::unescape(raw)
+                .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+            self.source
+                .warnings
+                .push(HmlWarning::unsupported_equation_semantics(
+                    format!("{path}/@{name}"),
+                    &bounded_equation_semantics(name, &value),
+                ));
+        }
+        Ok(())
+    }
+
+    fn finish_equation_script(&mut self) {
+        if self.accepted_script_depth == Some(self.stack.len()) {
+            self.accepted_script_depth = None;
+        }
+    }
+
     fn start_rectangle(&mut self, element: &BytesStart<'_>) -> Result<(), HmlError> {
         self.reserve_control_slot()?;
         let mut rectangle = HmlRectangle::default();
@@ -891,6 +1012,17 @@ impl<'a> ReadState<'a> {
         Ok(())
     }
 
+    fn finish_equation(&mut self) -> Result<(), HmlError> {
+        let equation = self
+            .equations
+            .pop()
+            .ok_or_else(|| HmlError::InvalidXml("unexpected EQUATION end".to_string()))?;
+        self.current_paragraph()?
+            .controls
+            .push(HmlControl::Equation(equation));
+        Ok(())
+    }
+
     fn finish_cell(&mut self) -> Result<(), HmlError> {
         let cell = self
             .cells
@@ -919,6 +1051,21 @@ impl<'a> ReadState<'a> {
         if self.pending_capture.is_some() {
             return Ok(());
         }
+        if self.stack.last().map(String::as_str) == Some("SCRIPT")
+            && self.accepted_script_depth == Some(self.stack.len())
+        {
+            self.equations
+                .last_mut()
+                .ok_or_else(|| HmlError::InvalidXml("SCRIPT outside EQUATION".to_string()))?
+                .script
+                .push_str(text);
+            return Ok(());
+        }
+        let inside_equation = self.stack.iter().any(|item| item == "EQUATION");
+        if inside_equation && !text.trim().is_empty() {
+            self.append_unsupported_equation_text(text);
+            return Ok(());
+        }
         if self.stack.last().map(String::as_str) != Some("CHAR") {
             return Ok(());
         }
@@ -931,6 +1078,35 @@ impl<'a> ReadState<'a> {
         Ok(())
     }
 
+    fn append_unsupported_equation_text(&mut self, text: &str) {
+        const MESSAGE_PREFIX: &str = "보존할 수 없는 HML 수식 의미를 건너뛰었습니다: #text=";
+        let path = format!("/{}/#text", self.stack.join("/"));
+        if let Some(warning) = self.source.warnings.last_mut().filter(|warning| {
+            warning.code == HmlWarningCode::UnsupportedEquationSemantics
+                && warning.xml_path == path
+                && warning.message.starts_with(MESSAGE_PREFIX)
+        }) {
+            let current = &warning.message[MESSAGE_PREFIX.len()..];
+            if current.chars().count() + "#text=".chars().count() == MAX_EQUATION_DIAGNOSTIC_CHARS
+                && current.ends_with('…')
+            {
+                return;
+            }
+            warning.message = HmlWarning::unsupported_equation_semantics(
+                path,
+                &bounded_equation_semantics("#text", &format!("{current}{text}")),
+            )
+            .message;
+            return;
+        }
+        self.source
+            .warnings
+            .push(HmlWarning::unsupported_equation_semantics(
+                path,
+                &bounded_equation_semantics("#text", text),
+            ));
+    }
+
     fn current_paragraph(&mut self) -> Result<&mut HmlParagraph, HmlError> {
         self.paragraphs
             .last_mut()
@@ -939,7 +1115,11 @@ impl<'a> ReadState<'a> {
 
     /// 미지원 요소를 경고로 기록하고, 저장 시 원문 그대로 되돌릴 수 있는 대상이면
     /// `(부모 요소, xml_path)`를 반환한다.
-    fn warn_if_unsupported(&mut self, name: &str) -> Option<(String, String)> {
+    fn warn_if_unsupported(
+        &mut self,
+        name: &str,
+        element: &BytesStart<'_>,
+    ) -> Result<Option<(String, String)>, HmlError> {
         let parent = self.stack.last().map(String::as_str);
         let unknown_document_child = match parent {
             Some("HEAD") => !matches!(name, "DOCSUMMARY" | "DOCSETTING" | "MAPPINGTABLE"),
@@ -948,35 +1128,60 @@ impl<'a> ReadState<'a> {
             _ => false,
         };
         let unsupported_control = self.is_unsupported_inline(name);
-        let explicitly_unsupported = matches!(name, "PICTURE" | "EQUATION" | "BINDATA");
+        let unsupported_equation_child = self.stack.iter().any(|item| item == "EQUATION")
+            && !(parent == Some("EQUATION") && name == "SCRIPT");
+        let explicitly_unsupported = matches!(name, "PICTURE" | "BINDATA");
         if unknown_document_child
             || name == "SCRIPTCODE"
             || unsupported_control
+            || unsupported_equation_child
             || explicitly_unsupported
         {
             let path = format!("/{}/{}", self.stack.join("/"), name);
             let preserved = unknown_document_child
                 || (name == "SCRIPTCODE" && matches!(parent, Some("TAIL") | Some("HEAD")));
-            self.source.warnings.push(HmlWarning::unsupported_element(
-                path.clone(),
-                name,
-                preserved,
-            ));
+            let warning = if unsupported_equation_child {
+                HmlWarning::unsupported_equation_semantics(path.clone(), name)
+            } else {
+                HmlWarning::unsupported_element(path.clone(), name, preserved)
+            };
+            self.source.warnings.push(warning);
+            if unsupported_equation_child {
+                for item in element.attributes() {
+                    let attr = item.map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+                    let attr_name = std::str::from_utf8(attr.key.as_ref()).map_err(|_| {
+                        HmlError::InvalidXml("non-UTF-8 attribute name".to_string())
+                    })?;
+                    let raw = std::str::from_utf8(attr.value.as_ref())
+                        .map_err(|_| HmlError::InvalidXml("non-UTF-8 attribute".to_string()))?;
+                    let value = quick_xml::escape::unescape(raw)
+                        .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+                    self.source
+                        .warnings
+                        .push(HmlWarning::unsupported_equation_semantics(
+                            format!("{path}/@{attr_name}"),
+                            &bounded_equation_semantics(attr_name, &value),
+                        ));
+                }
+            }
             if preserved {
-                return Some((
+                return Ok(Some((
                     parent
                         .expect("preserved implies parent present")
                         .to_string(),
                     path,
-                ));
+                )));
             }
         }
-        None
+        Ok(None)
     }
 
     fn is_unsupported_inline(&self, name: &str) -> bool {
         self.stack.last().map(String::as_str) == Some("TEXT")
-            && !matches!(name, "CHAR" | "SECDEF" | "COLDEF" | "RECTANGLE" | "TABLE")
+            && !matches!(
+                name,
+                "CHAR" | "SECDEF" | "COLDEF" | "EQUATION" | "RECTANGLE" | "TABLE"
+            )
     }
 
     fn finish(mut self) -> Result<HmlSource, HmlError> {
@@ -1069,6 +1274,7 @@ pub(crate) fn read_hml(xml: &str, limits: &HmlLimits) -> Result<HmlSource, HmlEr
             }
             Event::End(element) => state.end(element.name().as_ref(), end_pos)?,
             Event::Text(text) => append_decoded_text(&mut state, &text, limits)?,
+            Event::CData(text) => append_cdata(&mut state, &text, limits)?,
             Event::GeneralRef(reference) => append_reference(&mut state, &reference)?,
             Event::DocType(_) => {
                 return Err(HmlError::InvalidXml("DTD is not allowed".to_string()))
@@ -1079,6 +1285,20 @@ pub(crate) fn read_hml(xml: &str, limits: &HmlLimits) -> Result<HmlSource, HmlEr
         prev_pos = end_pos;
     }
     state.finish()
+}
+
+fn append_cdata(
+    state: &mut ReadState<'_>,
+    text: &quick_xml::events::BytesCData<'_>,
+    limits: &HmlLimits,
+) -> Result<(), HmlError> {
+    if text.len() > limits.max_text_node_bytes {
+        return Err(HmlError::LimitExceeded("text node size".to_string()));
+    }
+    let decoded = text
+        .decode()
+        .map_err(|error| HmlError::InvalidXml(error.to_string()))?;
+    state.append_text(&decoded)
 }
 
 fn enforce_depth(current_depth: usize, max_depth: usize) -> Result<(), HmlError> {

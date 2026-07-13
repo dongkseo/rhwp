@@ -15,6 +15,7 @@ test('HML 저장 가능 문서는 재저장 가능 안내와 warning path를 함
       code: 'UnsupportedElement',
       xmlPath: '/HWPML/TAIL/SCRIPTCODE',
       message: '지원하지 않는 HML 요소를 건너뛰었습니다: SCRIPTCODE',
+      preserved: true,
     }],
   });
 
@@ -37,6 +38,7 @@ test('HML 저장 불가 문서는 저장 차단 안내와 HWP/HWPX 대안을 표
       code: 'UnsupportedElement',
       xmlPath: '/HWPML/BODY/P/CONTROL/UNKNOWN',
       message: '보존할 수 없는 요소입니다: UNKNOWN',
+      preserved: false,
     }],
     warnings: [],
   });

@@ -1131,6 +1131,7 @@ impl DocumentCore {
         let code = match warning.code {
             HmlWarningCode::UnsupportedElement => "UNSUPPORTED_ELEMENT",
             HmlWarningCode::UnsupportedAttribute => "UNSUPPORTED_ATTRIBUTE",
+            HmlWarningCode::UnsupportedEquationSemantics => "HML_UNSUPPORTED_EQUATION_SEMANTICS",
             HmlWarningCode::MissingResource => "MISSING_RESOURCE",
             HmlWarningCode::ExternalResourceBlocked => "EXTERNAL_RESOURCE_BLOCKED",
             HmlWarningCode::InvalidReference => "INVALID_REFERENCE",

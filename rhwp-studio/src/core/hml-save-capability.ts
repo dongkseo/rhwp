@@ -7,6 +7,7 @@ export interface HmlSaveBlocker {
   code: string;
   xmlPath: string;
   message: string;
+  preserved: false;
 }
 
 export interface HmlSaveCapability {
@@ -19,17 +20,43 @@ export interface NormalizedHmlSaveState {
   saveBlockers: HmlSaveBlocker[];
 }
 
+export interface HmlSaveState {
+  sourceFormat: string;
+  hmlSavable: boolean;
+  blockers: HmlSaveBlocker[];
+}
+
 export interface HmlSaveContext<T extends HmlSavabilityMetadata> {
   metadata: T | null;
   exporterAvailable: boolean;
 }
 
-function isHmlSaveBlocker(value: unknown): value is HmlSaveBlocker {
+function isHmlSaveBlocker(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const blocker = value as Partial<HmlSaveBlocker>;
   return typeof blocker.code === 'string'
     && typeof blocker.xmlPath === 'string'
-    && typeof blocker.message === 'string';
+    && typeof blocker.message === 'string'
+    && (blocker.preserved === undefined || blocker.preserved === false);
+}
+
+function isCanonicalHmlSaveBlocker(value: unknown): value is HmlSaveBlocker {
+  return isHmlSaveBlocker(value)
+    && (value as Partial<HmlSaveBlocker>).preserved === false;
+}
+
+export function parseHmlSaveState(value: unknown): HmlSaveState | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<HmlSaveState>;
+  if (typeof candidate.sourceFormat !== 'string'
+    || typeof candidate.hmlSavable !== 'boolean'
+    || !Array.isArray(candidate.blockers)
+    || !candidate.blockers.every(isCanonicalHmlSaveBlocker)) return null;
+  return {
+    sourceFormat: candidate.sourceFormat,
+    hmlSavable: candidate.hmlSavable,
+    blockers: candidate.blockers,
+  };
 }
 
 export function normalizeHmlSaveState(metadata: unknown): NormalizedHmlSaveState | null {
@@ -38,7 +65,12 @@ export function normalizeHmlSaveState(metadata: unknown): NormalizedHmlSaveState
   const blockersAreValid = Array.isArray(candidate.saveBlockers)
     && candidate.saveBlockers.every(isHmlSaveBlocker);
   const saveBlockers: HmlSaveBlocker[] = blockersAreValid
-    ? candidate.saveBlockers as HmlSaveBlocker[]
+    ? (candidate.saveBlockers as HmlSaveBlocker[]).map((blocker) => ({
+        code: blocker.code,
+        xmlPath: blocker.xmlPath,
+        message: blocker.message,
+        preserved: false,
+      }))
     : [];
   return {
     hmlSavable: candidate.hmlSavable === true && blockersAreValid && saveBlockers.length === 0,

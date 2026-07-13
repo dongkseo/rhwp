@@ -1,3 +1,4 @@
+use rhwp::document_core::DocumentCore;
 use rhwp::model::control::Control;
 use rhwp::model::shape::{RectangleShape, ShapeObject};
 use rhwp::model::style::{border_width_index, BorderLineType, FillType};
@@ -5,6 +6,7 @@ use rhwp::parser::hml::{
     parse_hml, parse_hml_with_limits, HmlEncoding, HmlError, HmlLimits, HmlWarningCode,
 };
 use rhwp::parser::{detect_format, parse_document, FileFormat};
+use rhwp::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
 
 const HML_29: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <HWPML Style="embed" SubVersion="9.0.1.0" Version="2.9">
@@ -50,6 +52,274 @@ fn first_rectangle(document: &rhwp::model::document::Document) -> &RectangleShap
         .expect("fixture should contain a rectangle")
 }
 
+fn equations(document: &rhwp::model::document::Document) -> Vec<&rhwp::model::control::Equation> {
+    document
+        .sections
+        .iter()
+        .flat_map(|section| &section.paragraphs)
+        .flat_map(|paragraph| &paragraph.controls)
+        .filter_map(|control| match control {
+            Control::Equation(equation) => Some(equation.as_ref()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn find_equation_bbox(node: &RenderNode, para_index: usize) -> Option<BoundingBox> {
+    if let RenderNodeType::Equation(equation) = &node.node_type {
+        if equation.para_index == Some(para_index) {
+            return Some(node.bbox.clone());
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_equation_bbox(child, para_index))
+}
+
+fn find_equation_node(node: &RenderNode) -> Option<&rhwp::renderer::render_tree::EquationNode> {
+    if let RenderNodeType::Equation(equation) = &node.node_type {
+        return Some(equation);
+    }
+    node.children.iter().find_map(find_equation_node)
+}
+
+fn find_text_bbox(node: &RenderNode, needle: &str) -> Option<BoundingBox> {
+    if let RenderNodeType::TextRun(run) = &node.node_type {
+        if run.text.contains(needle) {
+            return Some(node.bbox.clone());
+        }
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_text_bbox(child, needle))
+}
+
+#[test]
+fn parses_repo_equation_fixture_into_shared_ir_without_equation_warnings() {
+    let parsed = parse_hml(include_bytes!(
+        "fixtures/hml/exambank_math_equations_min.hml"
+    ))
+    .expect("equation fixture should parse");
+    let equations = equations(&parsed.document);
+
+    assert_eq!(
+        equations
+            .iter()
+            .map(|equation| equation.script.as_str())
+            .collect::<Vec<_>>(),
+        ["x^2 +1", "x^2 +1", "3", "3"]
+    );
+    assert!(equations.iter().all(|equation| {
+        equation.baseline == 65
+            && equation.font_size == 1000
+            && equation.color == 0
+            && equation.version_info == "Equation Version 60"
+    }));
+    assert!(!parsed
+        .warnings
+        .iter()
+        .any(|warning| warning.xml_path.contains("EQUATION")));
+
+    let paragraph = parsed.document.sections[0]
+        .paragraphs
+        .iter()
+        .find(|paragraph| paragraph.text == "다항식 을 전개하시오.")
+        .expect("fixture equation paragraph");
+    assert_eq!(
+        paragraph.char_offsets,
+        [0, 1, 2, 3, 12, 13, 14, 15, 16, 17, 18, 19]
+    );
+    assert_eq!(paragraph.char_count, 21);
+}
+
+#[test]
+fn repo_equation_fixture_contract_has_ordered_scripts_and_no_source_identifiers() {
+    let fixture = include_str!("fixtures/hml/exambank_math_equations_min.hml");
+    let parsed = parse_hml(fixture.as_bytes()).expect("repo equation fixture should parse");
+
+    assert_eq!(
+        equations(&parsed.document)
+            .iter()
+            .map(|equation| equation.script.as_str())
+            .collect::<Vec<_>>(),
+        ["x^2 +1", "x^2 +1", "3", "3"]
+    );
+    for disallowed in [
+        "ExamBank",
+        "exambank",
+        "serial_curated",
+        "http://",
+        "https://",
+        "/Users/",
+        "\\Users\\",
+        "@",
+    ] {
+        assert!(
+            !fixture.contains(disallowed),
+            "repo fixture must not retain source identifier {disallowed:?}"
+        );
+    }
+}
+
+#[test]
+fn imported_inline_equation_has_intrinsic_bbox_between_text_and_is_hittable() {
+    let core = DocumentCore::from_bytes(include_bytes!(
+        "fixtures/hml/exambank_math_equations_min.hml"
+    ))
+    .expect("equation fixture should open");
+    let equation = equations(core.document())[0];
+    assert!(equation.common.width > 0 && equation.common.height > 0);
+
+    let tree = core.build_page_render_tree(0).expect("page render tree");
+    let before = find_text_bbox(&tree.root, "다항식 ").expect("text before equation");
+    let equation = find_equation_bbox(&tree.root, 2).expect("inline equation bbox");
+    let after = find_text_bbox(&tree.root, "을 전개하시오.").expect("text after equation");
+    assert!(
+        equation.width > 0.0 && equation.height > 0.0,
+        "{equation:?}"
+    );
+    assert!(
+        before.x + before.width <= equation.x + 0.5,
+        "{before:?} vs {equation:?}"
+    );
+    assert!(
+        equation.x + equation.width <= after.x + 0.5,
+        "{equation:?} vs {after:?}"
+    );
+
+    let hit = core
+        .hit_test_native(
+            0,
+            equation.x + equation.width / 2.0,
+            equation.y + equation.height / 2.0,
+        )
+        .expect("equation center should be hittable");
+    assert!(hit.contains("\"paragraphIndex\":2"), "{hit}");
+}
+
+#[test]
+fn equation_supports_font_color_entities_and_cdata() {
+    let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT CharShape="0"><EQUATION BaseLine="-4" BaseUnit="1200" TextColor="1122867" Version="v&amp;1" Font="Hancom"><SCRIPT><![CDATA[a < b]]>&amp;c</SCRIPT></EQUATION></TEXT></P></SECTION></BODY><TAIL/></HWPML>"#;
+    let parsed = parse_hml(xml).expect("equation entities and CDATA should parse");
+    let equation = equations(&parsed.document)[0];
+
+    assert_eq!(equation.script, "a < b&c");
+    assert_eq!(equation.baseline, -4);
+    assert_eq!(equation.font_size, 1200);
+    assert_eq!(equation.color, 0x0011_2233);
+    assert_eq!(equation.version_info, "v&1");
+    assert_eq!(equation.font_name, "Hancom");
+
+    let core = DocumentCore::from_bytes(xml).expect("equation should open for rendering");
+    let tree = core.build_page_render_tree(0).expect("page render tree");
+    let rendered = find_equation_node(&tree.root).expect("rendered equation");
+    assert_eq!(rendered.color, 0x0011_2233);
+    assert_eq!(rendered.color_str, "#332211");
+    assert!(rendered.font_size > 0.0);
+}
+
+#[test]
+fn unknown_equation_semantics_emit_durable_exact_path_warnings() {
+    let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT><EQUATION FutureAttr="1"><SCRIPT>x</SCRIPT>outside &amp; text<FUTURE Mode="matrix&amp;inline">secret &lt; value</FUTURE></EQUATION></TEXT></P></SECTION></BODY><TAIL/></HWPML>"#;
+    let parsed = parse_hml(xml).expect("unknown equation semantics should not block import");
+
+    assert_eq!(equations(&parsed.document).len(), 1);
+    for path in [
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/@FutureAttr",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/FUTURE",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/FUTURE/@Mode",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/FUTURE/#text",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/#text",
+    ] {
+        assert!(
+            parsed.warnings.iter().any(|warning| {
+                warning.code == HmlWarningCode::UnsupportedEquationSemantics
+                    && warning.xml_path == path
+                    && !warning.preserved
+            }),
+            "missing durable warning for {path}"
+        );
+    }
+    let diagnostic_messages = parsed
+        .warnings
+        .iter()
+        .map(|warning| warning.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(diagnostic_messages
+        .iter()
+        .any(|message| message.contains("Mode=matrix&inline")));
+    assert!(diagnostic_messages
+        .iter()
+        .any(|message| message.contains("#text=secret < value")));
+    assert!(diagnostic_messages
+        .iter()
+        .any(|message| message.contains("#text=outside & text")));
+}
+
+#[test]
+fn unknown_equation_diagnostic_values_are_bounded_on_unicode_boundaries() {
+    let long_value = "한".repeat(400);
+    let xml = format!(
+        r#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT><EQUATION><SCRIPT>x</SCRIPT><FUTURE Value="{long_value}"/></EQUATION></TEXT></P></SECTION></BODY><TAIL/></HWPML>"#
+    );
+    let parsed = parse_hml(xml.as_bytes()).expect("long diagnostic value remains importable");
+    let warning = parsed
+        .warnings
+        .iter()
+        .find(|warning| warning.xml_path.ends_with("/FUTURE/@Value"))
+        .expect("unknown child attribute warning");
+    let semantics = warning
+        .message
+        .split_once(": ")
+        .map(|(_, value)| value)
+        .expect("diagnostic message prefix");
+
+    assert_eq!(semantics.chars().count(), 256);
+    assert!(semantics.ends_with('…'));
+}
+
+#[test]
+fn equation_accepts_only_the_first_direct_script_and_warns_for_duplicates_and_nested_scripts() {
+    let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT><EQUATION><SCRIPT FutureMode="matrix&amp;inline">first</SCRIPT><SCRIPT>second</SCRIPT><SCRIPT>outer<SCRIPT>nested</SCRIPT></SCRIPT></EQUATION></TEXT></P></SECTION></BODY><TAIL/></HWPML>"#;
+    let parsed = parse_hml(xml).expect("duplicate scripts should remain importable");
+
+    assert_eq!(equations(&parsed.document)[0].script, "first");
+    for path in [
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/SCRIPT/@FutureMode",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/SCRIPT[2]",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/SCRIPT[3]",
+        "/HWPML/BODY/SECTION/P/TEXT/EQUATION/SCRIPT/SCRIPT",
+    ] {
+        assert!(
+            parsed.warnings.iter().any(|warning| {
+                warning.code == HmlWarningCode::UnsupportedEquationSemantics
+                    && warning.xml_path == path
+                    && !warning.preserved
+            }),
+            "missing duplicate/nested SCRIPT warning for {path}"
+        );
+    }
+    let script_attribute = parsed
+        .warnings
+        .iter()
+        .find(|warning| warning.xml_path.ends_with("/SCRIPT/@FutureMode"))
+        .expect("SCRIPT attribute warning");
+    assert!(
+        script_attribute
+            .message
+            .contains("FutureMode=matrix&inline"),
+        "unsupported SCRIPT attribute diagnostics must retain name and value: {}",
+        script_attribute.message
+    );
+}
+
+#[test]
+fn rejects_unclosed_equation_script_as_invalid_xml() {
+    let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT><EQUATION><SCRIPT>x</EQUATION></TEXT></P></SECTION></BODY></HWPML>"#;
+
+    assert!(matches!(parse_hml(xml), Err(HmlError::InvalidXml(_))));
+}
+
 #[test]
 fn detects_utf16le_hwpml_29_by_root_signature() {
     assert_eq!(detect_format(&utf16le_bom(HML_29)), FileFormat::Hml);
@@ -86,19 +356,16 @@ fn does_not_detect_hwpml_named_xml_without_a_version_signature() {
 }
 
 #[test]
-fn unsupported_inline_controls_preserve_text_offsets_and_emit_paths() {
+fn inline_controls_preserve_text_offsets_and_unsupported_paths() {
     let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT CharShape="0"><CHAR>a</CHAR><EQUATION/><CHAR>b</CHAR><PICTURE/></TEXT></P></SECTION></BODY><TAIL><BINDATA/></TAIL></HWPML>"#;
     let parsed = parse_hml(xml).expect("unsupported controls should not abort readable text");
     let paragraph = &parsed.document.sections[0].paragraphs[0];
 
     assert_eq!(paragraph.text, "ab");
     assert_eq!(paragraph.char_offsets, [0, 9]);
+    assert!(matches!(paragraph.controls[0], Control::Equation(_)));
     assert_eq!(parsed.metadata.resource_count, 1);
-    for path in [
-        "/HWPML/BODY/SECTION/P/TEXT/EQUATION",
-        "/HWPML/BODY/SECTION/P/TEXT/PICTURE",
-        "/HWPML/TAIL/BINDATA",
-    ] {
+    for path in ["/HWPML/BODY/SECTION/P/TEXT/PICTURE", "/HWPML/TAIL/BINDATA"] {
         assert!(
             parsed.warnings.iter().any(|warning| {
                 warning.code == HmlWarningCode::UnsupportedElement && warning.xml_path == path
@@ -307,27 +574,27 @@ fn body_inline_unsupported_elements_are_not_envelope_preserved() {
     let xml = br#"<HWPML Version="2.91"><HEAD/><BODY><SECTION><P><TEXT CharShape="0"><CHAR>a</CHAR><EQUATION/><CHAR>b</CHAR><PICTURE/></TEXT></P></SECTION></BODY><TAIL><BINDATA/></TAIL></HWPML>"#;
     let parsed = parse_hml(xml).expect("unsupported controls should not abort readable text");
 
-    for path in [
-        "/HWPML/BODY/SECTION/P/TEXT/EQUATION",
-        "/HWPML/BODY/SECTION/P/TEXT/PICTURE",
-    ] {
-        let warning = parsed
-            .warnings
+    assert!(!parsed
+        .warnings
+        .iter()
+        .any(|warning| warning.xml_path.ends_with("/EQUATION")));
+    let path = "/HWPML/BODY/SECTION/P/TEXT/PICTURE";
+    let warning = parsed
+        .warnings
+        .iter()
+        .find(|warning| warning.xml_path == path)
+        .unwrap_or_else(|| panic!("missing structured warning for {path}"));
+    assert!(
+        !warning.preserved,
+        "body-inline skip must not be envelope-preserved: {path}"
+    );
+    assert!(
+        !parsed
+            .preserved_fragments
             .iter()
-            .find(|warning| warning.xml_path == path)
-            .unwrap_or_else(|| panic!("missing structured warning for {path}"));
-        assert!(
-            !warning.preserved,
-            "body-inline skip must not be envelope-preserved: {path}"
-        );
-        assert!(
-            !parsed
-                .preserved_fragments
-                .iter()
-                .any(|fragment| fragment.xml_path == path),
-            "body-inline skip must not produce a preserved fragment: {path}"
-        );
-    }
+            .any(|fragment| fragment.xml_path == path),
+        "body-inline skip must not produce a preserved fragment: {path}"
+    );
 
     let tail_warning = parsed
         .warnings

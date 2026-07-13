@@ -1198,6 +1198,14 @@ installEmbedRuntime({
       await initPromise;
       return wasm.exportHwpx();
     },
+    async exportHml() {
+      await initPromise;
+      return wasm.exportHml();
+    },
+    async getHmlSaveState() {
+      await initPromise;
+      return wasm.getHmlSaveState();
+    },
     async exportHwpVerify() {
       await initPromise;
       return JSON.parse(wasm.exportHwpVerify());

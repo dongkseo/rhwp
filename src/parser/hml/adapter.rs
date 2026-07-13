@@ -1,4 +1,4 @@
-use crate::model::control::Control;
+use crate::model::control::{Control, Equation};
 use crate::model::document::{Document, FileHeader, HwpVersion, Section, SectionDef};
 use crate::model::paragraph::{CharShapeRef, Paragraph};
 use crate::model::shape::{CommonObjAttr, DrawingObjAttr, RectangleShape, ShapeObject, TextBox};
@@ -6,7 +6,7 @@ use crate::model::style::{BorderFill, CharShape, Font, LineSpacingType, ParaShap
 use crate::model::table::{Cell, Table, TablePageBreak, VerticalAlign};
 
 use super::error::HmlError;
-use super::reader::{HmlControl, HmlParagraph, HmlRectangle, HmlSource, HmlTable};
+use super::reader::{HmlControl, HmlEquation, HmlParagraph, HmlRectangle, HmlSource, HmlTable};
 
 pub(crate) fn into_document(mut source: HmlSource) -> Result<Document, HmlError> {
     let mut document = Document {
@@ -122,9 +122,31 @@ fn into_paragraph(source: HmlParagraph) -> Result<Paragraph, HmlError> {
 
 fn into_control(source: HmlControl) -> Result<Control, HmlError> {
     match source {
+        HmlControl::Equation(equation) => Ok(into_equation(equation)),
         HmlControl::Rectangle(rectangle) => into_rectangle(rectangle),
         HmlControl::Table(table) => into_table(table),
     }
+}
+
+fn into_equation(source: HmlEquation) -> Control {
+    let (width, height) =
+        crate::renderer::equation::intrinsic_size_hwp(&source.script, source.font_size);
+    Control::Equation(Box::new(Equation {
+        common: CommonObjAttr {
+            ctrl_id: crate::parser::tags::CTRL_EQUATION,
+            treat_as_char: true,
+            width,
+            height,
+            ..Default::default()
+        },
+        script: source.script,
+        font_size: source.font_size,
+        color: source.color,
+        baseline: source.baseline,
+        version_info: source.version_info,
+        font_name: source.font_name,
+        ..Default::default()
+    }))
 }
 
 fn into_rectangle(source: HmlRectangle) -> Result<Control, HmlError> {

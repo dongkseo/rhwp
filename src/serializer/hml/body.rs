@@ -1,4 +1,4 @@
-use crate::model::control::Control;
+use crate::model::control::{Control, Equation};
 use crate::model::document::{Document, Section};
 use crate::model::page::PageDef;
 use crate::model::paragraph::{ColumnBreakType, Paragraph};
@@ -246,6 +246,7 @@ fn write_control_run(
         &[("CharShape", char_shape_at(paragraph, offset).to_string())],
     );
     let result = match control {
+        Control::Equation(equation) => write_equation(writer, equation),
         Control::Table(table) => write_table(writer, table, path),
         Control::Shape(shape) => write_shape(writer, shape, path),
         _ => Err(unsupported_ir(
@@ -255,6 +256,24 @@ fn write_control_run(
     };
     writer.close("TEXT");
     result
+}
+
+fn write_equation(writer: &mut XmlWriter, equation: &Equation) -> Result<(), HmlExportError> {
+    let mut attributes = vec![
+        ("BaseLine", equation.baseline.to_string()),
+        ("BaseUnit", equation.font_size.to_string()),
+        ("TextColor", equation.color.to_string()),
+        ("Version", equation.version_info.clone()),
+    ];
+    if !equation.font_name.is_empty() {
+        attributes.push(("Font", equation.font_name.clone()));
+    }
+    writer.open("EQUATION", &attributes);
+    writer.open("SCRIPT", &[]);
+    writer.text(&equation.script);
+    writer.close("SCRIPT");
+    writer.close("EQUATION");
+    Ok(())
 }
 
 fn write_shape(

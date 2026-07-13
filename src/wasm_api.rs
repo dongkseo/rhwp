@@ -252,6 +252,7 @@ fn hml_warning_code(code: crate::parser::hml::HmlWarningCode) -> &'static str {
     match code {
         HmlWarningCode::UnsupportedElement => "UnsupportedElement",
         HmlWarningCode::UnsupportedAttribute => "UnsupportedAttribute",
+        HmlWarningCode::UnsupportedEquationSemantics => "UnsupportedEquationSemantics",
         HmlWarningCode::MissingResource => "MissingResource",
         HmlWarningCode::ExternalResourceBlocked => "ExternalResourceBlocked",
         HmlWarningCode::InvalidReference => "InvalidReference",
@@ -264,26 +265,60 @@ fn hml_warning_json(warning: &crate::parser::hml::HmlWarning) -> serde_json::Val
         "code": hml_warning_code(warning.code),
         "xmlPath": warning.xml_path,
         "message": warning.message,
+        "preserved": warning.preserved,
     })
 }
 
-fn hml_save_state(core: &DocumentCore) -> (bool, Vec<serde_json::Value>) {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HmlSaveState {
+    source_format: &'static str,
+    hml_savable: bool,
+    blockers: Vec<HmlSaveBlockerDto>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HmlSaveBlockerDto {
+    code: String,
+    xml_path: String,
+    message: String,
+    preserved: bool,
+}
+
+fn hml_save_state(core: &DocumentCore) -> HmlSaveState {
+    let source_format = source_format_name(core.source_format);
     match core.hml_export_preflight() {
-        Ok(()) => (true, Vec::new()),
+        Ok(()) => HmlSaveState {
+            source_format,
+            hml_savable: true,
+            blockers: Vec::new(),
+        },
         Err(error) => {
             let blockers = error
                 .blockers()
                 .iter()
-                .map(|blocker| {
-                    serde_json::json!({
-                        "code": blocker.code,
-                        "xmlPath": blocker.xml_path,
-                        "message": blocker.message,
-                    })
+                .map(|blocker| HmlSaveBlockerDto {
+                    code: blocker.code.to_string(),
+                    xml_path: blocker.xml_path.clone(),
+                    message: blocker.message.clone(),
+                    preserved: false,
                 })
                 .collect();
-            (false, blockers)
+            HmlSaveState {
+                source_format,
+                hml_savable: false,
+                blockers,
+            }
         }
+    }
+}
+
+fn source_format_name(format: crate::parser::FileFormat) -> &'static str {
+    match format {
+        crate::parser::FileFormat::Hwpx => "hwpx",
+        crate::parser::FileFormat::Hml => "hml",
+        _ => "hwp",
     }
 }
 
@@ -5206,11 +5241,7 @@ impl HwpDocument {
     /// 원본 파일 형식을 반환한다 ("hwp", "hwpx", 또는 "hml").
     #[wasm_bindgen(js_name = getSourceFormat)]
     pub fn get_source_format(&self) -> String {
-        match self.core.source_format {
-            crate::parser::FileFormat::Hwpx => "hwpx".to_string(),
-            crate::parser::FileFormat::Hml => "hml".to_string(),
-            _ => "hwp".to_string(),
-        }
+        source_format_name(self.core.source_format).to_string()
     }
 
     /// HML 열기 메타데이터와 손실 진단을 JSON으로 반환한다.
@@ -5230,17 +5261,24 @@ impl HwpDocument {
             .iter()
             .map(hml_warning_json)
             .collect::<Vec<_>>();
-        let (hml_savable, save_blockers) = hml_save_state(&self.core);
+        let save_state = hml_save_state(&self.core);
         serde_json::json!({
             "format": "hml",
             "hwpmlVersion": metadata.hwpml_version,
             "encoding": encoding,
             "resourceCount": metadata.resource_count,
             "warnings": warnings,
-            "hmlSavable": hml_savable,
-            "saveBlockers": save_blockers,
+            "hmlSavable": save_state.hml_savable,
+            "saveBlockers": save_state.blockers,
         })
         .to_string()
+    }
+
+    /// HML 저장 가능 여부와 모든 차단 진단을 canonical JSON DTO로 반환한다.
+    #[wasm_bindgen(js_name = getHmlSaveState)]
+    pub fn get_hml_save_state(&self) -> String {
+        serde_json::to_string(&hml_save_state(&self.core))
+            .expect("HML save-state DTO serialization cannot fail")
     }
 
     /// HWPX 비표준 감지 경고를 JSON 문자열로 반환한다 (#177).

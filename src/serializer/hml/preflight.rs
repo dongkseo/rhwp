@@ -306,6 +306,9 @@ fn validate_paragraph(paragraph: &Paragraph, path: &str, blockers: &mut Vec<HmlS
             Control::Table(table) => {
                 validate_table(table, &format!("{control_path}/TABLE"), blockers)
             }
+            Control::Equation(equation) => {
+                validate_equation(equation, &format!("{control_path}/EQUATION"), blockers)
+            }
             Control::Shape(shape) => match shape.as_ref() {
                 ShapeObject::Rectangle(rectangle) => {
                     validate_rectangle(rectangle, &format!("{control_path}/RECTANGLE"), blockers)
@@ -321,6 +324,59 @@ fn validate_paragraph(paragraph: &Paragraph, path: &str, blockers: &mut Vec<HmlS
             )),
         }
     }
+}
+
+fn validate_equation(
+    equation: &crate::model::control::Equation,
+    path: &str,
+    blockers: &mut Vec<HmlSaveBlocker>,
+) {
+    validate_xml_value(&equation.script, &format!("{path}/SCRIPT"), blockers);
+    validate_xml_value(&equation.version_info, path, blockers);
+    validate_xml_value(&equation.font_name, path, blockers);
+
+    let expected_size =
+        crate::renderer::equation::intrinsic_size_hwp(&equation.script, equation.font_size);
+    push_if(
+        (equation.common.width, equation.common.height) != expected_size,
+        path,
+        "equation intrinsic size does not match its script and BaseUnit",
+        blockers,
+    );
+    let mut common_without_packed_attr = equation.common.clone();
+    common_without_packed_attr.attr = 0;
+    validate_common(
+        &common_without_packed_attr,
+        crate::parser::tags::CTRL_EQUATION,
+        path,
+        blockers,
+    );
+    let common = &equation.common;
+    let packed_attr =
+        crate::document_core::converters::common_obj_attr_writer::pack_common_attr_bits(common);
+    let omitted = !matches!(common.attr, 0) && common.attr != packed_attr
+        || common.vertical_offset != 0
+        || common.horizontal_offset != 0
+        || !common.treat_as_char
+        || common.flow_with_text
+        || common.allow_overlap
+        || common.vert_rel_to != Default::default()
+        || common.vert_align != Default::default()
+        || common.horz_rel_to != Default::default()
+        || common.horz_align != Default::default()
+        || common.text_wrap != Default::default();
+    push_if(
+        omitted,
+        path,
+        "equation object placement is not represented by HML EQUATION",
+        blockers,
+    );
+    push_if(
+        equation.unknown != 0 || !equation.raw_ctrl_data.is_empty(),
+        path,
+        "equation binary-only fields are not represented by HML EQUATION",
+        blockers,
+    );
 }
 
 fn validate_xml_value(value: &str, path: &str, blockers: &mut Vec<HmlSaveBlocker>) {
