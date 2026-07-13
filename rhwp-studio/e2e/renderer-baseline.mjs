@@ -376,12 +376,12 @@ async function measureWarmCanvasKitReplay(page, pageIndex) {
     const view = window.__canvasView;
     const before = view?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
     const startedAt = performance.now();
-    view?.renderPage?.(targetPageIndex);
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const rerendered = view?.rerenderPageForDiagnostics?.(targetPageIndex) === true;
     const replayMs = performance.now() - startedAt;
     const after = view?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
     return {
       replayMs,
+      rerendered,
       rendererDurationMs: after?.lastRenderDurationMs ?? null,
       renderCountDelta: before && after ? after.renderCount - before.renderCount : null,
       imageCacheHitDelta: before && after ? after.imageCacheHits - before.imageCacheHits : null,
@@ -455,9 +455,8 @@ try {
         const appLoadMs = performance.now() - appLoadStartedAt;
 
         await resetRendererDiagnostics(page);
-        const documentLoadStartedAt = performance.now();
-        await loadHwpFile(page, sample.file);
-        const documentLoadAndInitialRenderMs = performance.now() - documentLoadStartedAt;
+        const loadResult = await loadHwpFile(page, sample.file);
+        const documentLoadAndInitialRenderMs = loadResult.documentLoadAndInitialRenderMs;
         const layerFeatureProbe = backend.key.startsWith('canvaskit')
           ? await readLayerFeatureProbe(page, sample.page, profile)
           : null;
@@ -777,11 +776,16 @@ for (const result of results.filter((entry) => entry.readinessGateRequired)) {
   if (performanceBudget === null) {
     blockers.push('performanceBudgetMissing');
   } else {
-    if (result.timings.documentLoadAndInitialRenderMs
+    if (typeof result.timings.documentLoadAndInitialRenderMs !== 'number'
+      || !Number.isFinite(result.timings.documentLoadAndInitialRenderMs)) {
+      blockers.push('performanceColdMissing');
+    } else if (result.timings.documentLoadAndInitialRenderMs
       > performanceBudget.maxColdDocumentLoadAndInitialRenderMs) {
       blockers.push('performanceColdExceeded');
     }
-    if (result.warmReplay?.replayMs === undefined
+    if (result.warmReplay?.rerendered !== true
+      || typeof result.warmReplay?.replayMs !== 'number'
+      || !Number.isFinite(result.warmReplay.replayMs)
       || result.warmReplay?.renderCountDelta !== 1) {
       blockers.push('warmReplayMissing');
     } else if (result.warmReplay.replayMs > performanceBudget.maxWarmReplayMs) {
