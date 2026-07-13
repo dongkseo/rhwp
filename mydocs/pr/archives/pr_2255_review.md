@@ -16,7 +16,7 @@
 - `tools/hwp-convert-mcp-client-20260713-075145.tar.gz`를 추가했다.
   - CLI와 stdio bridge는 MCP `callTool` 요청 대기 시간을 사용자가 지정한
     `timeout_seconds`에 120초를 더해 설정한다.
-  - 기존 `20260709-231800` client tarball은 제거하지 않는다.
+  - 이전 `20260709-231800` client tarball을 제거해 사용자가 오래된 package를 선택하지 않게 한다.
 - [MCP 사용 매뉴얼](../../manual/mcp_hwp2020Convert_usage.md)은 새 tarball 경로와
   긴 변환 요청 timeout 동기화 규칙을 안내한다.
 - [PR 리뷰 워크플로우](../../manual/pr_review_workflow.md)는 대형 문서 기준 PDF 생성 시
