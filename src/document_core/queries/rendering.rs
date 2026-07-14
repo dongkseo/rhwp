@@ -463,11 +463,12 @@ impl DocumentCore {
     }
 
     /// 바이너리 데이터를 0-based `bin_data_content` 인덱스로 반환한다.
-    pub fn get_bin_data(&self, index: usize) -> Option<&[u8]> {
+    /// [Task #2263] 지연 로딩 도입으로 바이트를 빌려줄 수 없어 소유값을 반환한다.
+    pub fn get_bin_data(&self, index: usize) -> Option<Vec<u8>> {
         self.document
             .bin_data_content
             .get(index)
-            .map(|b| b.data.as_slice())
+            .map(|b| b.data.load())
     }
 
     pub fn render_page_svg_native(&self, page_num: u32) -> Result<String, HwpError> {
@@ -4981,17 +4982,17 @@ mod tests {
         let mut core = DocumentCore::new_empty();
         core.document.bin_data_content.push(BinDataContent {
             id: 1,
-            data: vec![0x01, 0x02, 0x03],
+            data: vec![0x01, 0x02, 0x03].into(),
             extension: "png".to_string(),
         });
         core.document.bin_data_content.push(BinDataContent {
             id: 2,
-            data: vec![0xAA, 0xBB],
+            data: vec![0xAA, 0xBB].into(),
             extension: "jpg".to_string(),
         });
 
-        assert_eq!(core.get_bin_data(0), Some(&[0x01, 0x02, 0x03][..]));
-        assert_eq!(core.get_bin_data(1), Some(&[0xAA, 0xBB][..]));
+        assert_eq!(core.get_bin_data(0), Some(vec![0x01, 0x02, 0x03]));
+        assert_eq!(core.get_bin_data(1), Some(vec![0xAA, 0xBB]));
         assert_eq!(core.get_bin_data(2), None);
     }
 
