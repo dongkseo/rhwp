@@ -5901,6 +5901,27 @@ impl LayoutEngine {
             })
     }
 
+    /// [#2097] 셀 문단 cp_idx 의 첫 유닛 앞까지의 누적 콘텐츠 높이(셀-로컬).
+    /// 각주 앵커 문단이 컷 조각에 포함되는 경계(인서트-인지 컷 예산 상한) 산정용.
+    /// 해당 문단 유닛이 없으면 None.
+    pub(crate) fn cell_para_unit_offset(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        cp_idx: usize,
+    ) -> Option<f64> {
+        let units = self.cell_units(cell, table, styles);
+        let mut h = 0.0f64;
+        for u in units.iter() {
+            if u.para_idx >= cp_idx {
+                return Some(h);
+            }
+            h += u.height;
+        }
+        None
+    }
+
     pub(crate) fn cell_units_content_height(
         &self,
         cell: &crate::model::table::Cell,
@@ -6451,6 +6472,28 @@ impl LayoutEngine {
             if h > consumed_height {
                 consumed_height = h;
             }
+            // [#2097 진단] 셀별 walk 결과 — 동작 불변.
+            if std::env::var("RHWP_DIAG_BLKCUT").is_ok() {
+                let stop = if j >= units.len() {
+                    "end"
+                } else if units[j].hard_break_before {
+                    "hard"
+                } else {
+                    "budget"
+                };
+                eprintln!(
+                    "DIAG_BLKCUT cell[{}] r={} c={} units={} start={} j={} h={:.1} stop={} next_h={:.1}",
+                    i,
+                    cell.row,
+                    cell.col,
+                    units.len(),
+                    start,
+                    j,
+                    h,
+                    stop,
+                    units.get(j).map(|u| u.height).unwrap_or(0.0)
+                );
+            }
             end_cut.push(j);
         }
         RowCutResult {
@@ -6537,6 +6580,30 @@ impl LayoutEngine {
             }
             if h > 0.0 {
                 consumed_height = consumed_height.max(row_offset + h);
+            }
+            // [#2097 진단] 오프셋 walk 셀별 결과 — 동작 불변.
+            if std::env::var("RHWP_DIAG_BLKCUT").is_ok() {
+                let stop = if j >= units.len() {
+                    "end"
+                } else if units[j].hard_break_before {
+                    "hard"
+                } else {
+                    "budget"
+                };
+                eprintln!(
+                    "DIAG_BLKCUT(ofs) cell[{}] r={} c={} units={} start={} j={} h={:.1} row_off={:.1} cell_budget={:.1} stop={} next_h={:.1}",
+                    i,
+                    cell.row,
+                    cell.col,
+                    units.len(),
+                    start,
+                    j,
+                    h,
+                    row_offset,
+                    cell_budget,
+                    stop,
+                    units.get(j).map(|u| u.height).unwrap_or(0.0)
+                );
             }
             end_cut.push(j);
         }
