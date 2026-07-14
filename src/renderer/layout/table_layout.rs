@@ -5901,6 +5901,27 @@ impl LayoutEngine {
             })
     }
 
+    /// [#2097] 셀 문단 cp_idx 의 첫 유닛 앞까지의 누적 콘텐츠 높이(셀-로컬).
+    /// 각주 앵커 문단이 컷 조각에 포함되는 경계(인서트-인지 컷 예산 상한) 산정용.
+    /// 해당 문단 유닛이 없으면 None.
+    pub(crate) fn cell_para_unit_offset(
+        &self,
+        cell: &crate::model::table::Cell,
+        table: &crate::model::table::Table,
+        styles: &ResolvedStyleSet,
+        cp_idx: usize,
+    ) -> Option<f64> {
+        let units = self.cell_units(cell, table, styles);
+        let mut h = 0.0f64;
+        for u in units.iter() {
+            if u.para_idx >= cp_idx {
+                return Some(h);
+            }
+            h += u.height;
+        }
+        None
+    }
+
     pub(crate) fn cell_units_content_height(
         &self,
         cell: &crate::model::table::Cell,

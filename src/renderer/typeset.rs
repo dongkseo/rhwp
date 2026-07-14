@@ -1817,6 +1817,17 @@ impl TypesetState {
 
     /// 각주 높이 추가
     fn add_footnote_height(&mut self, height: f64) {
+        // [#2097 진단] 각주 예약 시점 — 동작 불변.
+        if std::env::var("RHWP_DIAG_FN").is_ok() {
+            eprintln!(
+                "DIAG_FN add h={:.1} cur_total={:.1} page={} cur_h={:.1} first={}",
+                height,
+                self.current_footnote_height,
+                self.pages.len() + 1,
+                self.current_height,
+                self.is_first_footnote_on_page
+            );
+        }
         if self.is_first_footnote_on_page {
             self.current_footnote_height += self.footnote_separator_overhead;
             self.is_first_footnote_on_page = false;
@@ -15416,6 +15427,122 @@ impl TypesetEngine {
             );
             if end_row <= cursor_row {
                 end_row = cursor_row + 1;
+            }
+
+            // [#2097] 첫 조각 각주 예약-컷 재정합 — 한글은 각주를 앵커 줄과 함께
+            // 움직이므로(인서트-인지 컷), 표 전체 각주 선-예약(available 차감)은
+            // 앵커가 첫 조각에 없을 때 컷 예산만 잠식한다 (2572521 p3: 예약
+            // 111.1px == 컷 부족분, 한글 p3 각주 없음 + 잔여 94.4px = 앵커
+            // 줄+각주 크기 실측 정합). 앵커 전부가 조각 밖이면 예약을 해제하되
+            // 첫 앵커 직전을 예산 상한으로 재스캔한다 (앵커 줄은 자기 각주와
+            // 함께 다음 조각으로 — 한글 규칙).
+            let table_fn_reserved = (total_footnote - st.current_footnote_height).max(0.0)
+                + if st.current_footnote_height <= 0.0 {
+                    fn_margin
+                } else {
+                    0.0
+                };
+            let is_split_fragment = end_row < row_count || split_end_limit > 0.0;
+            if table_fn_reserved > 0.5
+                && !is_continuation
+                && cursor_row == 0
+                && start_cut.is_empty()
+                && is_split_fragment
+            {
+                let mut anchor_offsets: Vec<f64> = Vec::new();
+                let mut anchor_unresolved = false;
+                for cell in &table.cells {
+                    for (cp_idx, cp) in cell.paragraphs.iter().enumerate() {
+                        if !cp
+                            .controls
+                            .iter()
+                            .any(|c| matches!(c, Control::Footnote(_)))
+                        {
+                            continue;
+                        }
+                        let row = (cell.row as usize).min(row_count.saturating_sub(1));
+                        let row_prefix: f64 = (0..row).map(|x| cut_row_h[x] + cs).sum();
+                        match layout_engine.cell_para_unit_offset(cell, table, styles, cp_idx) {
+                            Some(off) => anchor_offsets.push(row_prefix + off),
+                            None => anchor_unresolved = true,
+                        }
+                    }
+                }
+                let min_anchor = anchor_offsets.iter().copied().fold(f64::INFINITY, f64::min);
+                let all_beyond = !anchor_unresolved
+                    && !anchor_offsets.is_empty()
+                    && min_anchor >= consumed - 0.5;
+                if all_beyond {
+                    let pad = if mt.allows_row_break_split() {
+                        layout_engine.row_remaining_visible_padding_height(
+                            table,
+                            cursor_row,
+                            &[],
+                            styles,
+                        )
+                    } else {
+                        mt.max_padding_for_row(cursor_row)
+                    };
+                    let avail_refit =
+                        (avail_for_rows + table_fn_reserved).min(min_anchor + pad + 0.1);
+                    if avail_refit > avail_for_rows + 0.5 {
+                        let refit = self.scan_block_table_split_rows(
+                            st,
+                            &layout_engine,
+                            mt,
+                            table,
+                            styles,
+                            &cut_row_h,
+                            &rowspan_touched,
+                            &start_cut,
+                            BlockRowScanVars {
+                                cursor_row,
+                                row_count,
+                                cs,
+                                can_intra_split,
+                                is_continuation,
+                                avail_for_rows: avail_refit,
+                                header_overhead,
+                                landscape_rowbreak_bleed,
+                                landscape_whole_row_tolerance,
+                                landscape_short_row_tolerance,
+                                landscape_short_row_max_height,
+                                rowbreak_split_row_overflow_tolerance,
+                            },
+                            BlockTableRowScan {
+                                consumed: 0.0,
+                                end_row: cursor_row,
+                                split_block_start: None,
+                                split_end_cut: Vec::new(),
+                                split_end_limit: 0.0,
+                            },
+                        );
+                        // 재스캔 조각도 앵커 미포함일 때만 채택 (상한이 보증하나
+                        // squeeze 허용치로 소폭 넘을 수 있어 재확인).
+                        if refit.consumed > consumed + 0.5
+                            && refit.consumed <= min_anchor + pad + 0.5
+                        {
+                            if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                                eprintln!(
+                                    "DIAG_SCAN FN_REFIT pi={} consumed {:.1} -> {:.1} reserved={:.1} min_anchor={:.1}",
+                                    para_idx,
+                                    consumed,
+                                    refit.consumed,
+                                    table_fn_reserved,
+                                    min_anchor
+                                );
+                            }
+                            consumed = refit.consumed;
+                            end_row = refit.end_row;
+                            split_block_start = refit.split_block_start;
+                            split_end_cut = refit.split_end_cut;
+                            split_end_limit = refit.split_end_limit;
+                            if end_row <= cursor_row {
+                                end_row = cursor_row + 1;
+                            }
+                        }
+                    }
+                }
             }
 
             // [Task #1022] walk 가 consumed 에 분할 행 기여까지 누적하므로
