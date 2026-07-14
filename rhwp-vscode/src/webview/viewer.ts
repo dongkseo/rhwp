@@ -11,7 +11,9 @@ const scrollContainer = document.getElementById("scroll-container")!;
 const scrollContent = document.getElementById("scroll-content")!;
 const stbPage = document.getElementById("stb-page")!;
 const stbMessage = document.getElementById("stb-message")!;
-const stbZoomVal = document.getElementById("stb-zoom-val")!;
+const stbZoomLabel = document.getElementById("stb-zoom-label")!;
+const stbZoomMenu = document.getElementById("stb-zoom-menu")!;
+const stbZoomPopup = document.getElementById("stb-zoom-popup")!;
 const stbZoomOut = document.getElementById("stb-zoom-out")!;
 const stbZoomIn = document.getElementById("stb-zoom-in")!;
 
@@ -28,7 +30,6 @@ const navPanels = new Map<string, HTMLElement>(
   ])
 );
 const stbSidebarToggle = document.getElementById("stb-sidebar-toggle")!;
-const stbViewMode = document.getElementById("stb-view-mode")!;
 
 // 문서 상태
 type ZoomMode = "manual" | "fitWidth" | "fitPage";
@@ -166,8 +167,64 @@ function updateStatusBar(): void {
   if (!pageInputActive) {
     stbPage.textContent = total > 0 ? `${currentPage + 1} / ${total} 쪽` : "- / - 쪽";
   }
-  stbZoomVal.textContent = `${Math.round(currentZoom * 100)}%`;
+  stbZoomLabel.textContent = `${Math.round(currentZoom * 100)}%`;
+  updateZoomMenuChecks();
 }
+
+// ── 통합 배율 메뉴 ──
+
+/** 메뉴 항목 중 현재 상태에 해당하는 것의 data 값. 없으면 null. */
+function currentMenuKey(): string | null {
+  if (zoomMode === "fitWidth") return "fitWidth";
+  if (zoomMode === "fitPage") return viewMode === "double" ? "fitSpread" : "fitPage";
+  return String(currentZoom);
+}
+
+function updateZoomMenuChecks(): void {
+  const key = currentMenuKey();
+  for (const item of stbZoomPopup.querySelectorAll<HTMLElement>(".stb-popup-item")) {
+    const itemKey = item.dataset.mode ?? item.dataset.zoom ?? "";
+    const check = item.querySelector<HTMLElement>(".stb-check");
+    if (check) check.textContent = itemKey === key ? "✓" : "";
+  }
+}
+
+function setZoomMenuOpen(open: boolean): void {
+  stbZoomPopup.hidden = !open;
+  stbZoomMenu.setAttribute("aria-expanded", String(open));
+}
+
+stbZoomMenu.addEventListener("click", (e) => {
+  e.stopPropagation();
+  setZoomMenuOpen(stbZoomPopup.hidden);
+});
+
+document.addEventListener("click", () => setZoomMenuOpen(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setZoomMenuOpen(false);
+});
+
+stbZoomPopup.addEventListener("click", (e) => {
+  const item = (e.target as HTMLElement).closest<HTMLElement>(".stb-popup-item");
+  if (!item) return;
+  setZoomMenuOpen(false);
+
+  // 맞춤 3항목은 쪽 배치까지 함께 결정한다. % 프리셋은 배치를 유지한 채 수동 배율로 바꾼다.
+  switch (item.dataset.mode) {
+    case "fitWidth":
+      applyZoomMode("fitWidth", "single");
+      return;
+    case "fitPage":
+      applyZoomMode("fitPage", "single");
+      return;
+    case "fitSpread":
+      applyZoomMode("fitPage", "double");
+      return;
+  }
+
+  const zoom = Number(item.dataset.zoom);
+  if (Number.isFinite(zoom)) applyZoomMode("manual", viewMode, zoom);
+});
 
 // ── 줌 제어 ──
 
@@ -550,17 +607,6 @@ stbSidebarToggle.addEventListener("click", () => toggleSidebar());
 navCollapse.addEventListener("click", () => toggleSidebar(true));
 navReopen.addEventListener("click", () => toggleSidebar(false));
 
-// ── 보기 모드: 1쪽 / 2쪽 ──
-
-function setViewMode(mode: "single" | "double"): void {
-  if (mode === viewMode) return;
-  stbViewMode.textContent = mode === "double" ? "2쪽" : "1쪽";
-  applyZoomMode(zoomMode, mode);
-}
-
-stbViewMode.addEventListener("click", () => {
-  setViewMode(viewMode === "single" ? "double" : "single");
-});
 
 // ── 사이드바: 목차 ──
 
