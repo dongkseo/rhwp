@@ -909,7 +909,7 @@ async function loadBytes(
   fileName: string,
   fileHandle: typeof wasm.currentFileHandle,
   startTime = performance.now(),
-  options: { dataReadProgressShown?: boolean } = {},
+  options: { dataReadProgressShown?: boolean; skipRecent?: boolean } = {},
 ): Promise<void> {
   if (!options.dataReadProgressShown) {
     await updateLoadProgress(0, '문서 데이터 준비 중...');
@@ -921,11 +921,13 @@ async function loadBytes(
   wasm.currentFileHandle = fileHandle;
 
   // 최근 문서 기록 — 문서 로드 성공 직후, 폰트/모달 등 블로킹 UI 단계 이전에 기록한다.
-  // 재열기용 핸들이 있을 때만(드롭/input/복구는 핸들 없음 → 제외).
-  if (fileHandle) {
+  // 모든 열기 경로에서 기록한다(핸들 없는 input/드롭도 바이트로 재열기 가능). 핸들이 있으면
+  // 재열기 시 라이브 파일 우선 접근에 사용한다. 자동저장 복구본은 options.skipRecent로 제외.
+  if (!options.skipRecent) {
     void addRecentDoc({
       fileName: wasm.fileName,
       sourceFormat: wasm.getSourceFormat(),
+      bytes: data,
       handle: fileHandle,
     }).catch((err) => console.warn('[recent] 최근 문서 기록 실패:', err));
   }
@@ -1042,7 +1044,7 @@ async function offerAutosaveRecoveryIfIdle(): Promise<void> {
 
 async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
   const fileName = recoveryFileName(draft.fileName, draft.sourceFormat);
-  await loadBytes(new Uint8Array(draft.data), fileName, null);
+  await loadBytes(new Uint8Array(draft.data), fileName, null, performance.now(), { skipRecent: true });
   await deleteAutosaveDraft(draft.id);
   documentState.markDirty('autosave-recovered');
   showToast({

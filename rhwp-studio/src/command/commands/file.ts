@@ -33,7 +33,7 @@ import {
   type FileSystemWindowLike,
 } from '@/command/file-system-access';
 import { showToast } from '@/ui/toast';
-import { clearRecentDocs, listRecentDocs, removeRecentDoc } from '@/recent/recent-store';
+import { clearRecentDocs, listRecentDocs } from '@/recent/recent-store';
 
 /** 최근 문서 핸들의 읽기 권한을 확인/요청한다. 최종 'granted' 여부 반환. */
 async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<boolean> {
@@ -372,35 +372,37 @@ export const fileCommands: CommandDef[] = [
     async execute(services, params) {
       const id = typeof params?.id === 'string' ? params.id : undefined;
       if (!id) return;
-      try {
-        const recents = await listRecentDocs();
-        const entry = recents.find((r) => r.id === id);
-        if (!entry) {
-          showToast({ message: '최근 문서 정보를 찾을 수 없습니다.', durationMs: 2500 });
-          return;
-        }
-
-        if (!(await ensureReadPermission(entry.handle))) {
-          showToast({ message: '파일 접근 권한이 없어 열 수 없습니다.', durationMs: 3000 });
-          return;
-        }
-
-        const { bytes, name } = await readFileFromHandle(entry.handle);
-        services.eventBus.emit('open-document-bytes', {
-          bytes,
-          fileName: name,
-          fileHandle: entry.handle,
-        });
-      } catch (err) {
-        // 파일 이동/삭제 등으로 접근 실패 → 목록에서 제거.
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error('[file:open-recent] 재열기 실패:', msg);
-        await removeRecentDoc(id);
-        showToast({
-          message: '파일을 찾을 수 없어 최근 목록에서 제거했습니다.',
-          durationMs: 3500,
-        });
+      const recents = await listRecentDocs();
+      const entry = recents.find((r) => r.id === id);
+      if (!entry) {
+        showToast({ message: '최근 문서 정보를 찾을 수 없습니다.', durationMs: 2500 });
+        return;
       }
+
+      // 1) 라이브 파일 우선 — 핸들이 있고 권한/접근 가능하면 디스크 최신본을 연다.
+      if (entry.handle) {
+        try {
+          if (await ensureReadPermission(entry.handle)) {
+            const { bytes, name } = await readFileFromHandle(entry.handle);
+            services.eventBus.emit('open-document-bytes', {
+              bytes,
+              fileName: name,
+              fileHandle: entry.handle,
+            });
+            return;
+          }
+        } catch (err) {
+          // 파일 이동/삭제·권한 거부 → 저장된 바이트로 폴백.
+          console.warn('[file:open-recent] 라이브 파일 접근 실패, 저장본으로 엶:', err);
+        }
+      }
+
+      // 2) 저장된 바이트로 열기(핸들 없거나 라이브 접근 실패). 저장 연속성 위해 핸들은 유지하지 않음.
+      services.eventBus.emit('open-document-bytes', {
+        bytes: entry.bytes,
+        fileName: entry.fileName,
+        fileHandle: null,
+      });
     },
   },
   {
