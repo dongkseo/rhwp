@@ -9,7 +9,8 @@
 메뉴, 툴바, 서식, 표 편집 — rhwp-studio의 모든 기능을 그대로 사용할 수 있습니다.
 
 SDK는 지원되는 Studio와 `MessageChannel` v1을 협상해 binary를 transferable로 전송합니다.
-구버전 Studio에는 기존 `postMessage` protocol로 자동 전환되며 공개 API는 동일합니다.
+구버전 Studio에는 기존 `postMessage` protocol로 자동 전환되며 기존 공개 API는 유지됩니다.
+`getRendererDiagnostics()`는 `renderer-diagnostics-v1` capability를 협상한 Studio에서만 사용할 수 있습니다.
 호스트와 `studioUrl`은 HTTP(S) origin만 지원합니다. `file:`, `data:`, 브라우저 확장처럼
 origin이 `null`이거나 불투명한 환경의 연결은 SDK와 Studio 양쪽에서 거부합니다.
 
@@ -106,6 +107,16 @@ const count = await editor.pageCount();
 
 ```javascript
 const svg = await editor.getPageSvg(0); // 첫 페이지
+```
+
+### editor.getRendererDiagnostics(page?)
+
+선택된 renderer와 0부터 시작하는 페이지별 readiness 진단을 반환합니다.
+Studio가 `renderer-diagnostics-v1` capability를 제공하지 않으면 명시적으로 실패합니다.
+
+```javascript
+const diagnostics = await editor.getRendererDiagnostics(0);
+console.log(diagnostics.schemaVersion, diagnostics.effectiveBackend);
 ```
 
 ### editor.exportHwp()
