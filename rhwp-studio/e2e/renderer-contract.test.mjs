@@ -1304,6 +1304,27 @@ assert(
     && !rendererBaselineSource.includes('browser baseline currently supports only page=0 samples'),
   'browser baseline must settle resources and capture the requested page at intrinsic scale',
 );
+assert(
+  rendererBaselineSource.includes('getCanvasKitReplayPlan?.(targetPageIndex, mode)')
+    && rendererBaselineSource.includes("code: 'replayPlanUnavailable'")
+    && rendererBaselineSource.includes("code: 'replayPlanEmpty'")
+    && rendererBaselineSource.includes("code: 'replayPlanContractMismatch'")
+    && rendererBaselineSource.includes("code: 'runtimeDiagnosticsUnavailable'")
+    && rendererBaselineSource.includes("code: 'runtimeRenderIncomplete'")
+    && rendererBaselineSource.includes("code: 'runtimeRenderError'")
+    && rendererBaselineSource.includes("code: 'runtimeUnexpectedUnsupportedOps'")
+    && rendererBaselineSource.includes('contractGateAndReportInventory')
+    && rendererBaselineSource.includes('planReasonCounts')
+    && rendererBaselineSource.includes('planFeatureCounts'),
+  'browser baseline must gate replay-plan/runtime contract failures and inventory known gaps',
+);
+assert(
+  rendererBaselineDriverSource.includes('CanvasKit Replay Diagnostics')
+    && rendererBaselineDriverSource.includes('Replay Diagnostic Inventory')
+    && rendererBaselineDriverSource.includes('expectedUnsupportedOpCounts')
+    && rendererBaselineDriverSource.includes('unexpectedUnsupportedOpCounts'),
+  'renderer baseline report must preserve replay-plan and runtime diagnostic inventories',
+);
 requireSnippet(
   rendererBaselineSource,
   /getCanvasKitRenderDiagnostics\?\.\(targetPageIndex\)[\s\S]*?canvasPool\?\.getCanvas\?\.\(targetPageIndex\)[\s\S]*?activeBackend: window\.__renderBackend[\s\S]*?request: window\.__rendererRuntimeRequest[\s\S]*?canvasOwnershipTracked/,

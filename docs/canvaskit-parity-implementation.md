@@ -262,6 +262,12 @@ readiness command fails CI, and its JSON/Markdown reports are written before
 the process reports failure, including browser launch, document load, and
 screenshot capture failures.
 
+Ordinary baseline captures now retain the Rust replay-plan status, reason, and
+feature inventory beside page-scoped CanvasKit runtime diagnostics. Missing or
+invalid direct-only plans, incomplete renders, render errors, and unexpected
+runtime operations fail the baseline contract. Known direct-replay gaps remain
+visible as report inventory instead of being reclassified as successful output.
+
 The cross-backend corpus also renders the manifest's exact page index into a
 dedicated intrinsic-scale capture surface. This keeps nonzero-page diagnostics,
 repeated headers, and HWP/HWPX paired fixtures tied to the same page/profile

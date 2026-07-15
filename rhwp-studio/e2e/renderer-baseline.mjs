@@ -320,8 +320,8 @@ async function resetRendererDiagnostics(page) {
   });
 }
 
-async function readRendererDiagnostics(page, pageIndex) {
-  return await page.evaluate((targetPageIndex) => {
+async function readRendererDiagnostics(page, pageIndex, backendKey) {
+  return await page.evaluate(({ targetBackend, targetPageIndex }) => {
     const pageRenderer = window.__canvasView?.pageRenderer;
     const canvas2d = pageRenderer?.canvas2dRenderer?.getImageEffectDiagnostics?.() ?? null;
     const canvaskit = pageRenderer?.canvaskitRenderer?.getImageEffectDiagnostics?.() ?? null;
@@ -329,6 +329,17 @@ async function readRendererDiagnostics(page, pageIndex) {
     const canvaskitRender = window.__canvasView
       ?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
     const trackedCanvas = window.__canvasView?.canvasPool?.getCanvas?.(targetPageIndex) ?? null;
+    let replayPlan = null;
+    let replayPlanError = null;
+    if (targetBackend.startsWith('canvaskit')) {
+      try {
+        const mode = targetBackend === 'canvaskit-compat' ? 'compat' : 'default';
+        const rawPlan = window.__wasm?.getCanvasKitReplayPlan?.(targetPageIndex, mode);
+        replayPlan = typeof rawPlan === 'string' ? JSON.parse(rawPlan) : rawPlan ?? null;
+      } catch (error) {
+        replayPlanError = error instanceof Error ? error.message : String(error);
+      }
+    }
     return {
       runtime: {
         activeBackend: window.__renderBackend ?? null,
@@ -342,8 +353,10 @@ async function readRendererDiagnostics(page, pageIndex) {
       },
       surfaceDiagnostics,
       canvaskitRender,
+      replayPlan,
+      replayPlanError,
     };
-  }, pageIndex);
+  }, { targetBackend: backendKey, targetPageIndex: pageIndex });
 }
 
 async function readLayerFeatureProbe(page, pageIndex, profile) {
@@ -436,6 +449,7 @@ for (const sample of samples) {
 fs.mkdirSync(options.output, { recursive: true });
 
 const results = [];
+const hardGateViolations = [];
 let browser = null;
 let page = null;
 let browserVersion = null;
@@ -616,8 +630,81 @@ try {
           );
         }
         const screenshotMs = performance.now() - screenshotStartedAt;
-        const diagnostics = await readRendererDiagnostics(page, sample.page);
+        const diagnostics = await readRendererDiagnostics(page, sample.page, backend.key);
         diagnostics.capture = selectedPageState;
+        if (backend.key.startsWith('canvaskit')) {
+          const replayPlan = diagnostics.replayPlan;
+          const replaySummary = replayPlan?.summary;
+          const runtime = diagnostics.canvaskitRender;
+          if (diagnostics.replayPlanError) {
+            hardGateViolations.push({
+              sampleId: sample.id,
+              backend: backend.key,
+              profile,
+              code: 'replayPlanUnavailable',
+              detail: diagnostics.replayPlanError,
+            });
+          } else if (!replayPlan || !replaySummary || replaySummary.totalItems <= 0) {
+            hardGateViolations.push({
+              sampleId: sample.id,
+              backend: backend.key,
+              profile,
+              code: 'replayPlanEmpty',
+              detail: JSON.stringify(replayPlan),
+            });
+          }
+          if (replayPlan
+            && (replayPlan.hiddenCanvas2dOverlayAllowed !== false
+              || replayPlan.directReplayRequired !== true)) {
+            hardGateViolations.push({
+              sampleId: sample.id,
+              backend: backend.key,
+              profile,
+              code: 'replayPlanContractMismatch',
+              detail: JSON.stringify({
+                hiddenCanvas2dOverlayAllowed: replayPlan.hiddenCanvas2dOverlayAllowed,
+                directReplayRequired: replayPlan.directReplayRequired,
+              }),
+            });
+          }
+          if (!runtime) {
+            hardGateViolations.push({
+              sampleId: sample.id,
+              backend: backend.key,
+              profile,
+              code: 'runtimeDiagnosticsUnavailable',
+              detail: null,
+            });
+          } else {
+            if (runtime.lastRenderCompleted !== true) {
+              hardGateViolations.push({
+                sampleId: sample.id,
+                backend: backend.key,
+                profile,
+                code: 'runtimeRenderIncomplete',
+                detail: runtime.lastRenderError ?? null,
+              });
+            }
+            if (runtime.lastRenderError) {
+              hardGateViolations.push({
+                sampleId: sample.id,
+                backend: backend.key,
+                profile,
+                code: 'runtimeRenderError',
+                detail: runtime.lastRenderError,
+              });
+            }
+            if ((runtime.lastUnexpectedUnsupportedOps ?? []).length > 0) {
+              hardGateViolations.push({
+                sampleId: sample.id,
+                backend: backend.key,
+                profile,
+                code: 'runtimeUnexpectedUnsupportedOps',
+                detail: JSON.stringify(runtime.lastUnexpectedUnsupportedOps),
+              });
+            }
+          }
+        }
         results.push({
           sampleId: sample.id,
           file: sample.file,
@@ -864,6 +951,94 @@ const browserBackendParity = {
   comparisons: browserBackendComparisons,
 };
 
+const replaySummaryByBackendProfile = new Map();
+for (const result of results) {
+  if (!result.backend.startsWith('canvaskit')) continue;
+  const key = `${result.backend}\u0000${result.profile}`;
+  if (!replaySummaryByBackendProfile.has(key)) {
+    replaySummaryByBackendProfile.set(key, {
+      backend: result.backend,
+      profile: result.profile,
+      captureCount: 0,
+      totalItems: 0,
+      directItems: 0,
+      directRequiredItems: 0,
+      compatOverlayItems: 0,
+      textFallbackItems: 0,
+      unsupportedItems: 0,
+      hiddenOverlayViolations: 0,
+      hardGateViolationCount: 0,
+      runtimeRenderErrors: 0,
+      runtimeUnexpectedUnsupportedOps: 0,
+      planStatusCounts: {},
+      planReasonCounts: {},
+      planFeatureCounts: {},
+      expectedUnsupportedOpCounts: {},
+      unexpectedUnsupportedOpCounts: {},
+    });
+  }
+  const summary = replaySummaryByBackendProfile.get(key);
+  const replayPlan = result.diagnostics?.replayPlan ?? {};
+  const planSummary = replayPlan.summary ?? {};
+  const runtime = result.diagnostics?.canvaskitRender ?? {};
+  summary.captureCount += 1;
+  for (const field of [
+    'totalItems',
+    'directItems',
+    'directRequiredItems',
+    'compatOverlayItems',
+    'textFallbackItems',
+    'unsupportedItems',
+    'hiddenOverlayViolations',
+  ]) {
+    const value = planSummary[field];
+    if (typeof value === 'number' && Number.isFinite(value)) summary[field] += value;
+  }
+  if (runtime.lastRenderError) summary.runtimeRenderErrors += 1;
+  summary.runtimeUnexpectedUnsupportedOps += runtime.lastUnexpectedUnsupportedOps?.length ?? 0;
+  for (const item of replayPlan.items ?? []) {
+    const status = String(item.status ?? 'unknown');
+    const reason = String(item.reason ?? 'unknown');
+    const feature = String(item.feature ?? 'unknown');
+    summary.planStatusCounts[status] = (summary.planStatusCounts[status] ?? 0) + 1;
+    summary.planReasonCounts[reason] = (summary.planReasonCounts[reason] ?? 0) + 1;
+    summary.planFeatureCounts[feature] = (summary.planFeatureCounts[feature] ?? 0) + 1;
+  }
+  for (const op of runtime.lastExpectedUnsupportedOps ?? []) {
+    summary.expectedUnsupportedOpCounts[op] = (summary.expectedUnsupportedOpCounts[op] ?? 0) + 1;
+  }
+  for (const op of runtime.lastUnexpectedUnsupportedOps ?? []) {
+    summary.unexpectedUnsupportedOpCounts[op] = (summary.unexpectedUnsupportedOpCounts[op] ?? 0) + 1;
+  }
+}
+for (const violation of hardGateViolations) {
+  const summary = replaySummaryByBackendProfile.get(`${violation.backend}\u0000${violation.profile}`);
+  if (summary) summary.hardGateViolationCount += 1;
+}
+const replaySummaryRows = [...replaySummaryByBackendProfile.values()]
+  .sort((left, right) => (
+    left.profile.localeCompare(right.profile) || left.backend.localeCompare(right.backend)
+  ));
+for (const summary of replaySummaryRows) {
+  for (const field of [
+    'planStatusCounts',
+    'planReasonCounts',
+    'planFeatureCounts',
+    'expectedUnsupportedOpCounts',
+    'unexpectedUnsupportedOpCounts',
+  ]) {
+    summary[field] = Object.fromEntries(
+      Object.entries(summary[field]).sort(([left], [right]) => left.localeCompare(right)),
+    );
+  }
+}
+const canvaskitReplayDiagnostics = {
+  mode: 'contractGateAndReportInventory',
+  hardGateViolationCount: hardGateViolations.length,
+  hardGateViolations,
+  summaryByBackendProfile: replaySummaryRows,
+};
+
 const canvaskitReadinessChecks = [];
 for (const result of results.filter((entry) => entry.readinessGateRequired)) {
   const runtime = result.diagnostics?.runtime ?? {};
@@ -1037,6 +1212,7 @@ fs.writeFileSync(
       canvaskitSurface: options.canvaskitSurface,
       results,
       browserBackendParity,
+      canvaskitReplayDiagnostics,
       canvaskitReadinessGate,
     },
     null,
@@ -1048,6 +1224,15 @@ if (canvaskitReadinessGate.summary.failed > 0) {
   for (const check of canvaskitReadinessChecks.filter((entry) => !entry.passed)) {
     console.error(
       `[baseline] CanvasKit readiness failed: ${check.sampleId} (${check.blockers.join(', ')})`,
+    );
+  }
+  process.exitCode = 1;
+}
+if (hardGateViolations.length > 0) {
+  for (const violation of hardGateViolations) {
+    console.error(
+      `[baseline] CanvasKit replay contract failed: ${violation.sampleId} `
+        + `${violation.backend}@${violation.profile} ${violation.code}`,
     );
   }
   process.exitCode = 1;
