@@ -99,12 +99,9 @@ re.getTableDimensions(0, 0, controlIdx);   // ❌ "지정된 컨트롤이 표가
 ```js
 import { createHwp, saveHwp } from './scripts/hwp/loader.mjs';
 
-const doc = await createHwp();                    // blank2010.hwp 내장 템플릿
+const doc = await createHwp();                    // createEmpty + createBlankDocument (템플릿)
 doc.insertText(0, 0, 0, '안녕하세요. 보고서입니다.');
-
-// ⚠️ createEmpty() 문서에서 applyCharFormat 은 범위를 무시하고 문서 전체에 적용된다 (아래 "알려진 버그").
-//    문단 전체를 같은 서식으로 둘 때만 안전하다.
-doc.applyCharFormat(0, 0, 0, 13, JSON.stringify({ bold: true, fontSize: 1400, textColor: '#FF0000' }));
+doc.applyCharFormat(0, 0, 0, 5, JSON.stringify({ bold: true, fontSize: 1400, textColor: '#FF0000' }));
 doc.applyParaFormat(0, 0, JSON.stringify({ alignment: 'center' }));
 
 console.log(await saveHwp(doc, 'output/new.hwp'));
@@ -235,28 +232,32 @@ node scripts/verify_hwp.mjs <파일.hwp>
 | `not_recovered` | 자기 재로드 실패 | 해당 편집 연산 제거 후 이분 탐색 |
 | `page_count_mismatch` | 페이지 수 변동 | 페이지네이션 영향 편집 검토 |
 
-## 알려진 버그 — createEmpty() 문서의 글자 서식
+## CRITICAL: 빈 문서는 반드시 템플릿을 실어라
 
-**`createEmpty()`로 만든 문서에서는 `applyCharFormat`의 start/end 범위가 무시되고 문서 전체에 적용된다.**
-
-빈 템플릿은 `char_shapes` 목록이 비어 있다. 이때 `find_or_create_char_shape`이 새 ID 대신 `0`을 반환해
-**0번 글자모양을 덮어쓰고**, 모든 글자가 0번을 참조하므로 전부 물든다.
-(HWPX로 내보내 확인하면 `charPr id=0`의 `textColor`가 바뀌어 있다.)
-
-| 대상 | 범위 서식 | 비고 |
-|------|:---------:|------|
-| 기존 `.hwp` (실제 문서) | ✅ 정상 | char_shapes 보유 → 새 ID 생성 |
-| `createEmpty()` 빈 문서 | ❌ 전체 물듦 | char_shapes 비어 있음 → 0번 덮어씀 |
-
-**우회 방법**: 부분 서식이 필요하면 빈 문서에서 시작하지 말고, 서식이 정의된 기존 `.hwp`를 템플릿으로 열어 편집하라.
-
-서식을 적용했다면 **렌더로 확인하라** — `{"ok":true}`는 이 버그를 잡아내지 못한다:
+`createEmpty()`는 **맨바닥 껍데기**(`Document::default()`)를 만든다. 그대로 저장하면
+**한컴·온라인 뷰어가 열지 못하는 파일**이 나온다. 내장 템플릿을 싣는 것은 `createBlankDocument()`다.
 
 ```js
-const svg = doc.renderPageSvg(0);
-const reds = [...svg.matchAll(/<text[^>]*fill="#ff0000"[^>]*>([^<]*)</gi)].map(m => m[1]);
-console.log(reds.join(''));   // 의도한 글자만 나오는가?
+const doc = HwpDocument.createEmpty();
+doc.createBlankDocument();     // ← 필수. 없으면 version 0.0.0.0 짜리 깨진 파일
 ```
+
+`scripts/hwp/loader.mjs`의 `createHwp()`가 두 호출을 묶어 처리한다. **직접 `createEmpty()`를 쓰지 마라.**
+
+빠뜨렸을 때 실제로 벌어지는 일 (열리는 참조 문서와 비교):
+
+| | `createEmpty()`만 | `createBlankDocument()` 후 | 열리는 참조 문서 |
+|---|---|---|---|
+| FileHeader version | **0.0.0.0** ❌ | 5.1.0.1 | 5.0.5.0 |
+| `\x05HwpSummaryInformation` | **없음** ❌ | 있음 | 있음 |
+| 압축 | **False** ❌ | True | True |
+| `applyCharFormat` 범위 | **무시 — 문서 전체 물듦** ❌ | 정상 | — |
+
+범위가 무시되는 이유: 껍데기 문서는 `char_shapes`가 비어 있어 `find_or_create_char_shape`이
+새 ID 대신 `0`을 반환하고 **0번 글자모양을 덮어쓴다**. 모든 글자가 0번을 참조하므로 전부 물든다.
+
+**`exportHwpVerify()`는 이 문제를 잡지 못한다** — rhwp가 자기 산출물을 자기가 읽는 검사라
+version 0.0.0.0 도 `recovered:true`로 통과시킨다. 최종 판정은 **실제 뷰어/한컴**뿐이다.
 
 ## 검증 체크리스트
 
@@ -266,15 +267,16 @@ console.log(reds.join(''));   // 의도한 글자만 나오는가?
 - [ ] 편집 결과를 재열기해 `getTextRange()`로 **내용이 실제로 들어갔는지** 확인했는가
 - [ ] 서식·표·이미지를 건드렸다면 `renderPageSvg(0)`로 렌더해 확인했는가 (cargo 없이 node에서 가능)
 - [ ] 재열기 후 컨트롤 인덱스를 **재탐색**했는가 (저장하면 밀린다)
-- [ ] 한컴오피스에서 경고 없이 열리는가 (최종 확인은 사람이 한다)
+- [ ] 새 문서를 만들었다면 `getDocumentInfo()`의 `version`이 `0.0.0.0`이 **아닌지** 확인했는가
+- [ ] 한컴오피스/뷰어에서 경고 없이 열리는가 (**최종 판정은 사람이 한다** — 자체 검증으로는 알 수 없다)
 
 ## 핵심 API
 
-`new HwpDocument(bytes)`로 열고, `HwpDocument.createEmpty()`로 만든다. 인덱스는 모두 **0부터**.
+`new HwpDocument(bytes)`로 열고, `createHwp()`(= `createEmpty()` + `createBlankDocument()`)로 만든다. 인덱스는 모두 **0부터**.
 
 | 목적 | 시그니처 |
 |------|----------|
-| 빈 문서 생성 | `static createEmpty(): HwpDocument` |
+| 빈 문서 생성 | `static createEmpty()` **+ `createBlankDocument()`** — 반드시 함께 (`createHwp()` 사용 권장) |
 | 구조 조회 | `getSectionCount()`, `getParagraphCount(sec)`, `pageCount()`, `getDocumentInfo()` |
 | 텍스트 읽기 | `getTextRange(sec, para, offset, count): string` |
 | 텍스트 삽입 | `insertText(sec, para, offset, text): string` |
@@ -328,6 +330,8 @@ console.log(reds.join(''));   // 의도한 글자만 나오는가?
 | HWPX를 거쳐 편집 | HWP 출처는 직접 편집해야 어댑터 no-op으로 원본 보존 |
 | 저장 전 컨트롤 인덱스를 재열기 후 재사용 | 재열기 후 반드시 재탐색 — 인덱스가 밀린다 |
 | 이미 병합된 셀을 다시 병합 | `getCellInfo`로 `colSpan`/`rowSpan` 먼저 확인 |
+| `createEmpty()`만 쓰고 저장 | 뷰어가 못 여는 version 0.0.0.0 파일 — `createHwp()` 사용 |
+| `recovered:true`를 한컴 호환으로 간주 | 자기 채점일 뿐 — 실제 뷰어로 열어봐야 안다 |
 
 ## 참조
 

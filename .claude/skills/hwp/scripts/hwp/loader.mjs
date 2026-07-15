@@ -43,10 +43,20 @@ export async function openHwp(path) {
   return new HwpDocument(readFileSync(path));
 }
 
-/** 빈 .hwp 문서를 만든다 (blank2010.hwp 내장 템플릿). */
+/**
+ * 빈 .hwp 문서를 만든다 (blank2010.hwp 내장 템플릿).
+ *
+ * createEmpty() 만 부르면 Document::default() — 맨바닥 껍데기가 나온다.
+ * FileHeader version 이 0.0.0.0 이고 요약정보 스트림이 없어 **한컴/뷰어가 열지 못한다**.
+ * char_shapes 도 비어 있어 applyCharFormat 이 0번 글자모양을 덮어쓴다 (범위 무시).
+ * createBlankDocument() 가 내장 blank2010.hwp 를 실어 version 5.1.0.1 로 만든다.
+ * 두 호출은 반드시 붙어 있어야 한다.
+ */
 export async function createHwp() {
   const { HwpDocument } = await loadWasm();
-  return HwpDocument.createEmpty();
+  const doc = HwpDocument.createEmpty();
+  doc.createBlankDocument();   // ← 이게 없으면 뷰어가 못 여는 파일이 나온다
+  return doc;
 }
 
 /**
