@@ -72,6 +72,19 @@ await saveHwp(doc, 'output/edited.hwp');   // ✅ 새 경로
 await saveHwp(doc, inputPath);             // ❌ 원본 파괴
 ```
 
+## CRITICAL: 컨트롤 인덱스를 캐싱하지 마라
+
+**저장 → 재열기 후 `control_idx`가 바뀐다.** 표와 이미지 모두에서 확인됐다 (`ctrl=0` → `ctrl=1`).
+
+```js
+const { controlIdx } = JSON.parse(doc.createTable(0, 0, 0, 3, 2));   // controlIdx = 0
+await saveHwp(doc, 'out.hwp');
+const re = await openHwp('out.hwp');
+re.getTableDimensions(0, 0, controlIdx);   // ❌ "지정된 컨트롤이 표가 아닙니다" — 이제 1 이다
+```
+
+파일을 다시 열었다면 **인덱스를 다시 탐색하라**. 문단 인덱스도 편집으로 밀릴 수 있으니 같은 원칙을 적용한다.
+
 ## 공통 워크플로
 
 1. **열기 / 생성**: `openHwp(path)` 또는 `createHwp()`
@@ -123,6 +136,69 @@ for (let s = 0; s < doc.getSectionCount(); s++) {
     if (line) console.log(line);
   }
 }
+```
+
+### 표 편집
+
+표는 `(para_idx, control_idx)`로 지정한다. **인덱스를 가정하지 말고 탐색하라.**
+
+```js
+// 문서 안의 표를 모두 찾는다
+const scanTables = (doc) => {
+  const out = [];
+  for (let p = 0; p < doc.getParagraphCount(0); p++)
+    for (let c = 0; c < 4; c++) {
+      try { const j = doc.getTableDimensions(0, p, c); if (j) out.push({ p, c, ...JSON.parse(j) }); } catch {}
+    }
+  return out;
+};
+
+const doc = await openHwp('samples/복학원서.hwp');
+const t = scanTables(doc)[0];        // → { p:2, c:0, rowCount:5, colCount:4, cellCount:15 }
+
+doc.insertTextInCell(0, t.p, t.c, 0, 0, 0, '셀 내용');    // cellIdx=0 의 문단0, offset0
+doc.insertTableRow(0, t.p, t.c, 0, true);                 // 0행 아래에 행 추가
+doc.insertTableColumn(0, t.p, t.c, 0, true);              // 0열 오른쪽에 열 추가
+doc.mergeTableCells(0, t.p, t.c, 1, 0, 1, 1);             // (1,0)~(1,1) 가로 병합
+
+await saveHwp(doc, 'output/table_edited.hwp');
+```
+
+새 표는 `createTable(sec, para, offset, rows, cols)`로 만든다 — 반환 JSON에 `paraIdx`/`controlIdx`가 담긴다.
+
+```js
+const doc = await createHwp();
+const { paraIdx, controlIdx } = JSON.parse(doc.createTable(0, 0, 0, 3, 2));
+doc.insertTextInCell(0, paraIdx, controlIdx, 0, 0, 0, 'R1C1');
+await saveHwp(doc, 'output/table_new.hwp');
+```
+
+병합 전에는 `getCellInfo(sec, para, ctrl, cellIdx)`로 `rowSpan`/`colSpan`을 확인하라. 이미 병합된 셀을
+다시 병합하면 "병합 범위를 벗어납니다" 오류가 난다.
+
+### 이미지 삽입
+
+```js
+import { readFileSync } from 'node:fs';
+
+const png = readFileSync('logo.png');
+const natW = png.readUInt32BE(16), natH = png.readUInt32BE(20);   // PNG IHDR
+const wHU = Math.round((natW / 96) * 7200);   // px → HWPUNIT (1인치 = 96px = 7200HU)
+const hHU = Math.round((natH / 96) * 7200);
+
+const doc = await openHwp('input.hwp');
+doc.insertPicture(0, 0, 0, '[]', png, wHU, hHU, natW, natH, 'png', '설명');
+await saveHwp(doc, 'output/with_image.hwp');
+```
+
+`cell_path_json`이 `'[]'`(또는 빈 문자열)이면 **본문 인라인** 삽입이다. 표 셀 안에 띄우려면
+`'[{"controlIndex":0,"cellIndex":2,"cellParaIndex":0}]'` 형태로 경로를 준다.
+
+이미지 바이트는 재인코딩 없이 그대로 보존된다. 확인:
+
+```js
+const data = doc.getControlImageData(0, para, '[]', ctrl);   // Uint8Array
+const mime = doc.getControlImageMime(0, para, '[]', ctrl);   // "image/png"
 ```
 
 SVG/PNG 렌더, Markdown 내보내기, IR 비교, 레이아웃 디버깅은 `rhwp` CLI의 영역이다 → **rhwp-cli 스킬**을 사용하라 (CLI는 `cargo build --release`가 필요하다).
@@ -189,6 +265,7 @@ console.log(reds.join(''));   // 의도한 글자만 나오는가?
 - [ ] 원본이 아닌 **새 경로**에 저장했는가
 - [ ] 편집 결과를 재열기해 `getTextRange()`로 **내용이 실제로 들어갔는지** 확인했는가
 - [ ] 서식·표·이미지를 건드렸다면 `renderPageSvg(0)`로 렌더해 확인했는가 (cargo 없이 node에서 가능)
+- [ ] 재열기 후 컨트롤 인덱스를 **재탐색**했는가 (저장하면 밀린다)
 - [ ] 한컴오피스에서 경고 없이 열리는가 (최종 확인은 사람이 한다)
 
 ## 핵심 API
@@ -204,10 +281,15 @@ console.log(reds.join(''));   // 의도한 글자만 나오는가?
 | 텍스트 삭제 | `deleteText(sec, para, offset, count): string` |
 | 글자 서식 | `applyCharFormat(sec, para, start, end, props_json): string` |
 | 문단 서식 | `applyParaFormat(sec, para, props_json): string` |
+| 표 탐색 | `getTableDimensions(sec, para, ctrl): string` (JSON `{rowCount, colCount, cellCount}`) |
+| 표 생성 | `createTable(sec, para, offset, rows, cols): string` (JSON `{paraIdx, controlIdx}`) |
+| 셀 정보 | `getCellInfo(sec, para, ctrl, cellIdx): string` (JSON `{row, col, rowSpan, colSpan}`) |
 | 표 행 | `insertTableRow(sec, parentPara, ctrl, rowIdx, below)` / `deleteTableRow(sec, parentPara, ctrl, rowIdx)` |
 | 표 열 | `insertTableColumn(sec, parentPara, ctrl, colIdx, right)` / `deleteTableColumn(sec, parentPara, ctrl, colIdx)` |
 | 셀 병합 | `mergeTableCells(sec, parentPara, ctrl, startRow, startCol, endRow, endCol)` |
 | 셀 텍스트 | `insertTextInCell(sec, parentPara, ctrl, cellIdx, cellPara, offset, text)` / `getTextInCell(...)` |
+| 이미지 삽입 | `insertPicture(sec, para, offset, cellPathJson, bytes, wHU, hHU, natW, natH, ext, desc)` |
+| 이미지 조회 | `getControlImageData(sec, para, cellPathJson, ctrl)` / `getControlImageMime(...)` |
 | 렌더 (시각 확인) | `renderPageSvg(page): string`, `renderPageHtml(page): string` |
 | 검증 | `exportHwpVerify(): string` (JSON) |
 | 내보내기 | `exportHwp(): Uint8Array`, `exportHwpx(): Uint8Array` |
@@ -244,6 +326,8 @@ console.log(reds.join(''));   // 의도한 글자만 나오는가?
 | `.env.docker`의 UID/GID를 실제 값으로 수정 | 예제 그대로(1000) 둔다 — GID 20은 컨테이너에서 충돌 |
 | CLI(`rhwp`)를 이 스킬에서 호출 | CLI는 `cargo` 빌드 필요 — 렌더/디버깅은 rhwp-cli 스킬 |
 | HWPX를 거쳐 편집 | HWP 출처는 직접 편집해야 어댑터 no-op으로 원본 보존 |
+| 저장 전 컨트롤 인덱스를 재열기 후 재사용 | 재열기 후 반드시 재탐색 — 인덱스가 밀린다 |
+| 이미 병합된 셀을 다시 병합 | `getCellInfo`로 `colSpan`/`rowSpan` 먼저 확인 |
 
 ## 참조
 
