@@ -1332,9 +1332,54 @@ fn legend_order_reversed(chart: &OoxmlChart) -> bool {
     }
 }
 
-/// 범례 항목 목록 `(라벨, 색상, 시리즈 타입)`. pie는 카테고리별, 그 외는 시리즈별
-/// (색 매핑 후 `legend_order_reversed`면 역순 나열).
-fn legend_items(chart: &OoxmlChart) -> Vec<(String, u32, OoxmlChartType)> {
+/// 범례 스와치 형태 — 정답지 28종 전수 실측 (#2277 stage3 표). 글리프 인덱스는
+/// **원 계열 인덱스**(역순 나열과 무관하게 플롯 마커·팔레트와 동일 형상/색 유지).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwatchKind {
+    /// 막대/원형: 10×10 색 사각형 (현행 유지 — issue_1882 필터 문자열 보호)
+    Square,
+    /// 무표식 라인·콤보 라인: 14px 색 선분 (현행 유지)
+    LineOnly,
+    /// 표식 라인·선+표식 분산형: 선분 + 중앙 마커 글리프 (—◆—)
+    LineGlyph(usize),
+    /// 표식만 분산형·stock 종가: 마커 글리프만
+    GlyphOnly(usize),
+    /// stock 시/고/저 (`c:symbol val="none"`): 스와치 없음 — 텍스트 정렬은 유지
+    Blank,
+}
+
+/// 계열별 스와치 형태 결정. 실측 근거: 표식 라인 = 선+글리프 / 분산형 = 스타일
+/// flags 따라 선·글리프 조합 / stock = 종가만 글리프·나머지 빈 스와치. (C2a #2277)
+fn swatch_kind(chart: &OoxmlChart, s: &OoxmlSeries, i: usize) -> SwatchKind {
+    match s.series_type {
+        // 순수 라인 차트 + plot 레벨 표식 → 선+글리프. 콤보의 라인 계열은
+        // render_combo가 마커를 그리지 않으므로 선만 (현행 유지).
+        OoxmlChartType::Line if chart.chart_type == OoxmlChartType::Line && chart.line_markers => {
+            SwatchKind::LineGlyph(i)
+        }
+        OoxmlChartType::Line => SwatchKind::LineOnly,
+        OoxmlChartType::Scatter => {
+            let (line, _, marker) = chart.scatter_style.flags();
+            match (line, marker) {
+                (true, true) => SwatchKind::LineGlyph(i),
+                (false, true) => SwatchKind::GlyphOnly(i),
+                _ => SwatchKind::LineOnly,
+            }
+        }
+        OoxmlChartType::Stock => {
+            if matches!(s.marker_symbol, SeriesMarker::Auto | SeriesMarker::Named(_)) {
+                SwatchKind::GlyphOnly(i)
+            } else {
+                SwatchKind::Blank
+            }
+        }
+        _ => SwatchKind::Square,
+    }
+}
+
+/// 범례 항목 목록 `(라벨, 색상, 스와치 형태)`. pie는 카테고리별, 그 외는 시리즈별
+/// (색·글리프 매핑 후 `legend_order_reversed`면 역순 나열).
+fn legend_items(chart: &OoxmlChart) -> Vec<(String, u32, SwatchKind)> {
     match chart.chart_type {
         OoxmlChartType::Pie => {
             let first = chart.series.first();
@@ -1350,14 +1395,14 @@ fn legend_items(chart: &OoxmlChart) -> Vec<(String, u32, OoxmlChartType)> {
                                 .cloned()
                                 .unwrap_or_else(|| format!("항목 {}", i + 1));
                             let color = s.color.unwrap_or_else(|| palette(i));
-                            (label, color, OoxmlChartType::Pie)
+                            (label, color, SwatchKind::Square)
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         }
         _ => {
-            let mut items: Vec<(String, u32, OoxmlChartType)> = chart
+            let mut items: Vec<(String, u32, SwatchKind)> = chart
                 .series
                 .iter()
                 .enumerate()
@@ -1368,7 +1413,7 @@ fn legend_items(chart: &OoxmlChart) -> Vec<(String, u32, OoxmlChartType)> {
                         s.name.clone()
                     };
                     let color = s.color.unwrap_or_else(|| palette(i));
-                    (label, color, s.series_type)
+                    (label, color, swatch_kind(chart, s, i))
                 })
                 .collect();
             if legend_order_reversed(chart) {
@@ -1379,20 +1424,50 @@ fn legend_items(chart: &OoxmlChart) -> Vec<(String, u32, OoxmlChartType)> {
     }
 }
 
-/// 범례 스와치 1개: 라인 시리즈는 선, 그 외 10×10 사각형. `cy` = 행 세로 중심.
-fn push_legend_swatch(svg: &mut String, ix: f64, cy: f64, color: u32, stype: OoxmlChartType) {
-    if stype == OoxmlChartType::Line {
+/// 범례 스와치 1개. `cy` = 행 세로 중심. Square/LineOnly는 종전 출력 바이트 유지,
+/// 글리프는 별도 클래스 `hwp-legend-glyph`(플롯 마커 `hwp-chart-marker` 카운트
+/// 오염 방지 — issue_2129 보호). (C2a #2277)
+fn push_legend_swatch(svg: &mut String, ix: f64, cy: f64, color: u32, kind: SwatchKind) {
+    let swatch_line = |svg: &mut String| {
         svg.push_str(&format!(
             "<line x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"{}\" stroke-width=\"2\"/>\n",
             ix, cy, ix + 14.0, cy, color_hex(color)
         ));
-    } else {
-        svg.push_str(&format!(
-            "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"10\" height=\"10\" fill=\"{}\"/>\n",
-            ix,
-            cy - 6.0,
-            color_hex(color)
-        ));
+    };
+    match kind {
+        SwatchKind::Square => {
+            svg.push_str(&format!(
+                "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"10\" height=\"10\" fill=\"{}\"/>\n",
+                ix,
+                cy - 6.0,
+                color_hex(color)
+            ));
+        }
+        SwatchKind::LineOnly => swatch_line(svg),
+        SwatchKind::LineGlyph(si) => {
+            swatch_line(svg);
+            push_marker(
+                svg,
+                "hwp-legend-glyph",
+                si,
+                ix + 7.0,
+                cy,
+                3.0,
+                &color_hex(color),
+            );
+        }
+        SwatchKind::GlyphOnly(si) => {
+            push_marker(
+                svg,
+                "hwp-legend-glyph",
+                si,
+                ix + 7.0,
+                cy,
+                3.5,
+                &color_hex(color),
+            );
+        }
+        SwatchKind::Blank => {}
     }
 }
 
@@ -1408,9 +1483,9 @@ fn render_legend(svg: &mut String, chart: &OoxmlChart, x: f64, y: f64, w: f64, _
     let item_w = 100.0_f64.min((w / items.len().max(1) as f64).max(60.0));
     let total_w = item_w * items.len() as f64;
     let start_x = x + (w - total_w) / 2.0;
-    for (i, (label, color, stype)) in items.iter().enumerate() {
+    for (i, (label, color, kind)) in items.iter().enumerate() {
         let ix = start_x + item_w * i as f64;
-        push_legend_swatch(svg, ix, y + 11.0, *color, *stype);
+        push_legend_swatch(svg, ix, y + 11.0, *color, *kind);
         svg.push_str(&format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" font-family=\"sans-serif\" font-size=\"10\" fill=\"#333\">{}</text>\n",
             ix + 18.0, y + 14.0, xml_escape(label)
@@ -1431,9 +1506,9 @@ fn render_legend_right(svg: &mut String, chart: &OoxmlChart, x: f64, y: f64, h: 
     let start_y = y + ((h - total_h) / 2.0).max(0.0);
 
     svg.push_str("<g class=\"hwp-chart-legend\">\n");
-    for (i, (label, color, stype)) in items.iter().enumerate() {
+    for (i, (label, color, kind)) in items.iter().enumerate() {
         let cy = start_y + row_h * i as f64 + row_h / 2.0;
-        push_legend_swatch(svg, x, cy, *color, *stype);
+        push_legend_swatch(svg, x, cy, *color, *kind);
         svg.push_str(&format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" font-family=\"sans-serif\" font-size=\"10\" fill=\"#333\">{}</text>\n",
             x + 18.0,
@@ -2236,6 +2311,126 @@ mod tests {
             rect_y("#6183d7") > rect_y("#b0b0b0"),
             "계열1(파랑)이 슬롯 맨 아래 (y가 계열3(회색)보다 커야)"
         );
+    }
+
+    // --- C2a (#2277) stage4: 범례 스와치 글리프 (SwatchKind) ---
+
+    /// 범례 그룹(`hwp-chart-legend`) 조각만 잘라 반환.
+    fn legend_fragment(svg: &str) -> &str {
+        let start = svg
+            .find("<g class=\"hwp-chart-legend\">")
+            .expect("범례 그룹 없음");
+        let end = svg[start..].find("</g>").expect("범례 그룹 종료") + start;
+        &svg[start..end]
+    }
+
+    #[test]
+    fn test_legend_swatch_marker_line_has_glyph() {
+        // 실측(표식이있는꺽은선형): 스와치 = 선분 + 플롯 마커와 동일 글리프 (—◆—)
+        let mut c = named3(OoxmlChartType::Line, BarGrouping::Clustered);
+        c.line_markers = true;
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(
+            legend.matches("hwp-legend-glyph").count(),
+            3,
+            "계열별 글리프 1개"
+        );
+        assert_eq!(
+            legend.matches("stroke-width=\"2\"").count(),
+            3,
+            "선분 스와치 유지"
+        );
+        // 플롯 마커 카운트 무오염 (issue_2129 보호 — 별도 클래스)
+        assert_eq!(
+            svg.matches("hwp-chart-marker").count(),
+            12,
+            "플롯 마커 12개 불변"
+        );
+    }
+
+    #[test]
+    fn test_legend_swatch_plain_line_no_glyph() {
+        // 실측(꺽은선형): 무표식 라인 스와치 = 선분만 (글리프 없음, 현행 유지)
+        let c = named3(OoxmlChartType::Line, BarGrouping::Clustered);
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(legend.matches("hwp-legend-glyph").count(), 0);
+        assert_eq!(legend.matches("stroke-width=\"2\"").count(), 3);
+    }
+
+    #[test]
+    fn test_legend_swatch_scatter_marker_only_glyph_only() {
+        // 실측(표식만있는분산형): 스와치 = 마커 글리프만 (선분 없음)
+        let mut c = scatter_chart(ScatterStyle::Marker);
+        c.legend_pos = LegendPos::Right;
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(
+            legend.matches("hwp-legend-glyph").count(),
+            1,
+            "1계열 글리프"
+        );
+        assert_eq!(
+            legend.matches("stroke-width=\"2\"").count(),
+            0,
+            "표식만은 선분 스와치 없음"
+        );
+    }
+
+    #[test]
+    fn test_legend_swatch_scatter_line_marker_line_glyph() {
+        // 실측(직선및표식/곡선및표식): 스와치 = 선분 + 글리프
+        let mut c = scatter_chart(ScatterStyle::LineMarker);
+        c.legend_pos = LegendPos::Right;
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(legend.matches("hwp-legend-glyph").count(), 1);
+        assert_eq!(
+            legend.matches("stroke-width=\"2\"").count(),
+            1,
+            "선분 스와치 동반"
+        );
+    }
+
+    #[test]
+    fn test_legend_swatch_stock_blank_except_close() {
+        // 실측(stock 2종): 시/고/저 스와치 없음(라벨 정렬 유지), 종가만 글리프
+        let mut c = stock_chart(4);
+        c.legend_pos = LegendPos::Right;
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(
+            legend.matches("hwp-legend-glyph").count(),
+            1,
+            "종가(Auto)만 글리프"
+        );
+        assert_eq!(
+            legend.matches("<rect ").count(),
+            0,
+            "stock 범례에 색 사각형 스와치 없음"
+        );
+        assert_eq!(
+            legend.matches("stroke-width=\"2\"").count(),
+            0,
+            "stock 범례에 선분 스와치 없음"
+        );
+        for name in ["시가", "고가", "저가", "종가"] {
+            assert!(
+                legend.contains(&format!(">{name}</text>")),
+                "{name} 라벨 유지"
+            );
+        }
+    }
+
+    #[test]
+    fn test_legend_swatch_square_unchanged_for_bars() {
+        // issue_1882 보호: 막대 범례 스와치 = 10×10 색 사각형 문자열 불변
+        let c = named3(OoxmlChartType::Column, BarGrouping::Clustered);
+        let svg = render_chart_svg(&c, 0.0, 0.0, 400.0, 300.0);
+        let legend = legend_fragment(&svg);
+        assert_eq!(legend.matches("width=\"10\" height=\"10\"").count(), 3);
+        assert_eq!(legend.matches("hwp-legend-glyph").count(), 0);
     }
 
     #[test]

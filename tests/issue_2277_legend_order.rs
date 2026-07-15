@@ -73,6 +73,26 @@ fn reversed_legends_show_last_series_on_top() {
 }
 
 #[test]
+fn marker_line_and_scatter_legend_swatches_have_glyphs() {
+    // stage4 SwatchKind 실 코퍼스 가드 — 정답지 실측:
+    // 표식이있는꺽은선형 = 선분+글리프(계열 3) / 표식만있는분산형 = 글리프만(계열 2)
+    for ext in ["hwpx", "hwp"] {
+        let line = render_page0_svg(&format!("samples/chart/라인/표식이있는꺽은선형.{ext}"));
+        assert_eq!(
+            line.matches("hwp-legend-glyph").count(),
+            3,
+            "표식 라인({ext}): 계열별 범례 글리프",
+        );
+        let scatter = render_page0_svg(&format!("samples/chart/분산형/표식만있는분산형.{ext}"));
+        assert_eq!(
+            scatter.matches("hwp-legend-glyph").count(),
+            2,
+            "표식만 분산형({ext}): 계열별 범례 글리프",
+        );
+    }
+}
+
+#[test]
 fn forward_legends_show_first_series_on_top() {
     for stem in FORWARD_STEMS {
         for ext in ["hwpx", "hwp"] {

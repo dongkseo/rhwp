@@ -67,6 +67,23 @@ fn stock_charts_render_without_placeholder() {
 }
 
 #[test]
+fn stock_legend_swatches_blank_except_close_glyph() {
+    // 정답지 실측: 시/고/저 라벨은 스와치 없음(빈 칸), 종가만 마커 글리프(HLC ▲/OHLC ×)
+    // — stage4 SwatchKind(Blank/GlyphOnly). 글리프는 별도 클래스 hwp-legend-glyph.
+    for stem in [HLC_STEM, OHLC_STEM] {
+        for ext in ["hwpx", "hwp"] {
+            let rel = format!("samples/chart/{stem}.{ext}");
+            let svg = render_page0_svg(&rel);
+            assert_eq!(
+                svg.matches("hwp-legend-glyph").count(),
+                1,
+                "{rel}: 종가만 범례 글리프",
+            );
+        }
+    }
+}
+
+#[test]
 fn ohlc_renders_candles_hlc_does_not() {
     for ext in ["hwpx", "hwp"] {
         let hlc = render_page0_svg(&format!("samples/chart/{HLC_STEM}.{ext}"));
