@@ -152,6 +152,8 @@ fn print_help() {
     println!("      --fallback-sans <명>    PDF sans-serif generic fallback family");
     println!("      --fallback-mono <명>    PDF monospace generic fallback family");
     println!("      --equation-font <명>    PDF 수식 SVG 우선 font-family");
+    println!("      --text-as-paths         텍스트를 폰트 임베드 대신 path로 변환");
+    println!("                              (메모리 대폭 절감, 텍스트 선택·검색 불가)");
     println!(
         "                              <...>는 자리표시자이며, 실제 입력에는 꺾쇠괄호를 쓰지 않음"
     );
@@ -1260,6 +1262,13 @@ fn export_pdf(args: &[String]) {
                         .or_else(|| arg.strip_prefix("--fallback-monospace="))
                         .unwrap_or_default()
                         .to_string();
+                    i += 1;
+                }
+                // [Task #2264] 텍스트를 PDF 폰트로 임베드하지 않고 path 로 변환한다.
+                // 폰트 서브셋 경로를 건너뛰어 메모리를 크게 줄이는 대신,
+                // PDF 의 텍스트 선택·검색 기능을 잃는다 (시각적 출력은 동일).
+                "--text-as-paths" => {
+                    pdf_options.embed_text = false;
                     i += 1;
                 }
                 "--equation-font" | "--equation-font-family" => {

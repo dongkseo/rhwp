@@ -964,7 +964,7 @@ fn omitted_document_resource_section_and_page_fields_are_aggregated() {
     document.doc_info.bin_data_list.push(BinData::default());
     document.bin_data_content.push(BinDataContent {
         id: 1,
-        data: vec![0xff],
+        data: vec![0xff].into(),
         extension: "bin".to_string(),
     });
 

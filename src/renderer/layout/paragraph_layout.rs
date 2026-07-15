@@ -1998,8 +1998,7 @@ impl LayoutEngine {
                             }
                             let img_y = (y + baseline - pic_h).max(y);
                             let bin_data_id = pic.image_attr.bin_data_id;
-                            let image_data =
-                                find_bin_data(bdc, bin_data_id).map(|c| c.data.clone());
+                            let image_data = find_bin_data(bdc, bin_data_id).map(|c| c.data.load());
                             let crop = {
                                 let c = &pic.crop;
                                 if c.right > c.left
@@ -4742,7 +4741,7 @@ impl LayoutEngine {
                                 let img_y = base_img_y + sibling_reserved_px;
                                 let bin_data_id = pic.image_attr.bin_data_id;
                                 let image_data =
-                                    find_bin_data(bdc, bin_data_id).map(|c| c.data.clone());
+                                    find_bin_data(bdc, bin_data_id).map(|c| c.data.load());
                                 let crop = {
                                     let c = &pic.crop;
                                     if c.right > c.left
@@ -5864,8 +5863,7 @@ impl LayoutEngine {
                             };
                             let img_y = base_img_y + sibling_reserved_px;
                             let bin_data_id = pic.image_attr.bin_data_id;
-                            let image_data =
-                                find_bin_data(bdc, bin_data_id).map(|c| c.data.clone());
+                            let image_data = find_bin_data(bdc, bin_data_id).map(|c| c.data.load());
                             let crop = {
                                 let c = &pic.crop;
                                 if c.right > c.left
