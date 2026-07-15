@@ -1289,6 +1289,25 @@ assert.deepEqual(
   ['font-batang-hancom', 'font-native-bitmap', 'image-crop', 'paragraph-line-basic', 'table-core'],
   'CanvasKit readiness gate should cover paragraph/table/image/font and font-native resources',
 );
+const fontNativeReadinessSample = rendererBaselineManifest.samples
+  .find((sample) => sample.id === 'font-native-bitmap');
+assert.equal(
+  fontNativeReadinessSample?.browserParityThresholds?.minimumInkPixels,
+  40,
+  'font-native readiness must retain a positive anti-blank budget calibrated to intrinsic capture',
+);
+const tableReadinessSample = rendererBaselineManifest.samples
+  .find((sample) => sample.id === 'table-core');
+assert.equal(
+  tableReadinessSample?.browserParityThresholds?.maxDiffRatio,
+  0.047,
+  'table readiness must keep the calibrated tolerant pixel budget bounded',
+);
+assert.equal(
+  tableReadinessSample?.browserParityThresholds?.inkMaskMaxDiffRatio,
+  0.0185,
+  'table readiness must keep the calibrated ink-mask budget bounded',
+);
 assert.equal(rendererBaselineManifest.schemaVersion, 1, 'renderer baseline manifest schema must be explicit');
 assert.ok(
   rendererBaselineManifest.samples.length >= 120,

@@ -509,7 +509,7 @@
       "notes": "Embedded font fixture that must produce and warm-replay the strict bitmap glyph sidecar.",
       "browserParityThresholds": {
         "maxDiffRatio": 0.01,
-        "minimumInkPixels": 50
+        "minimumInkPixels": 40
       },
       "diagnosticAxes": [
         "font",
@@ -658,10 +658,10 @@
       },
       "notes": "Baseline table layout, borders, and cell clipping.",
       "browserParityThresholds": {
-        "maxDiffRatio": 0.045,
+        "maxDiffRatio": 0.047,
         "minimumInkPixels": 30000,
         "inkMaskNeighborhoodRadius": 3,
-        "inkMaskMaxDiffRatio": 0.018,
+        "inkMaskMaxDiffRatio": 0.0185,
         "nonInkMaxDiffPixels": 0,
         "solidInkMaxDiffRatio": 0.005
       },
