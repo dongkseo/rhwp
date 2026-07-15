@@ -4,7 +4,9 @@
 //! - 세로/가로 막대, 꺾은선, 원형
 //! - **콤보 차트** (bar + line) 및 **이중 Y축** 지원
 
-use super::{BarGrouping, LegendPos, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle};
+use super::{
+    BarGrouping, LegendPos, OoxmlChart, OoxmlChartType, OoxmlSeries, ScatterStyle, SeriesMarker,
+};
 
 /// 기본 시리즈 색상 팔레트 (시리즈 색상 미지정 시 순환 사용)
 ///
@@ -197,6 +199,7 @@ pub fn render_chart_svg(chart: &OoxmlChart, x: f64, y: f64, w: f64, h: f64) -> S
             OoxmlChartType::Scatter => {
                 render_scatter(&mut svg, chart, plot_x, plot_y, plot_w, plot_h)
             }
+            OoxmlChartType::Stock => render_stock(&mut svg, chart, plot_x, plot_y, plot_w, plot_h),
             _ => {}
         }
     }
@@ -666,6 +669,129 @@ fn render_line(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64, 
     }
 
     render_category_labels(svg, chart, px, py, pw, ph, max_len, false);
+}
+
+// ---------------- Stock (주식형, hiLowLines/upDownBars) ----------------
+
+/// stock (주식형). 계열 역할 = XML 순서 규약: 3계열=고/저/종, 4계열=시/고/저/종
+/// (코퍼스 실측 — 그 외 계열 수는 render_line 폴백으로 placeholder 재발 방지).
+/// 정답지 정합: 검정 고저선 + (OHLC) 시가↔종가 캔들(하락=진회색 채움/상승=흰
+/// 채움+검정 테두리) + 종가 마커(마커 사이클·팔레트 폴백이 ▲회색/×노랑을 자동
+/// 결정 — 시/고/저는 `c:symbol val="none"`이라 무마커). (C2a #2277)
+fn render_stock(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f64, ph: f64) {
+    let (hi_i, lo_i, close_i, open_i) = match chart.series.len() {
+        3 => (0usize, 1usize, 2usize, None),
+        4 => (1, 2, 3, Some(0usize)),
+        _ => return render_line(svg, chart, px, py, pw, ph),
+    };
+    let cat_count = chart.categories.len().max(
+        chart
+            .series
+            .iter()
+            .map(|s| s.values.len())
+            .max()
+            .unwrap_or(0),
+    );
+    if cat_count == 0 {
+        return;
+    }
+
+    // 값축: stock 전용 무조건 +1 step 헤드룸 — 정답지 실측 max 59 → 0~80 step 20.
+    // nice_axis의 경계 조건부 +1로는 0~60이라 부족. 3D 누적세로(+1 step)와 동형 패턴.
+    let (raw_min, raw_max) = raw_value_bounds(chart.series.iter());
+    let (vmin, mx, vstep) = nice_axis_no_headroom(raw_min, raw_max, VERTICAL_AXIS_TICKS);
+    let vmax = mx + vstep;
+
+    svg.push_str(&format!(
+        "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"#ffffff\" stroke=\"#cccccc\" stroke-width=\"0.5\"/>\n",
+        px, py, pw, ph
+    ));
+    render_value_grid(
+        svg,
+        px,
+        py,
+        pw,
+        ph,
+        vmin,
+        vmax,
+        vstep,
+        chart.series.first().and_then(|s| s.format_code.as_deref()),
+        false,
+        false,
+        false,
+        false,
+    );
+
+    let y_of = |v: f64| -> f64 {
+        let t = if vmax > vmin {
+            (v - vmin) / (vmax - vmin)
+        } else {
+            0.0
+        };
+        py + ph - ph * t
+    };
+    let val = |si: usize, ci: usize| -> Option<f64> {
+        chart.series.get(si).and_then(|s| s.values.get(ci)).copied()
+    };
+    let cat_span = pw / cat_count as f64;
+    // 캔들 폭 = cat_span / (1 + gapWidth/100) — 정답지 gapWidth=150 → 슬롯의 40%
+    let gap = chart.up_down_gap_width.unwrap_or(150.0).max(0.0);
+    let candle_w = cat_span / (1.0 + gap / 100.0);
+
+    for ci in 0..cat_count {
+        let x = px + cat_span * (ci as f64 + 0.5);
+        if chart.has_hi_low_lines {
+            if let (Some(hi), Some(lo)) = (val(hi_i, ci), val(lo_i, ci)) {
+                svg.push_str(&format!(
+                    "<line class=\"hwp-stock-hilow\" x1=\"{:.2}\" y1=\"{:.2}\" x2=\"{:.2}\" y2=\"{:.2}\" stroke=\"#000000\" stroke-width=\"1\"/>\n",
+                    x,
+                    y_of(hi),
+                    x,
+                    y_of(lo)
+                ));
+            }
+        }
+        if chart.has_up_down_bars {
+            if let (Some(open), Some(close)) = (open_i.and_then(|oi| val(oi, ci)), val(close_i, ci))
+            {
+                let top = y_of(open.max(close));
+                let bot = y_of(open.min(close));
+                // 하락(종<시)=진회색 채움(#404040 근사 — 시각판정에서 픽셀 실측 확정),
+                // 상승·동률=흰 채움+검정 테두리 (동률은 미실측 — 상승 처리 고정).
+                let (fill, stroke) = if close < open {
+                    ("#404040", "none")
+                } else {
+                    ("#ffffff", "#000000")
+                };
+                svg.push_str(&format!(
+                    "<rect class=\"hwp-stock-candle\" x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"1\"/>\n",
+                    x - candle_w / 2.0,
+                    top,
+                    candle_w,
+                    (bot - top).max(0.5),
+                    fill,
+                    stroke
+                ));
+            }
+        }
+    }
+
+    // 마커: Auto/Named 계열만 (코퍼스 = 종가만 Auto). 고저선/캔들 위에 그린다.
+    for (si, ser) in chart.series.iter().enumerate() {
+        if !matches!(
+            ser.marker_symbol,
+            SeriesMarker::Auto | SeriesMarker::Named(_)
+        ) {
+            continue;
+        }
+        let color = series_color(ser, si);
+        for (ci, &v) in ser.values.iter().enumerate() {
+            let x = px + cat_span * (ci as f64 + 0.5);
+            push_marker(svg, "hwp-chart-marker", si, x, y_of(v), 3.5, &color);
+        }
+    }
+
+    render_category_labels(svg, chart, px, py, pw, ph, cat_count, false);
 }
 
 // ---------------- Scatter (분산형, 2 수치축) ----------------
@@ -1838,6 +1964,126 @@ mod tests {
         assert!((dia[0].1 - dia[1].1).abs() > 1e-6, "◆ 첫 세그먼트 대각");
         let sq = path_points(&ds[3]);
         assert!((sq[0].1 - sq[1].1).abs() < 1e-6, "■ 첫 세그먼트 수평");
+    }
+
+    // --- C2a (#2277): stock (주식형) 렌더 ---
+
+    /// 코퍼스 실측 스케일 미러: 고가 max 59 → stock 전용 축 0~80 step 20.
+    /// n=3: 고/저/종(HLC), n=4: 시/고/저/종(OHLC — 1월만 하락(시44>종32), 나머지 상승).
+    fn stock_chart(n: usize) -> OoxmlChart {
+        let ser = |name: &str, values: Vec<f64>, marker: SeriesMarker| OoxmlSeries {
+            name: name.into(),
+            values,
+            marker_symbol: marker,
+            series_type: OoxmlChartType::Stock,
+            ..Default::default()
+        };
+        let mut series = Vec::new();
+        if n == 4 {
+            series.push(ser(
+                "시가",
+                vec![44.0, 32.0, 33.0, 34.0],
+                SeriesMarker::None,
+            ));
+        }
+        series.push(ser(
+            "고가",
+            vec![55.0, 57.0, 57.0, 59.0],
+            SeriesMarker::None,
+        ));
+        series.push(ser(
+            "저가",
+            vec![11.0, 12.0, 13.0, 21.0],
+            SeriesMarker::None,
+        ));
+        series.push(ser(
+            "종가",
+            vec![32.0, 35.0, 34.0, 35.0],
+            SeriesMarker::Auto,
+        ));
+        OoxmlChart {
+            chart_type: OoxmlChartType::Stock,
+            has_hi_low_lines: true,
+            has_up_down_bars: n == 4,
+            up_down_gap_width: (n == 4).then_some(150.0),
+            categories: vec!["1월".into(), "2월".into(), "3월".into(), "4월".into()],
+            series,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_stock_axis_unconditional_headroom() {
+        // 정답지 실측: max 59 → 0~80 step 20. 경계 조건부 headroom(nice_axis)이면 0~60.
+        let svg = render_chart_svg(&stock_chart(3), 0.0, 0.0, 400.0, 300.0);
+        assert!(
+            svg.contains(">80<"),
+            "stock 전용 +1 step 헤드룸 → 축 max 80"
+        );
+        assert!(svg.contains(">20<"), "step 20");
+        assert!(!svg.contains(">100<"), "과확장 금지");
+    }
+
+    #[test]
+    fn test_stock_hilow_lines_per_category() {
+        let svg = render_chart_svg(&stock_chart(3), 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(
+            svg.matches("hwp-stock-hilow").count(),
+            4,
+            "카테고리당 고저선 1"
+        );
+        assert_eq!(
+            svg.matches("hwp-stock-candle").count(),
+            0,
+            "HLC는 캔들 없음"
+        );
+    }
+
+    #[test]
+    fn test_stock_ohlc_candles() {
+        let svg = render_chart_svg(&stock_chart(4), 0.0, 0.0, 400.0, 300.0);
+        let candles: Vec<&str> = svg
+            .split("<rect ")
+            .skip(1)
+            .filter(|c| c[..c.find("/>").unwrap_or(c.len())].contains("hwp-stock-candle"))
+            .collect();
+        assert_eq!(candles.len(), 4, "카테고리당 캔들 1");
+        let down = candles.iter().filter(|c| c.contains("#404040")).count();
+        let up = candles
+            .iter()
+            .filter(|c| c.contains("fill=\"#ffffff\"") && c.contains("stroke=\"#000000\""))
+            .count();
+        assert_eq!(down, 1, "1월(시44>종32)만 하락 = 진회색 채움");
+        assert_eq!(up, 3, "상승 = 흰 채움 + 검정 테두리");
+    }
+
+    #[test]
+    fn test_stock_close_marker_only() {
+        // 종가(Auto)만 마커 — HLC 종가는 3번째 계열(si=2 → ▲), OHLC는 4번째(si=3 → ×)
+        let skel = |d: &str| {
+            d.chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .collect::<String>()
+        };
+        let svg3 = render_chart_svg(&stock_chart(3), 0.0, 0.0, 400.0, 300.0);
+        let ds3 = marker_ds(&svg3);
+        assert_eq!(ds3.len(), 4, "HLC: 종가 4점만 (고/저 무마커)");
+        assert_eq!(skel(&ds3[0]), "MLLZ", "HLC 종가 ▲");
+        let svg4 = render_chart_svg(&stock_chart(4), 0.0, 0.0, 400.0, 300.0);
+        let ds4 = marker_ds(&svg4);
+        assert_eq!(ds4.len(), 4, "OHLC: 종가 4점만");
+        assert_eq!(skel(&ds4[0]), "MLML", "OHLC 종가 ×");
+    }
+
+    #[test]
+    fn test_stock_unusual_series_count_line_fallback() {
+        // 계열 수 3/4 외 → render_line 폴백 (placeholder 재발 방지)
+        let mut chart = stock_chart(3);
+        chart.series.truncate(2);
+        let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
+        assert_eq!(svg.matches("hwp-stock-hilow").count(), 0);
+        assert!(!data_line_paths(&svg).is_empty(), "라인 폴백으로 렌더");
+        assert!(!svg.contains("hwp-ooxml-chart-fallback"));
     }
 
     #[test]
