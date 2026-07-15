@@ -179,10 +179,11 @@ test('CanvasKit distinguishes missing-picture editor and print replay', () => {
   assert.match(source, /\.every\(Number\.isFinite\)/);
 });
 
-test('PageLayerTree bridge keeps the requested profile authoritative', () => {
+test('PageLayerTree bridge verifies the returned profile instead of relabeling it', () => {
   const source = readFileSync(new URL('../src/core/wasm-bridge.ts', import.meta.url), 'utf8');
-  assert.match(source, /tree\.profile = profile/);
-  assert.doesNotMatch(source, /if \(!tree\.profile\)/);
+  assert.match(source, /if \(tree\.profile !== profile\)/);
+  assert.match(source, /PageLayerTree profile 불일치/);
+  assert.doesNotMatch(source, /tree\.profile = profile/);
 });
 
 test('CanvasKit replay planes match native Skia direct z-order contract', () => {
@@ -326,7 +327,10 @@ test('PageRenderer splits flow static images before the first Canvas2D flow rend
   assert.match(source, /shouldSplitStaticFlow\(layers\)/);
   assert.match(source, /layers\.flowStaticCount > 0/);
   assert.match(source, /!layers\.hasBehind/);
-  assert.match(source, /renderPageToCanvasFiltered\(pageIdx,\s*canvas,\s*renderScale,\s*'flow-dynamic'\)/);
+  assert.match(
+    source,
+    /renderPageToCanvasFiltered\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'flow-dynamic',\s*this\.renderProfile,\s*\)/,
+  );
   assert.match(source, /createOrReuseFilteredCanvasLayer\(\s*pageIdx,\s*canvas,\s*renderScale,\s*'flow-static'/);
   assert.match(source, /this\.flowSplitSupported = false/);
   assert.match(source, /flow-dynamic 렌더 미지원/);
