@@ -557,6 +557,7 @@ def write_reports(
                     "sampleCount": 0,
                     "appLoadMsTotal": 0.0,
                     "documentLoadAndInitialRenderMsTotal": 0.0,
+                    "selectedPageRenderMsTotal": 0.0,
                     "screenshotMsTotal": 0.0,
                     "totalMsTotal": 0.0,
                     "effectPixelsTotal": 0,
@@ -570,6 +571,7 @@ def write_reports(
             for field in (
                 "appLoadMs",
                 "documentLoadAndInitialRenderMs",
+                "selectedPageRenderMs",
                 "screenshotMs",
                 "totalMs",
             ):
@@ -690,6 +692,10 @@ def write_reports(
                         "documentLoadAndInitialRenderMsTotal"
                     ]
                     / sample_count,
+                    "averageSelectedPageRenderMs": summary[
+                        "selectedPageRenderMsTotal"
+                    ]
+                    / sample_count,
                     "averageScreenshotMs": summary["screenshotMsTotal"] / sample_count,
                     "averageTotalMs": summary["totalMsTotal"] / sample_count,
                     "effectPixelsTotal": summary["effectPixelsTotal"],
@@ -792,8 +798,8 @@ def write_reports(
                 "",
                 "## Browser Performance",
                 "",
-                "| Sample | Backend | Profile | App Load ms | Document Load + Initial Render ms | Warm Replay ms | Warm Renderer ms | Screenshot ms | Total ms | Effect Pixels | Effect Cache Hits | Effect Cache Misses | Effect Failures |",
-                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Sample | Backend | Profile | Page | App Load ms | Document Load + Initial Render ms | Selected Page Render ms | Warm Replay ms | Warm Renderer ms | Screenshot ms | Total ms | Effect Pixels | Effect Cache Hits | Effect Cache Misses | Effect Failures |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for item in browser_data["results"]:
@@ -812,8 +818,10 @@ def write_reports(
                         item.get("sampleId", "-"),
                         backend or "-",
                         item.get("profile", "-"),
+                        format_count(item.get("page")),
                         format_ms(timings.get("appLoadMs")),
                         format_ms(timings.get("documentLoadAndInitialRenderMs")),
+                        format_ms(timings.get("selectedPageRenderMs")),
                         format_ms(timings.get("warmReplayMs")),
                         format_ms(timings.get("warmRendererDurationMs")),
                         format_ms(timings.get("screenshotMs")),
@@ -832,8 +840,8 @@ def write_reports(
                 "",
                 "## Browser Performance Summary",
                 "",
-                "| Backend | Profile | Samples | Avg App Load ms | Avg Document Load + Initial Render ms | Avg Screenshot ms | Avg Total ms | Effect Pixels | Effect Cache Hits | Effect Cache Misses | Effect Failures |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Backend | Profile | Samples | Avg App Load ms | Avg Document Load + Initial Render ms | Avg Selected Page Render ms | Avg Screenshot ms | Avg Total ms | Effect Pixels | Effect Cache Hits | Effect Cache Misses | Effect Failures |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for item in browser_performance_summary:
@@ -846,6 +854,7 @@ def write_reports(
                         format_count(item.get("sampleCount")),
                         format_ms(item.get("averageAppLoadMs")),
                         format_ms(item.get("averageDocumentLoadAndInitialRenderMs")),
+                        format_ms(item.get("averageSelectedPageRenderMs")),
                         format_ms(item.get("averageScreenshotMs")),
                         format_ms(item.get("averageTotalMs")),
                         format_count(item.get("effectPixelsTotal")),

@@ -16,6 +16,9 @@ const DEFAULT_BROWSER_PARITY_THRESHOLDS = {
   ignoreChannelDelta: 8,
   maxDiffRatio: 0.005,
 };
+const BASELINE_CAPTURE_CONTAINER_ID = 'renderer-baseline-page-container';
+const BASELINE_CAPTURE_CONTAINER_SELECTOR = `#${BASELINE_CAPTURE_CONTAINER_ID}`;
+const BASELINE_CAPTURE_CANVAS_ID = 'renderer-baseline-page-canvas';
 const BROWSER_PARITY_RATIO_THRESHOLDS = new Set([
   'threshold',
   'maxDiffRatio',
@@ -424,6 +427,11 @@ const activeBackends = options.readinessOnly
 if (samples.length === 0) {
   throw new Error('manifest filter removed every sample');
 }
+for (const sample of samples) {
+  if (!Number.isInteger(sample.page) || sample.page < 0) {
+    throw new Error(`baseline sample page must be a non-negative integer: ${sample.id} page=${sample.page}`);
+  }
+}
 
 fs.mkdirSync(options.output, { recursive: true });
 
@@ -439,13 +447,7 @@ try {
   browserVersion = await browser.version();
   page = await createPage(browser, 1280, 900);
   for (const sample of samples) {
-    if (sample.page !== 0) {
-      throw new Error(
-        `browser baseline currently supports only page=0 samples: ${sample.id} requested page=${sample.page}`,
-      );
-    }
-
-    console.log(`\n[baseline] ${sample.id} (${sample.category})`);
+    console.log(`\n[baseline] ${sample.id} (${sample.category}, page=${sample.page})`);
 
     for (const profile of profiles) {
       for (const backend of activeBackends) {
@@ -454,9 +456,136 @@ try {
         await loadApp(page, backend.queryForProfile(profile));
         const appLoadMs = performance.now() - appLoadStartedAt;
 
-        await resetRendererDiagnostics(page);
         const loadResult = await loadHwpFile(page, sample.file);
         const documentLoadAndInitialRenderMs = loadResult.documentLoadAndInitialRenderMs;
+        if (sample.page >= loadResult.pageCount) {
+          throw new Error(
+            `baseline sample page is out of range: ${sample.id} page=${sample.page} pageCount=${loadResult.pageCount}`,
+          );
+        }
+
+        await page.evaluate(() => window.__canvasView?.pageRenderer?.cancelAll?.());
+        await resetRendererDiagnostics(page);
+        const selectedPageRenderStartedAt = performance.now();
+        await page.evaluate(
+          ({ captureCanvasId, captureContainerId, capturePageIndex }) => {
+            const pageRenderer = window.__canvasView?.pageRenderer;
+            const wasm = window.__wasm;
+            if (!pageRenderer || !wasm) {
+              throw new Error('baseline page renderer is unavailable');
+            }
+            document.getElementById(captureContainerId)?.remove();
+            const pageInfo = wasm.getPageInfo(capturePageIndex);
+            const container = document.createElement('div');
+            container.id = captureContainerId;
+            container.style.position = 'fixed';
+            container.style.left = '0';
+            container.style.top = '0';
+            container.style.width = `${Math.max(1, Math.floor(pageInfo.width))}px`;
+            container.style.height = `${Math.max(1, Math.floor(pageInfo.height))}px`;
+            container.style.background = '#fff';
+            container.style.zIndex = '2147483647';
+            container.style.overflow = 'hidden';
+            container.style.pointerEvents = 'none';
+
+            const canvas = document.createElement('canvas');
+            canvas.id = captureCanvasId;
+            canvas.style.position = 'absolute';
+            canvas.style.left = '0';
+            canvas.style.top = '0';
+            canvas.style.background = '#fff';
+            canvas.style.pointerEvents = 'none';
+            container.appendChild(canvas);
+            document.body.appendChild(container);
+
+            const result = pageRenderer.renderPage(capturePageIndex, canvas, 1.0, 1.0, 1.0);
+            const renderedCanvas = result?.renderedCanvas ?? canvas;
+            renderedCanvas.id = captureCanvasId;
+            renderedCanvas.style.position = 'absolute';
+            renderedCanvas.style.left = '0';
+            renderedCanvas.style.top = '0';
+            renderedCanvas.style.width = `${renderedCanvas.width}px`;
+            renderedCanvas.style.height = `${renderedCanvas.height}px`;
+            container.style.width = `${renderedCanvas.width}px`;
+            container.style.height = `${renderedCanvas.height}px`;
+          },
+          {
+            captureCanvasId: BASELINE_CAPTURE_CANVAS_ID,
+            captureContainerId: BASELINE_CAPTURE_CONTAINER_ID,
+            capturePageIndex: sample.page,
+          },
+        );
+        await page.waitForFunction(
+          ({ captureBackend }) => {
+            const renderer = window.__canvasView?.pageRenderer;
+            if (!renderer) return false;
+            if (captureBackend === 'canvas2d') {
+              const imageCache = renderer.canvas2dRenderer?.domImageCache;
+              return !(imageCache instanceof Map)
+                || [...imageCache.values()].every((image) => image.complete);
+            }
+            const diagnostics = renderer.getCurrentCanvasKitRenderDiagnostics?.();
+            return (diagnostics?.localTypefacePendingCount ?? 0) === 0;
+          },
+          { timeout: 10000, polling: 50 },
+          { captureBackend: backend.key },
+        );
+        const selectedPageState = await page.evaluate(
+          ({ captureBackend, captureCanvasId, captureContainerId, capturePageIndex }) => {
+            const container = document.getElementById(captureContainerId);
+            const pageRenderer = window.__canvasView?.pageRenderer;
+            const canvas = document.getElementById(captureCanvasId);
+            if (!pageRenderer || !(container instanceof HTMLDivElement)
+              || !(canvas instanceof HTMLCanvasElement)) {
+              throw new Error('baseline capture surface is unavailable');
+            }
+            const result = pageRenderer.renderPage(capturePageIndex, canvas, 1.0, 1.0, 1.0);
+            const renderedCanvas = result?.renderedCanvas ?? canvas;
+            renderedCanvas.id = captureCanvasId;
+            renderedCanvas.style.position = 'absolute';
+            renderedCanvas.style.left = '0';
+            renderedCanvas.style.top = '0';
+            renderedCanvas.style.width = `${renderedCanvas.width}px`;
+            renderedCanvas.style.height = `${renderedCanvas.height}px`;
+            container.style.width = `${renderedCanvas.width}px`;
+            container.style.height = `${renderedCanvas.height}px`;
+
+            const imageCache = captureBackend === 'canvas2d'
+              ? pageRenderer.canvas2dRenderer?.domImageCache
+              : null;
+            const imageReadiness = imageCache instanceof Map
+              ? [...imageCache.values()].reduce(
+                (summary, image) => {
+                  if (!image.complete) summary.pending += 1;
+                  else if (image.naturalWidth > 0) summary.loaded += 1;
+                  else summary.failed += 1;
+                  return summary;
+                },
+                { total: imageCache.size, loaded: 0, failed: 0, pending: 0 },
+              )
+              : null;
+            return {
+              width: renderedCanvas.width,
+              height: renderedCanvas.height,
+              imageReadiness,
+            };
+          },
+          {
+            captureBackend: backend.key,
+            captureCanvasId: BASELINE_CAPTURE_CANVAS_ID,
+            captureContainerId: BASELINE_CAPTURE_CONTAINER_ID,
+            capturePageIndex: sample.page,
+          },
+        );
+        if ((selectedPageState.imageReadiness?.pending ?? 0) > 0) {
+          throw new Error(
+            `baseline capture still has pending images: ${sample.id} backend=${backend.key} pending=${selectedPageState.imageReadiness.pending}`,
+          );
+        }
+        await page.evaluate(() => new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        }));
+        const selectedPageRenderMs = performance.now() - selectedPageRenderStartedAt;
         const layerFeatureProbe = backend.key.startsWith('canvaskit')
           ? await readLayerFeatureProbe(page, sample.page, profile)
           : null;
@@ -467,13 +596,33 @@ try {
         const sampleDir = path.join(options.output, sample.id);
         const outputPath = path.join(sampleDir, backend.filenameForProfile(profile));
         const screenshotStartedAt = performance.now();
-        await captureCanvasScreenshot(page, outputPath, `Baseline ${backend.key} (${profile})`);
+        try {
+          await captureCanvasScreenshot(
+            page,
+            outputPath,
+            `Baseline ${backend.key} (${profile})`,
+            BASELINE_CAPTURE_CONTAINER_SELECTOR,
+          );
+        } finally {
+          await page.evaluate(
+            ({ captureContainerId, capturePageIndex }) => {
+              window.__canvasView?.pageRenderer?.cancelReRender?.(capturePageIndex);
+              document.getElementById(captureContainerId)?.remove();
+            },
+            {
+              captureContainerId: BASELINE_CAPTURE_CONTAINER_ID,
+              capturePageIndex: sample.page,
+            },
+          );
+        }
         const screenshotMs = performance.now() - screenshotStartedAt;
         const diagnostics = await readRendererDiagnostics(page, sample.page);
+        diagnostics.capture = selectedPageState;
         results.push({
           sampleId: sample.id,
           file: sample.file,
           category: sample.category,
+          page: sample.page,
           backend: backend.key,
           profile,
           canvaskitSurface: backend.key.startsWith('canvaskit') ? options.canvaskitSurface : null,
@@ -486,6 +635,7 @@ try {
           timings: {
             appLoadMs,
             documentLoadAndInitialRenderMs,
+            selectedPageRenderMs,
             warmReplayMs: warmReplay?.replayMs ?? null,
             warmRendererDurationMs: warmReplay?.rendererDurationMs ?? null,
             screenshotMs,

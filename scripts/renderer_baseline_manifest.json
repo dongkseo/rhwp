@@ -147,6 +147,34 @@
       }
     },
     {
+      "id": "table-diagonal-cell-hwp",
+      "file": "대각선샘플.hwp",
+      "category": "table",
+      "page": 0,
+      "notes": "Binary HWP half of the paired cell-zone diagonal rendering corpus.",
+      "browserParityThresholds": {
+        "maxDiffRatio": null,
+        "inkMaskNeighborhoodRadius": 3,
+        "inkMaskMaxDiffRatio": 0.002,
+        "nonInkMaxDiffPixels": 0,
+        "solidInkMaxDiffRatio": 0.0125
+      }
+    },
+    {
+      "id": "table-diagonal-cell-hwpx",
+      "file": "대각선샘플.hwpx",
+      "category": "table",
+      "page": 0,
+      "notes": "HWPX half of the paired cell-zone diagonal rendering corpus.",
+      "browserParityThresholds": {
+        "maxDiffRatio": null,
+        "inkMaskNeighborhoodRadius": 3,
+        "inkMaskMaxDiffRatio": 0.002,
+        "nonInkMaxDiffPixels": 0,
+        "solidInkMaxDiffRatio": 0.0125
+      }
+    },
+    {
       "id": "image-crop",
       "file": "pic-crop-01.hwp",
       "category": "image",
@@ -198,6 +226,20 @@
       "category": "header-footer",
       "page": 0,
       "notes": "Header region rendering with floating image content.",
+      "browserParityThresholds": {
+        "maxDiffRatio": null,
+        "inkMaskNeighborhoodRadius": 3,
+        "inkMaskMaxDiffRatio": 0.002,
+        "nonInkMaxDiffPixels": 0,
+        "solidInkMaxDiffRatio": 0.045
+      }
+    },
+    {
+      "id": "header-image-page-5",
+      "file": "pic-in-head-01.hwp",
+      "category": "header-footer",
+      "page": 5,
+      "notes": "Non-zero page coverage for repeated header image placement and page-indexed renderer diagnostics.",
       "browserParityThresholds": {
         "maxDiffRatio": null,
         "inkMaskNeighborhoodRadius": 3,
@@ -323,6 +365,20 @@
         "inkMaskMaxDiffRatio": 0.002,
         "nonInkMaxDiffPixels": 0,
         "solidInkMaxDiffRatio": 0.0065
+      }
+    },
+    {
+      "id": "multi-section-doc-page-4",
+      "file": "hwp-multi-001.hwp",
+      "category": "mixed-document",
+      "page": 4,
+      "notes": "Non-zero page coverage across the checked-in multi-section document.",
+      "browserParityThresholds": {
+        "maxDiffRatio": null,
+        "inkMaskNeighborhoodRadius": 3,
+        "inkMaskMaxDiffRatio": 0.002,
+        "nonInkMaxDiffPixels": 0,
+        "solidInkMaxDiffRatio": 0.015
       }
     }
   ]

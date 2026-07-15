@@ -18,7 +18,9 @@ const layerTypesPath = path.join(studioRoot, 'src/core/types.ts');
 const textIrV2DocPath = path.join(repoRoot, 'docs/text-ir-v2.md');
 const canvaskitParityPlanDocPath = path.join(repoRoot, 'docs/canvaskit-parity-implementation.md');
 const rendererBaselinePath = path.join(studioRoot, 'e2e/renderer-baseline.mjs');
+const rendererBaselineDriverPath = path.join(repoRoot, 'scripts/renderer_baseline.py');
 const rendererBaselineManifestPath = path.join(repoRoot, 'scripts/renderer_baseline_manifest.json');
+const helpersPath = path.join(studioRoot, 'e2e/helpers.mjs');
 const mainPath = path.join(studioRoot, 'src/main.ts');
 const embedRpcRouterPath = path.join(studioRoot, 'src/embed/rpc-router.ts');
 const renderBackendPath = path.join(studioRoot, 'src/view/render-backend.ts');
@@ -32,7 +34,9 @@ const layerTypesSource = fs.readFileSync(layerTypesPath, 'utf8');
 const textIrV2DocSource = fs.readFileSync(textIrV2DocPath, 'utf8');
 const canvaskitParityPlanDocSource = fs.readFileSync(canvaskitParityPlanDocPath, 'utf8');
 const rendererBaselineSource = fs.readFileSync(rendererBaselinePath, 'utf8');
+const rendererBaselineDriverSource = fs.readFileSync(rendererBaselineDriverPath, 'utf8');
 const rendererBaselineManifest = JSON.parse(fs.readFileSync(rendererBaselineManifestPath, 'utf8'));
+const helpersSource = fs.readFileSync(helpersPath, 'utf8');
 const mainSource = fs.readFileSync(mainPath, 'utf8');
 const embedRpcRouterSource = fs.readFileSync(embedRpcRouterPath, 'utf8');
 const renderBackendSource = fs.readFileSync(renderBackendPath, 'utf8');
@@ -1274,6 +1278,31 @@ assert.deepEqual(
     .sort(),
   ['font-batang-hancom', 'font-native-bitmap', 'image-crop', 'paragraph-line-basic', 'table-core'],
   'CanvasKit readiness gate should cover paragraph/table/image/font and font-native resources',
+);
+assert.equal(
+  rendererBaselineManifest.samples.some((sample) => Number(sample.page) > 0),
+  true,
+  'renderer baseline manifest must keep non-zero page coverage',
+);
+assert.deepEqual(
+  rendererBaselineManifest.samples
+    .filter((sample) => sample.id.startsWith('table-diagonal-cell-'))
+    .map((sample) => sample.file)
+    .sort(),
+  ['대각선샘플.hwp', '대각선샘플.hwpx'],
+  'renderer baseline manifest must keep the paired HWP/HWPX diagonal-cell corpus',
+);
+assert(
+  rendererBaselineSource.includes('pageRenderer.renderPage(capturePageIndex, canvas, 1.0, 1.0, 1.0)')
+    && rendererBaselineSource.includes('pageRenderer?.cancelAll?.()')
+    && rendererBaselineSource.includes('BASELINE_CAPTURE_CONTAINER_SELECTOR')
+    && rendererBaselineSource.includes('canvas2dRenderer?.domImageCache')
+    && rendererBaselineSource.includes('localTypefacePendingCount')
+    && rendererBaselineSource.includes('selectedPageRenderMs')
+    && rendererBaselineDriverSource.includes('averageSelectedPageRenderMs')
+    && helpersSource.includes('selector = CANVAS_SELECTOR')
+    && !rendererBaselineSource.includes('browser baseline currently supports only page=0 samples'),
+  'browser baseline must settle resources and capture the requested page at intrinsic scale',
 );
 requireSnippet(
   rendererBaselineSource,

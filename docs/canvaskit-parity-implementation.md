@@ -262,6 +262,13 @@ readiness command fails CI, and its JSON/Markdown reports are written before
 the process reports failure, including browser launch, document load, and
 screenshot capture failures.
 
+The cross-backend corpus also renders the manifest's exact page index into a
+dedicated intrinsic-scale capture surface. This keeps nonzero-page diagnostics,
+repeated headers, and HWP/HWPX paired fixtures tied to the same page/profile
+identity instead of accidentally capturing the first visible viewport canvas.
+Canvas2D image resources and CanvasKit local typefaces must settle before the
+selected page is replayed and captured.
+
 ## Non-Goals
 
 - This plan does not switch the public canvas default.
