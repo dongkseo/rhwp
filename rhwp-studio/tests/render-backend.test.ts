@@ -544,7 +544,7 @@ test('GlyphOutline payload resource keys keep payload families and palettes disj
       imageRef: 7,
       sourceRangeUtf8: { start: 0, end: 1 },
       glyphRange: { start: 0, end: 1 },
-      placement: { x: 0, y: 0, width: 10, height: 10 },
+      placement: { x: 0.1234, y: 0.5678, width: 10.9876, height: 10.5432 },
       scalingPolicy: 'sourceExact',
       filtering: 'linear',
     },
@@ -557,7 +557,7 @@ test('GlyphOutline payload resource keys keep payload families and palettes disj
       svgRef: 7,
       sourceRangeUtf8: { start: 0, end: 1 },
       glyphRange: { start: 0, end: 1 },
-      viewBox: { x: 0, y: 0, width: 10, height: 10 },
+      viewBox: { x: 0.1234, y: 0.5678, width: 10.9876, height: 10.5432 },
       staticSanitized: true,
       scriptAllowed: false,
       animationAllowed: false,
@@ -569,7 +569,9 @@ test('GlyphOutline payload resource keys keep payload families and palettes disj
   assert.ok(colorKey?.includes('palette:id:document-palette:index:0:digest:'));
   assert.notEqual(colorKey, alternatePaletteKey);
   assert.ok(bitmapKey?.startsWith('glyphPayload:bitmapGlyph:imageRef:7'));
+  assert.ok(bitmapKey?.includes('placement:0.123,0.568,10.988,10.543'));
   assert.ok(svgKey?.startsWith('glyphPayload:svgGlyph:svgRef:7'));
+  assert.ok(svgKey?.includes('viewBox:0.123,0.568,10.988,10.543'));
   assert.notEqual(colorKey, bitmapKey);
   assert.notEqual(colorKey, svgKey);
   assert.notEqual(bitmapKey, svgKey);

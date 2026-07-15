@@ -155,6 +155,19 @@ export class PageRenderer {
     };
   }
 
+  /** DEV baseline용 renderer-global counter의 최신 snapshot을 반환한다. */
+  getCurrentCanvasKitRenderDiagnostics(): CanvasKitRenderDiagnostics | null {
+    if (!this.canvaskitRenderer) return null;
+    const diagnostics = this.canvaskitRenderer.diagnostics();
+    return {
+      ...diagnostics,
+      lastUnsupportedOps: [...diagnostics.lastUnsupportedOps],
+      lastExpectedUnsupportedOps: [...diagnostics.lastExpectedUnsupportedOps],
+      lastUnexpectedUnsupportedOps: [...diagnostics.lastUnexpectedUnsupportedOps],
+      readinessBlockers: [...diagnostics.readinessBlockers],
+    };
+  }
+
   releasePageDiagnostics(pageIdx: number): void {
     this.canvaskitDiagnosticsByPage.delete(pageIdx);
   }

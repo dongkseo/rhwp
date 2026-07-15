@@ -1341,7 +1341,7 @@ assert.ok(
 );
 requireSnippet(
   rendererBaselineSource,
-  /rerenderPageForDiagnostics\?\.\(targetPageIndex\)[\s\S]*?rerendered[\s\S]*?renderCountDelta/,
+  /getCurrentCanvasKitRenderDiagnostics\?\.\(\)[\s\S]*?rerenderPageForDiagnostics\?\.\(targetPageIndex\)[\s\S]*?getCurrentCanvasKitRenderDiagnostics\?\.\(\)[\s\S]*?renderCountDelta/,
   'CanvasKit warm replay should report whether the existing page canvas was rerendered',
 );
 requireSnippet(

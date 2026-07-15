@@ -3791,7 +3791,7 @@ mod tests {
                     image_ref: ImageResourceId(0),
                     source_range_utf8: TextSourceRange::new(0, 1),
                     glyph_range: GlyphRange::new(0, 1),
-                    placement: BoundingBox::new(0.0, 0.0, 10.0, 10.0),
+                    placement: BoundingBox::new(0.1234, 0.5678, 10.9876, 10.5432),
                     alpha_premultiplied: true,
                     scaling_policy: BitmapGlyphScalingPolicy::SourceExact,
                     filtering: BitmapGlyphFiltering::Linear,
@@ -3828,7 +3828,7 @@ mod tests {
                     svg_ref: SvgResourceId(0),
                     source_range_utf8: TextSourceRange::new(0, 1),
                     glyph_range: GlyphRange::new(0, 1),
-                    view_box: BoundingBox::new(0.0, 0.0, 10.0, 10.0),
+                    view_box: BoundingBox::new(0.1234, 0.5678, 10.9876, 10.5432),
                     intrinsic_size: Some(LayerVector { dx: 10.0, dy: 10.0 }),
                     static_sanitized: true,
                     script_allowed: false,
@@ -3870,8 +3870,10 @@ mod tests {
 
         assert!(json.contains("\"schemaMinorVersion\":18"));
         assert!(json.contains("\"payloadResourceKey\":\"glyphPayload:bitmapGlyph:imageRef:0"));
+        assert!(json.contains("placement:0.123,0.568,10.988,10.543"));
         assert!(json.contains(&format!(":resource:{image_resource_key}\"")));
         assert!(json.contains("\"payloadResourceKey\":\"glyphPayload:svgGlyph:svgRef:0"));
+        assert!(json.contains("viewBox:0.123,0.568,10.988,10.543"));
         assert!(json.contains(&format!(":resource:{svg_resource_key}\"")));
         assert!(json.contains("\"vectorResourceId\":0"));
         assert!(json.contains("\"strictVisualContract\":true"));

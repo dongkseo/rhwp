@@ -578,6 +578,10 @@ export class CanvasView {
     return this.pageRenderer.getCanvasKitRenderDiagnostics(pageIndex);
   }
 
+  getCurrentCanvasKitRenderDiagnostics(): CanvasKitRenderDiagnostics | null {
+    return this.pageRenderer.getCurrentCanvasKitRenderDiagnostics();
+  }
+
   getCoordinateSystem(): CoordinateSystem {
     return this.coordinateSystem;
   }

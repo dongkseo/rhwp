@@ -374,11 +374,11 @@ async function readLayerFeatureProbe(page, pageIndex, profile) {
 async function measureWarmCanvasKitReplay(page, pageIndex) {
   return await page.evaluate(async (targetPageIndex) => {
     const view = window.__canvasView;
-    const before = view?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
+    const before = view?.getCurrentCanvasKitRenderDiagnostics?.() ?? null;
     const startedAt = performance.now();
     const rerendered = view?.rerenderPageForDiagnostics?.(targetPageIndex) === true;
     const replayMs = performance.now() - startedAt;
-    const after = view?.getCanvasKitRenderDiagnostics?.(targetPageIndex) ?? null;
+    const after = view?.getCurrentCanvasKitRenderDiagnostics?.() ?? null;
     return {
       replayMs,
       rerendered,
