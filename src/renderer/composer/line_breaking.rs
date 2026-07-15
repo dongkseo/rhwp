@@ -1272,6 +1272,17 @@ pub(crate) fn recalculate_section_vpos(paragraphs: &mut [Paragraph], start_para:
         return;
     }
 
+    // 저장된 원본 vpos 스냅샷 — 다단/쪽 리셋 신호(vpos 급감) 판별용.
+    // 아래 루프가 vpos를 덮어쓰므로 미리 떠 둔다.
+    //
+    // 다단 문서에서 다음 단 첫 문단의 저장 vpos는 단 상단으로 되돌아간다(급감).
+    // 이를 선형 누적으로 뭉개면 다단이 1단으로 펴져 쪽수가 배로 늘어난다.
+    // (#2158과 동일 기제 — 그쪽은 로딩 시 reflow, 이쪽은 편집 시 재계산)
+    let orig_start: Vec<Option<i32>> = paragraphs
+        .iter()
+        .map(|p| p.line_segs.first().map(|ls| ls.vertical_pos))
+        .collect();
+
     // 시작 문단의 초기 vpos 결정
     let mut next_vpos = if start_para > 0 {
         // 이전 문단의 마지막 LineSeg에서 vpos_end 계산
@@ -1290,6 +1301,13 @@ pub(crate) fn recalculate_section_vpos(paragraphs: &mut [Paragraph], start_para:
             .unwrap_or(0)
     };
 
+    // 직전 문단의 "저장된" 시작 vpos (리셋 급감 판별 기준)
+    let mut prev_orig: Option<i32> = if start_para > 0 {
+        orig_start[..start_para].iter().rev().find_map(|x| *x)
+    } else {
+        None
+    };
+
     for pi in start_para..paragraphs.len() {
         let para = &mut paragraphs[pi];
         if para.line_segs.is_empty() {
@@ -1298,6 +1316,17 @@ pub(crate) fn recalculate_section_vpos(paragraphs: &mut [Paragraph], start_para:
 
         // 현재 문단의 vpos 시작값과의 차이 계산
         let current_start = para.line_segs[0].vertical_pos;
+
+        // 리셋 신호 보존: 저장 vpos가 직전 문단보다 앞서지 못하면 단/쪽 경계다.
+        // (다음 단 첫 문단은 단-밴드 상단 = 직전 문단과 동일 vpos 이므로 <= 로 잡는다)
+        // 누적 좌표로 밀어내지 말고 저장값을 그대로 살린다.
+        if let Some(prev) = prev_orig {
+            if current_start <= prev {
+                next_vpos = current_start;
+            }
+        }
+        prev_orig = Some(current_start);
+
         let delta = next_vpos - current_start;
 
         // 변화 없으면 건너뛰기 (성능 최적화)
