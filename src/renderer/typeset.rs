@@ -10814,7 +10814,9 @@ impl TypesetEngine {
                 let inner = (cw - margin_l - margin_r).max(0.0);
                 if inner > 0.0 {
                     let mut cloned = c.clone();
-                    crate::renderer::composer::recompose_for_cell_width(
+                    // [#2279] 본문 NO_LS 는 글자모양 재분할 포함 래퍼 사용 —
+                    // paragraph_layout(렌더)와 동일 (측정/렌더 줄수·pitch 정합).
+                    crate::renderer::composer::recompose_for_body_width(
                         &mut cloned,
                         para,
                         inner,
@@ -14673,12 +14675,18 @@ impl TypesetEngine {
                     saved_anchor_splits_here
                 );
             }
+            // [#2279 5축] 선언-이월의 저장 증거는 **host 문단 단위**(saved_span)로
+            // 판정한다. 종전 구역 전역 st.has_stored_line_segs 는 구역 내 다른
+            // 문단의 LS 만으로 no-LS host 의 RowBreak float 까지 통째 이월시켰다
+            // — 한글은 이 형상(86712 pi=30: 4×3 RowBreak, saved=None, 측정 비적합
+            // 980.8>971.3)을 행 분할해 현재 쪽에 머리 행들을 남긴다(p10/p11).
+            // 위 주석의 원 의도("LS 없는 계열은 측정 fit 일 때만 선언 이월")와 정합.
             if !st.current_items.is_empty()
                 && declared_overflows_current
                 && !saved_object_bottom_fits_current
                 && !saved_anchor_splits_here
                 && !single_row_object_declared_fits_current
-                && (st.has_stored_line_segs || measured_fits_current)
+                && (saved_span.is_some() || measured_fits_current)
                 && declared_total <= available
             {
                 st.advance_column_or_new_page();

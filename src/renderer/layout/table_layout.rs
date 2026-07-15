@@ -4751,7 +4751,44 @@ impl LayoutEngine {
                     inner_width,
                     styles,
                 );
-                if comp.lines.is_empty() {
+                // [#2279 axis A] 종전에는 comp.lines 빈 문단을 통째 skip 해 (a) 2단계
+                // 중첩 표(빈 문단 소속)와 (b) 빈 문단 줄박스가 유닛에서 누락됐다 —
+                // 86712 pi=172 r27 근거설명(25문단 + 3×12 + 5×4 내부표) 프래그먼트 합
+                // 933px vs mt·한글 ~1402px 의 -448 주성분. 중첩 표는
+                // calc_nested_table_height(행합+cs+outer margin, 측정 단일 출처),
+                // 빈 문단은 #2169 em 줄박스 규칙으로 유닛화한다.
+                let nested_h: f64 = para
+                    .controls
+                    .iter()
+                    .map(|ctrl| {
+                        if let Control::Table(t) = ctrl {
+                            self.calc_nested_table_height(t, styles)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                let empty_line_box = if comp.lines.is_empty()
+                    && nested_h <= 0.0
+                    && para.line_segs.is_empty()
+                    && para.controls.is_empty()
+                    && para.text.trim().is_empty()
+                {
+                    let fs = para
+                        .char_shapes
+                        .first()
+                        .and_then(|cs| styles.char_styles.get(cs.char_shape_id as usize))
+                        .map(|cs| cs.font_size)
+                        .unwrap_or(0.0);
+                    if fs > 0.0 {
+                        fs
+                    } else {
+                        hwpunit_to_px(400, self.dpi)
+                    }
+                } else {
+                    0.0
+                };
+                if comp.lines.is_empty() && nested_h <= 0.5 && empty_line_box <= 0.5 {
                     continue;
                 }
 
@@ -4797,12 +4834,22 @@ impl LayoutEngine {
                         }
                         None => raw_lh,
                     };
-                    let line_spacing = if li + 1 == comp.lines.len() {
+                    // [#2279 axis A] 문단 말미 줄간격은 셀의 마지막 문단에서만 탈락 —
+                    // mt(calc_para_lines_height / #2211 include_trailing_ls)와 정합.
+                    // 종전 per-문단 탈락은 25문단 셀에서 -83px 과소(86712 r27).
+                    let is_cell_last_para = pi + 1 == cell.paragraphs.len();
+                    let line_spacing = if li + 1 == comp.lines.len() && is_cell_last_para {
                         0.0
                     } else {
                         hwpunit_to_px(line.line_spacing, self.dpi)
                     };
                     cell_units.push((corrected_h + line_spacing, false, corrected_h));
+                }
+                if nested_h > 0.5 {
+                    cell_units.push((nested_h, false, nested_h));
+                }
+                if empty_line_box > 0.5 {
+                    cell_units.push((empty_line_box, false, empty_line_box));
                 }
                 if pi + 1 < cell.paragraphs.len() {
                     let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
@@ -4813,6 +4860,37 @@ impl LayoutEngine {
             }
             if pad_bottom > 0.5 {
                 cell_units.push((pad_bottom, true, 0.0));
+            }
+            // [#2279 진단] 1×1 중첩 셀 프래그먼트 분해 — 동작 불변.
+            if let Ok(pat) = std::env::var("RHWP_DIAG_MIXFRAG") {
+                if cell.paragraphs.iter().any(|p| p.text.contains(&pat)) {
+                    let total: f64 = cell_units.iter().map(|(h, _, _)| *h).sum();
+                    eprintln!(
+                        "DIAG_MIXFRAG cell paras={} units={} total={:.1} inner_w={:.2}",
+                        cell.paragraphs.len(),
+                        cell_units.len(),
+                        total,
+                        inner_width,
+                    );
+                    for (pi, para) in cell.paragraphs.iter().enumerate() {
+                        let mut comp = compose_paragraph(para);
+                        crate::renderer::composer::recompose_for_cell_width(
+                            &mut comp,
+                            para,
+                            inner_width,
+                            styles,
+                        );
+                        let nctl = para.controls.len();
+                        eprintln!(
+                            "  p[{pi}] lines={} text_len={} ctrls={} ls_stored={} text={:?}",
+                            comp.lines.len(),
+                            para.text.chars().count(),
+                            nctl,
+                            para.line_segs.len(),
+                            para.text.chars().take(16).collect::<String>(),
+                        );
+                    }
+                }
             }
             if cell_units.len() > row_units.len() {
                 row_units.resize(cell_units.len(), (0.0, true, 0.0));
@@ -4881,6 +4959,11 @@ impl LayoutEngine {
         } else {
             0.0
         };
+        // [#2279 axis B 보류] 측정에 렌더의 오버플로 패딩 축소 폭을 적용하는 안은
+        // 86712 산식 셀(측정 5줄 vs 렌더·한글 4줄)을 정합시키지만, 어드밴스가 사다리
+        // 교정된 문서(80168 pi=1056 r7: 한글 PDF 8줄 실측)에서는 한글이 지키는 패딩을
+        // 깨 7줄로 과소(157→156 회귀) — shrink 는 폰트 폭 오차의 문서별 보상재로,
+        // 일반화 불가(#2279 코멘트). 측정 폭은 원 패딩 유지.
         let inner_width = (cell_w - pad_left - pad_right).max(0.0);
         let line_seg_is_synthetic = |seg: &crate::model::paragraph::LineSeg| {
             seg.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY != 0

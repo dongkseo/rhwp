@@ -512,6 +512,12 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             }
             let line_text: String = chars[offset..end].iter().collect();
             let is_last_line = end >= total;
+            // [#2279] 주의: 이 폴백은 문단의 CharShapeRef 를 무시하고 단일
+            // default_style run 을 만든다(혼합 크기 문단이 전 줄 최대 크기로
+            // 측정·렌더). 본문 경로는 recompose_for_body_width 가
+            // restyle_fallback_runs_by_char_shapes 로 정합한다 — 셀 경로는 기존
+            // 폭 보정망(#2070 사다리)이 이 단일 스타일 위에서 교정돼 있어
+            // 전면 교체 시 80168 pi=1056/1245 급 회귀(#2279 실측).
             lines.push(ComposedLine {
                 runs: split_runs_by_lang(vec![ComposedTextRun {
                     text: line_text,
@@ -1377,6 +1383,49 @@ pub(crate) fn no_ls_short_label_cell(
 /// - ComposedLine 전체 측정 폭이 `cell_inner_width_px` 초과
 ///
 /// 분할 전략: 단어 경계 (공백) 우선, 단어가 셀 너비 초과 시 글자 단위 break.
+/// [#2279] NO_LS 폴백 줄들의 단일-스타일 run 을 CharShapeRef 경계로 재분할한다.
+///
+/// compose_lines 폴백은 문단 글자모양을 무시한 단일 default_style run 을 만든다
+/// (86712 pi=20: "ㅇ "=15pt + 본문 14pt 가 전 줄 15pt 로 측정·렌더 → 폭 +7% 과대
+/// 래핑, pitch 32.0 vs 한글 29.9, 측정/렌더 줄수 불일치로 렌더 꼬리 텍스트 소실).
+/// 본문(column) 경로에서만 호출한다 — 셀 측정은 기존 폭 보정망(#2070 사다리)이
+/// 단일 스타일 전제 위에서 교정돼 있어 전면 적용 시 80168 157→156 회귀(실측).
+pub(crate) fn restyle_fallback_runs_by_char_shapes(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+) {
+    if para.char_shapes.is_empty() || !para.line_segs.is_empty() {
+        return;
+    }
+    for line in composed.lines.iter_mut() {
+        let text: String = line.runs.iter().map(|r| r.text.as_str()).collect();
+        if text.is_empty() {
+            continue;
+        }
+        let start = line.char_start;
+        let end = start + text.chars().count();
+        let restyled =
+            split_by_char_shapes(&text, start, end, &para.char_offsets, &para.char_shapes);
+        if !restyled.is_empty() {
+            line.runs = restyled;
+        }
+    }
+}
+
+/// [#2279] 본문(column) 폭 재래핑 — 글자모양 재분할 후 recompose.
+///
+/// typeset(format_paragraph)·render(layout_partial_paragraph) 의 본문 NO_LS
+/// 문단 전용. 셀 경로는 recompose_for_cell_width 를 그대로 사용한다.
+pub fn recompose_for_body_width(
+    composed: &mut ComposedParagraph,
+    para: &Paragraph,
+    column_inner_width_px: f64,
+    styles: &ResolvedStyleSet,
+) {
+    restyle_fallback_runs_by_char_shapes(composed, para);
+    recompose_for_cell_width(composed, para, column_inner_width_px, styles);
+}
+
 pub fn recompose_for_cell_width(
     composed: &mut ComposedParagraph,
     para: &Paragraph,
@@ -1558,6 +1607,54 @@ pub fn recompose_for_cell_width(
         if composed.lines.len() > start && ends_with_break {
             if let Some(last) = composed.lines.last_mut() {
                 last.has_line_break = true;
+            }
+        }
+        // [#2279] 분할 줄의 줄높이 per-line 재산정 — 한글은 줄마다 **그 줄의 최대
+        // 글자 크기**로 pitch 를 정한다. 종전에는 분할 줄이 원본 압축줄의 lh/ls
+        // (= 문단 최대 fs 기준)를 상속해, 큰 글자가 첫 줄에만 있는 문단(86712
+        // pi=20: "ㅇ "=15pt + 본문 14pt)에서 후속 줄 pitch 가 +2.1px/줄 과대
+        // (rhwp 32.0 vs 한글 실측 29.9 = 14pt×4/3×160%). 페이지당 ~20줄 누적 시
+        // -40px 급 fit 오차(86712 p10 pi=30 밀림)의 본체. Percent 줄간격 한정,
+        // lh/ls/bl 을 줄 최대 fs 비율로 축소(확대 없음 — 원본 상속이 상한).
+        if composed.lines.len() > start {
+            let is_percent = styles
+                .para_styles
+                .get(para.para_shape_id as usize)
+                .map(|ps| {
+                    matches!(
+                        ps.line_spacing_type,
+                        crate::model::style::LineSpacingType::Percent
+                    )
+                })
+                .unwrap_or(false);
+            if is_percent {
+                let group_max_fs = composed.lines[start..]
+                    .iter()
+                    .flat_map(|l| l.runs.iter())
+                    .map(|r| {
+                        resolved_to_text_style(styles, r.char_style_id, r.lang_index).font_size
+                    })
+                    .fold(0.0f64, f64::max);
+                if group_max_fs > 0.0 {
+                    for line in composed.lines[start..].iter_mut() {
+                        let line_max_fs = line
+                            .runs
+                            .iter()
+                            .map(|r| {
+                                resolved_to_text_style(styles, r.char_style_id, r.lang_index)
+                                    .font_size
+                            })
+                            .fold(0.0f64, f64::max);
+                        if line_max_fs > 0.0 && line_max_fs < group_max_fs - 0.01 {
+                            let factor = line_max_fs / group_max_fs;
+                            line.line_height = ((line.line_height as f64) * factor).round() as i32;
+                            line.line_spacing =
+                                ((line.line_spacing as f64) * factor).round() as i32;
+                            line.baseline_distance =
+                                ((line.baseline_distance as f64) * factor).round() as i32;
+                        }
+                    }
+                }
             }
         }
     }
