@@ -733,24 +733,24 @@ fn render_scatter(svg: &mut String, chart: &OoxmlChart, px: f64, py: f64, pw: f6
             ));
         }
         if show_markers {
-            for (xp, yp) in &points {
-                svg.push_str(&format!(
-                    "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"3\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\"/>\n",
-                    xp, yp, color
-                ));
+            // 계열 사이클 글리프 ◆■▲× — 정답지 실측(표식만있는분산형: 계열1 ◆/계열2 ■).
+            // 반경 4.5 = 라인(3.5)보다 큰 실측 근사, 시각판정 조정 여지. (C2a #2277)
+            for &(xp, yp) in &points {
+                push_marker(svg, "hwp-chart-marker", si, xp, yp, 4.5, &color);
             }
         }
     }
 }
 
-/// 라인 차트 표식(마커). 계열 인덱스별 한컴 기본 사이클 ◆■▲(+원 폴백) —
-/// 정답지 PDF 실측(표식이있는누적꺽은선형: 계열1 ◆/계열2 ■/계열3 ▲).
-/// 크기 상수는 근사값으로 시각판정에서 조정 여지. (C1d #2129)
-fn push_line_marker(svg: &mut String, si: usize, cx: f64, cy: f64, color: &str) {
-    let d = match si % 4 {
-        0 => {
+/// 마커 경로. 계열 인덱스 사이클 ◆■▲× — 한컴 기본 (정답지 실측: 라인 ◆■▲
+/// C1d #2129, OHLC 종가 ×·scatter ◆■ C2a #2277). 반환 `(d, stroke 기반 여부)` —
+/// ×는 채움 없는 열린 경로라 stroke=계열색으로 그린다. `r`=명목 반경, ■/×는
+/// 하프폭 `r-0.5` (종전 ◆3.5/■3.0 비율 유지 — 출력 바이트 보존).
+fn marker_path(si: usize, cx: f64, cy: f64, r: f64) -> (String, bool) {
+    let h = r - 0.5;
+    match si % 4 {
+        0 => (
             // ◆ 다이아몬드
-            let r = 3.5;
             format!(
                 "M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z",
                 cx,
@@ -761,11 +761,11 @@ fn push_line_marker(svg: &mut String, si: usize, cx: f64, cy: f64, color: &str) 
                 cy + r,
                 cx - r,
                 cy
-            )
-        }
-        1 => {
+            ),
+            false,
+        ),
+        1 => (
             // ■ 정사각형
-            let h = 3.0;
             format!(
                 "M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z",
                 cx - h,
@@ -776,11 +776,11 @@ fn push_line_marker(svg: &mut String, si: usize, cx: f64, cy: f64, color: &str) 
                 cy + h,
                 cx - h,
                 cy + h
-            )
-        }
-        2 => {
+            ),
+            false,
+        ),
+        2 => (
             // ▲ 삼각형
-            let r = 3.5;
             format!(
                 "M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z",
                 cx,
@@ -789,17 +789,49 @@ fn push_line_marker(svg: &mut String, si: usize, cx: f64, cy: f64, color: &str) 
                 cy + r * 0.8,
                 cx - r,
                 cy + r * 0.8
-            )
-        }
-        _ => {
-            // 원 폴백 (계열 4+ — 코퍼스 밖, scatter 마커와 동일 반경 3)
-            format!("M{:.2},{:.2} a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0", cx - 3.0, cy)
-        }
-    };
-    svg.push_str(&format!(
-        "<path class=\"hwp-chart-marker\" d=\"{}\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\"/>\n",
-        d, color
-    ));
+            ),
+            false,
+        ),
+        _ => (
+            // × 두 대각선 열린 경로 — OHLC 종가 정답지 실측 (C2a #2277, 종전 원 폴백 교체)
+            format!(
+                "M{:.2},{:.2} L{:.2},{:.2} M{:.2},{:.2} L{:.2},{:.2}",
+                cx - h,
+                cy - h,
+                cx + h,
+                cy + h,
+                cx + h,
+                cy - h,
+                cx - h,
+                cy + h
+            ),
+            true,
+        ),
+    }
+}
+
+/// 마커 1개 방출. 채움형(◆■▲)=fill 계열색+흰 테두리, stroke 기반(×)=fill 없이
+/// stroke 계열색. `class`로 데이터 마커("hwp-chart-marker")와 범례 글리프
+/// ("hwp-legend-glyph", 4단계)를 구분 — issue_2129 마커 카운트 오염 방지. (C2a #2277)
+fn push_marker(svg: &mut String, class: &str, si: usize, cx: f64, cy: f64, r: f64, color: &str) {
+    let (d, stroke_based) = marker_path(si, cx, cy, r);
+    if stroke_based {
+        svg.push_str(&format!(
+            "<path class=\"{}\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"1.5\"/>\n",
+            class, d, color
+        ));
+    } else {
+        svg.push_str(&format!(
+            "<path class=\"{}\" d=\"{}\" fill=\"{}\" stroke=\"#ffffff\" stroke-width=\"1\"/>\n",
+            class, d, color
+        ));
+    }
+}
+
+/// 라인 차트 표식(마커) — `marker_path` 사이클, 반경 3.5(정답지 근사, 시각판정
+/// 조정 여지). (C1d #2129)
+fn push_line_marker(svg: &mut String, si: usize, cx: f64, cy: f64, color: &str) {
+    push_marker(svg, "hwp-chart-marker", si, cx, cy, 3.5, color);
 }
 
 /// 직선 폴리라인 path (`M…L…`).
@@ -1669,8 +1701,8 @@ mod tests {
     }
 
     #[test]
-    fn test_line_marker_circle_fallback_series4() {
-        // 계열 4+ 는 원 폴백 (코퍼스 밖 — 사이클 재시작 대신 원)
+    fn test_line_marker_x_series4() {
+        // 사이클 4번째는 × — OHLC 종가 정답지 실측 (C2a #2277, 종전 원 폴백 교체)
         let mut chart = line_chart(BarGrouping::Clustered);
         chart.line_markers = true;
         chart.series.push(OoxmlSeries {
@@ -1680,7 +1712,13 @@ mod tests {
         let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
         let ds = marker_ds(&svg);
         assert_eq!(ds.len(), 16);
-        assert!(ds[12].contains('a'), "계열4는 원(arc) 폴백: {}", ds[12]);
+        let skel: String = ds[12].chars().filter(|c| c.is_ascii_alphabetic()).collect();
+        assert_eq!(skel, "MLML", "계열4는 × (두 대각선 열린 경로): {}", ds[12]);
+        // × 는 stroke 기반 — 채움이면 안 보임 (열린 경로)
+        assert!(
+            svg.contains(&format!("d=\"{}\" fill=\"none\"", ds[12])),
+            "× 마커는 fill=none + stroke=계열색"
+        );
     }
 
     #[test]
@@ -1722,10 +1760,14 @@ mod tests {
 
     #[test]
     fn test_render_scatter_marker_only() {
-        // marker: 점만, 연결선 없음.
+        // marker: 점만(사이클 글리프 — C2a #2277, 종전 circle 교체), 연결선 없음.
         let svg = render_chart_svg(&scatter_chart(ScatterStyle::Marker), 0.0, 0.0, 400.0, 300.0);
-        assert!(svg.contains("<circle"), "marker는 표식(circle) 있어야");
-        assert!(!svg.contains("<path"), "marker는 연결선(path) 없어야");
+        assert!(
+            !svg.contains("<circle"),
+            "표식은 circle이 아니라 사이클 글리프"
+        );
+        assert_eq!(marker_ds(&svg).len(), 3, "1계열×3점 마커");
+        assert!(data_line_paths(&svg).is_empty(), "marker는 연결선 없어야");
         assert!(!svg.contains("차트 (미지원)"));
         assert!(svg.contains("hwp-ooxml-chart\""));
     }
@@ -1734,8 +1776,9 @@ mod tests {
     fn test_render_scatter_line_only() {
         // line: 직선만, 표식 없음.
         let svg = render_chart_svg(&scatter_chart(ScatterStyle::Line), 0.0, 0.0, 400.0, 300.0);
-        assert!(svg.contains("<path"), "line은 연결선(path) 있어야");
-        assert!(!svg.contains("<circle"), "line은 표식(circle) 없어야");
+        assert_eq!(data_line_paths(&svg).len(), 1, "line은 연결선 있어야");
+        assert!(marker_ds(&svg).is_empty(), "line은 표식 없어야");
+        assert!(!svg.contains("<circle"));
         assert!(!svg.contains(" C"), "line은 직선(C 베지어 없음)");
     }
 
@@ -1749,8 +1792,8 @@ mod tests {
             400.0,
             300.0,
         );
-        assert!(svg.contains("<path"));
-        assert!(svg.contains("<circle"));
+        assert_eq!(data_line_paths(&svg).len(), 1);
+        assert_eq!(marker_ds(&svg).len(), 3);
         assert!(!svg.contains(" C"), "lineMarker는 직선");
     }
 
@@ -1764,9 +1807,37 @@ mod tests {
             400.0,
             300.0,
         );
-        assert!(svg.contains("<path"));
-        assert!(svg.contains("<circle"));
+        assert_eq!(marker_ds(&svg).len(), 3);
         assert!(svg.contains(" C"), "smooth는 cubic Bézier(C) 곡선");
+    }
+
+    #[test]
+    fn test_scatter_markers_use_cycle() {
+        // scatter 마커 = 라인과 동일 계열 사이클 (정답지 실측: 계열1 ◆ / 계열2 ■ —
+        // 표식만있는분산형-2022.pdf. C2a #2277)
+        let mut chart = scatter_chart(ScatterStyle::Marker);
+        chart.series.push(OoxmlSeries {
+            name: "Y2".into(),
+            x_values: vec![0.7, 1.8, 2.6],
+            values: vec![1.0, 2.0, 4.0],
+            series_type: OoxmlChartType::Scatter,
+            ..Default::default()
+        });
+        let svg = render_chart_svg(&chart, 0.0, 0.0, 400.0, 300.0);
+        let ds = marker_ds(&svg);
+        assert_eq!(ds.len(), 6, "2계열×3점");
+        let skel = |d: &str| {
+            d.chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .collect::<String>()
+        };
+        // 계열1=◆, 계열2=■ (둘 다 4각형 path — 첫 세그먼트 대각/수평으로 구분)
+        assert_eq!(skel(&ds[0]), "MLLLZ", "계열1 ◆");
+        assert_eq!(skel(&ds[3]), "MLLLZ", "계열2 ■");
+        let dia = path_points(&ds[0]);
+        assert!((dia[0].1 - dia[1].1).abs() > 1e-6, "◆ 첫 세그먼트 대각");
+        let sq = path_points(&ds[3]);
+        assert!((sq[0].1 - sq[1].1).abs() < 1e-6, "■ 첫 세그먼트 수평");
     }
 
     #[test]
