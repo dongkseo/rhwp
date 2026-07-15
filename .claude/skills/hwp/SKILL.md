@@ -88,7 +88,10 @@ import { createHwp, saveHwp } from './scripts/hwp/loader.mjs';
 
 const doc = await createHwp();                    // blank2010.hwp 내장 템플릿
 doc.insertText(0, 0, 0, '안녕하세요. 보고서입니다.');
-doc.applyCharFormat(0, 0, 0, 5, JSON.stringify({ bold: true, fontSize: 1400, textColor: '#FF0000' }));
+
+// ⚠️ createEmpty() 문서에서 applyCharFormat 은 범위를 무시하고 문서 전체에 적용된다 (아래 "알려진 버그").
+//    문단 전체를 같은 서식으로 둘 때만 안전하다.
+doc.applyCharFormat(0, 0, 0, 13, JSON.stringify({ bold: true, fontSize: 1400, textColor: '#FF0000' }));
 doc.applyParaFormat(0, 0, JSON.stringify({ alignment: 'center' }));
 
 console.log(await saveHwp(doc, 'output/new.hwp'));
@@ -156,13 +159,36 @@ node scripts/verify_hwp.mjs <파일.hwp>
 | `not_recovered` | 자기 재로드 실패 | 해당 편집 연산 제거 후 이분 탐색 |
 | `page_count_mismatch` | 페이지 수 변동 | 페이지네이션 영향 편집 검토 |
 
+## 알려진 버그 — createEmpty() 문서의 글자 서식
+
+**`createEmpty()`로 만든 문서에서는 `applyCharFormat`의 start/end 범위가 무시되고 문서 전체에 적용된다.**
+
+빈 템플릿은 `char_shapes` 목록이 비어 있다. 이때 `find_or_create_char_shape`이 새 ID 대신 `0`을 반환해
+**0번 글자모양을 덮어쓰고**, 모든 글자가 0번을 참조하므로 전부 물든다.
+(HWPX로 내보내 확인하면 `charPr id=0`의 `textColor`가 바뀌어 있다.)
+
+| 대상 | 범위 서식 | 비고 |
+|------|:---------:|------|
+| 기존 `.hwp` (실제 문서) | ✅ 정상 | char_shapes 보유 → 새 ID 생성 |
+| `createEmpty()` 빈 문서 | ❌ 전체 물듦 | char_shapes 비어 있음 → 0번 덮어씀 |
+
+**우회 방법**: 부분 서식이 필요하면 빈 문서에서 시작하지 말고, 서식이 정의된 기존 `.hwp`를 템플릿으로 열어 편집하라.
+
+서식을 적용했다면 **렌더로 확인하라** — `{"ok":true}`는 이 버그를 잡아내지 못한다:
+
+```js
+const svg = doc.renderPageSvg(0);
+const reds = [...svg.matchAll(/<text[^>]*fill="#ff0000"[^>]*>([^<]*)</gi)].map(m => m[1]);
+console.log(reds.join(''));   // 의도한 글자만 나오는가?
+```
+
 ## 검증 체크리스트
 
 - [ ] `saveHwp()`로 저장했는가 (`exportHwp()` 직접 호출 금지)
 - [ ] `verify_hwp.mjs`가 `status: "success"`를 반환하는가
 - [ ] 원본이 아닌 **새 경로**에 저장했는가
 - [ ] 편집 결과를 재열기해 `getTextRange()`로 **내용이 실제로 들어갔는지** 확인했는가
-- [ ] 표/이미지를 넣었다면 렌더해 시각 확인했는가 (rhwp-cli 스킬의 `export-svg`)
+- [ ] 서식·표·이미지를 건드렸다면 `renderPageSvg(0)`로 렌더해 확인했는가 (cargo 없이 node에서 가능)
 - [ ] 한컴오피스에서 경고 없이 열리는가 (최종 확인은 사람이 한다)
 
 ## 핵심 API
@@ -182,6 +208,7 @@ node scripts/verify_hwp.mjs <파일.hwp>
 | 표 열 | `insertTableColumn(sec, parentPara, ctrl, colIdx, right)` / `deleteTableColumn(sec, parentPara, ctrl, colIdx)` |
 | 셀 병합 | `mergeTableCells(sec, parentPara, ctrl, startRow, startCol, endRow, endCol)` |
 | 셀 텍스트 | `insertTextInCell(sec, parentPara, ctrl, cellIdx, cellPara, offset, text)` / `getTextInCell(...)` |
+| 렌더 (시각 확인) | `renderPageSvg(page): string`, `renderPageHtml(page): string` |
 | 검증 | `exportHwpVerify(): string` (JSON) |
 | 내보내기 | `exportHwp(): Uint8Array`, `exportHwpx(): Uint8Array` |
 
