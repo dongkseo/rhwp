@@ -60,6 +60,69 @@ export async function createHwp() {
 }
 
 /**
+ * 문서 안에서 편집 가능한 텍스트 지점을 모두 찾는다.
+ *
+ * 양식(블로그/신청서) 문서는 본문 문단이 비어 있고 내용이 **표 안의 표**나 글상자에 있다.
+ * 최상위만 훑으면 편집 지점을 하나도 못 찾는다. 이 함수는 cell path 로 깊이 우선 탐색한다.
+ *
+ * 반환: [{ para, path, text }] — path 는 insertTextInCellByPath 에 그대로 넘긴다.
+ *   path 형식: [{controlIndex, cellIndex, cellParaIndex}, ...] (중첩 시 배열이 길어진다)
+ */
+export function findTextTargets(doc, sec = 0, maxDepth = 3, maxControls = 24) {
+  const out = [];
+
+  const walk = (para, prefix, depth) => {
+    if (depth > maxDepth) return;
+    for (let c = 0; c < maxControls; c++) {
+      const probe = [...prefix, { controlIndex: c, cellIndex: 0, cellParaIndex: 0 }];
+      let dim = null;
+      try {
+        const j = depth === 0
+          ? doc.getTableDimensions(sec, para, c)
+          : doc.getTableDimensionsByPath(sec, para, JSON.stringify(probe));
+        if (j) dim = JSON.parse(j);
+      } catch { /* 표가 아님 — 글상자일 수 있다 */ }
+
+      // 표가 아닌 컨트롤(글상자 등)도 cell path 로 텍스트가 읽힌다.
+      if (!dim) {
+        try {
+          const t = doc.getTextInCellByPath(sec, para, JSON.stringify(probe), 0, 200);
+          if (t && t.trim()) out.push({ para, path: probe, text: t });
+        } catch {}
+        continue;
+      }
+
+      for (let ci = 0; ci < dim.cellCount; ci++) {
+        let nPara = 1;
+        try { nPara = doc.getCellParagraphCountByPath(sec, para, JSON.stringify([...prefix, { controlIndex: c, cellIndex: ci, cellParaIndex: 0 }])) || 1; } catch {}
+        for (let cp = 0; cp < nPara; cp++) {
+          const path = [...prefix, { controlIndex: c, cellIndex: ci, cellParaIndex: cp }];
+          try {
+            const t = doc.getTextInCellByPath(sec, para, JSON.stringify(path), 0, 200);
+            if (t && t.trim()) out.push({ para, path, text: t });
+          } catch {}
+        }
+        walk(para, [...prefix, { controlIndex: c, cellIndex: ci, cellParaIndex: 0 }], depth + 1);
+      }
+    }
+  };
+
+  for (let para = 0; para < doc.getParagraphCount(sec); para++) {
+    const t = doc.getTextRange(sec, para, 0, 200);
+    if (t && t.trim()) out.push({ para, path: null, text: t });   // path=null → 본문 문단
+    walk(para, [], 0);
+  }
+  return out;
+}
+
+/** findTextTargets 결과 하나에 텍스트를 넣는다 (본문/셀 자동 분기). */
+export function insertAt(doc, target, charOffset, text, sec = 0) {
+  return target.path === null
+    ? doc.insertText(sec, target.para, charOffset, text)
+    : doc.insertTextInCellByPath(sec, target.para, JSON.stringify(target.path), charOffset, text);
+}
+
+/**
  * 검증 후 저장한다. 검증 실패 시 파일을 쓰지 않고 throw 한다.
  *
  * exportHwpVerify() 는 어댑터 적용 + 직렬화 + 자기 재로드 검증을 수행하고
