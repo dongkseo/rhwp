@@ -1531,7 +1531,8 @@ impl LayoutEngine {
         body_area: &LayoutRect,
     ) -> Option<RenderLayerInfo> {
         let common = Self::control_common_attr(control)?;
-        let mut layer = Self::render_layer_from_common(common, para_index, control_index);
+        let mut layer =
+            Self::render_layer_from_common(common, para_index, control_index).for_master_page();
         if Self::master_background_common_attr(control).is_some_and(|common| {
             self.is_master_paper_background_control(common, paper_area, body_area)
         }) {
@@ -2807,6 +2808,9 @@ impl LayoutEngine {
                     RenderNodeType::MasterPage,
                     layout_rect_to_bbox(&paper_area),
                 );
+                // 바탕쪽 그룹에 provenance layer 부여 (#2318): layer 없는 자식(텍스트 라인 등)이
+                // 상속받아 replay plane 분류에서 BehindText 상한이 적용된다.
+                mp_node.layer = Some(RenderLayerInfo::new(None, 0, 0).for_master_page());
                 // 바탕쪽 문단 렌더링: 컨트롤(표/도형/그림)은 compute_object_position으로 배치,
                 // 텍스트 문단은 layout_paragraph로 배치
                 let mut mp_y_offset = paper_area.y;

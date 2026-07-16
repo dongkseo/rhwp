@@ -5,12 +5,14 @@
 //! 바탕쪽 전체는 항상 본문 뒤에 깔린다 (한컴 2022 실기 확인, 2026-07-17).
 //!
 //! paint replay plane 분류가 이 wrap 을 본문 기준으로 해석하면 바탕쪽 개체가
-//! inFrontOfText plane → studio front overlay canvas 로 승격되어 본문 텍스트
-//! canvas 위에 합성된다. 정정: GroupKind::MasterPage 그룹 내부 op 의 plane 을
-//! BehindText 로 상한 고정한다 (전지 배경 강등 가드는 별도 유지).
+//! inFrontOfText plane 으로 승격되어 plane 재생 backend 전체(studio front
+//! overlay canvas 합성 + skia per-plane 재생)에서 본문 텍스트를 가린다
+//! (skia PNG 실측: 바탕쪽 쪽번호 "1" 이 "Ctrl+Y" 를 덮음). 정정:
+//! RenderLayerInfo.master_page provenance 로 plane 을 BehindText 상한 고정
+//! (전지 배경 강등 가드는 별도 유지).
 //!
-//! SVG/skia 는 렌더 트리 문서 순서(PageBg → MasterPage → Body)로 그리므로
-//! plane 분류와 무관하게 영향이 없다.
+//! SVG 는 node_z_plane 이 MasterPage 노드를 plane 1 로 직접 배치(#1167)하므로
+//! 이 분류와 무관하게 원래 정상이다.
 
 use std::fs;
 use std::path::Path;
@@ -80,9 +82,7 @@ fn collect_planes(
 #[test]
 fn issue_2318_master_page_ops_capped_at_behind_text() {
     let core = load_shortcut_core();
-    let tree = core
-        .build_page_layer_tree(0)
-        .expect("page 1 PageLayerTree");
+    let tree = core.build_page_layer_tree(0).expect("page 1 PageLayerTree");
 
     let (master, inherited) =
         find_master_group(&tree.root, None).expect("shortcut.hwp p1 에 MasterPage 그룹 존재");
@@ -114,9 +114,7 @@ fn issue_2318_master_page_ops_capped_at_behind_text() {
 #[test]
 fn issue_2318_master_page_layer_wrap_preserved_for_internal_order() {
     let core = load_shortcut_core();
-    let tree = core
-        .build_page_layer_tree(0)
-        .expect("page 1 PageLayerTree");
+    let tree = core.build_page_layer_tree(0).expect("page 1 PageLayerTree");
 
     let (master, _) =
         find_master_group(&tree.root, None).expect("shortcut.hwp p1 에 MasterPage 그룹 존재");
