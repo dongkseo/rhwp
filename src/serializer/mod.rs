@@ -7,6 +7,10 @@ pub mod body_text;
 pub mod byte_writer;
 pub mod cfb_writer;
 pub mod chart_ole;
+/// 차트 미리보기 렌더 — resvg 는 native-skia feature + 네이티브 전용
+/// (export-png 와 같은 제약).
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+pub mod chart_preview;
 pub mod chart_xml;
 pub mod control;
 pub mod doc_info;
