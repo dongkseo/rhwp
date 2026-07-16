@@ -1481,6 +1481,35 @@ impl LayoutEngine {
         } else {
             y_start
         };
+        // [#2287 후속/1.hwpx p28] 같은 단의 직전 흐름 표와의 미세 겹침 방지
+        // 안전망: 자리차지 표의 v_off/outer 흐름 미가산(#2097 반증 기록 축 —
+        // 전면 가산은 82802 악화)으로 후속 TopAndBottom 표 조각의 typeset
+        // 좌표가 직전 표 렌더 끝보다 소폭(6.4px) 이르게 잡히면 괘선이 겹쳐
+        // 렌더된다. 흐름 표(vert=문단·비 TAC) 한정으로 직전 표 렌더 하단
+        // 아래로 push-down — 겹침이 없으면 no-op.
+        let y_start = if !table.common.treat_as_char
+            && matches!(
+                table.common.text_wrap,
+                crate::model::shape::TextWrap::TopAndBottom
+            )
+            && matches!(
+                table.common.vert_rel_to,
+                crate::model::shape::VertRelTo::Para
+            ) {
+            let prev_table_end = col_node
+                .children
+                .iter()
+                .filter(|c| matches!(c.node_type, RenderNodeType::Table(_)))
+                .map(|c| c.bbox.y + c.bbox.height)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if prev_table_end.is_finite() && y_start < prev_table_end - 0.5 {
+                prev_table_end
+            } else {
+                y_start
+            }
+        } else {
+            y_start
+        };
 
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
