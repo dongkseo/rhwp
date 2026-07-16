@@ -251,7 +251,10 @@ fn issue_2214_warm_deferred_tree_and_cursor_are_exact() {
         let exact = tree_end == expected_end
             && rect.page_index == 0
             && approx_eq(rect.x, 569.7)
-            && approx_eq(rect.y, 341.1)
+            // 최신 devel의 table text baseline 보정 뒤 path-near는 direct보다
+            // 0.8px 위의 caret geometry를 반환한다. HWP/HWPX가 같은 기준선을
+            // 공유하고 flush 전후에도 이 값이 유지되는지를 고정한다.
+            && approx_eq(rect.y, 344.8)
             && approx_eq(rect.height, 16.0)
             && !rect.cell_overflowed;
         eprintln!("#2214 {label}: model={expected_end} tree={tree_end} rect={rect:?}");
@@ -280,7 +283,7 @@ fn issue_2214_cold_representative_queries_are_exact() {
         assert_eq!(target_tree_end(&direct44), INSERT_OFFSET + 44);
         assert_eq!(direct.page_index, 0, "{label}: cold 44 direct page");
         assert!(approx_eq(direct.x, 569.7), "{label}: cold 44 direct x");
-        assert!(approx_eq(direct.y, 341.9), "{label}: cold 44 direct y");
+        assert!(approx_eq(direct.y, 345.6), "{label}: cold 44 direct y");
         assert!(
             approx_eq(direct.cell_bounds.h, 945.9),
             "{label}: cold 44 direct pre-flush bounds"
@@ -294,7 +297,7 @@ fn issue_2214_cold_representative_queries_are_exact() {
         assert_eq!(target_tree_end(&path50), INSERT_OFFSET + 50);
         assert_eq!(path.page_index, 0, "{label}: cold 50 path page");
         assert!(approx_eq(path.x, 629.7), "{label}: cold 50 path x");
-        assert!(approx_eq(path.y, 341.1), "{label}: cold 50 path y");
+        assert!(approx_eq(path.y, 344.8), "{label}: cold 50 path y");
         assert!(
             approx_eq(path.cell_bounds.h, 945.9),
             "{label}: cold 50 path pre-flush bounds"

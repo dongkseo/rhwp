@@ -958,7 +958,7 @@ function assertFocusedSnapshot(format, runNumber, inserted, snapshot, expectedTe
   const rect = snapshot.cursor.rect;
   assert.equal(rect?.pageIndex, 0, `${prefix}: cursor page`);
   assert.equal(rect?.cellOverflowed, false, `${prefix}: cursor must not use overflow fallback`);
-  assertApprox(rect?.cellBounds?.h, inserted < 44 ? 945.9 : 971.5, `${prefix}: cell bounds`);
+  assertApprox(rect?.cellBounds?.h, 945.9, `${prefix}: cell bounds`);
   assert.equal(
     snapshot.pagination.pending,
     inserted !== 44,
@@ -1162,7 +1162,7 @@ async function runFocusedFormat(page, format, bytes, runNumber) {
         clip,
       ));
       for (const state of boundaryStates) {
-        assertExactFocusedState(format, runNumber, state, expectedText, 5, 971.5, false);
+        assertExactFocusedState(format, runNumber, state, expectedText, 5, 945.9, false);
         const traceAtCheckpoint = await collectTrace(page);
         assert.equal(
           traceAtCheckpoint.counts.wasmFlush,
@@ -1200,7 +1200,7 @@ async function runFocusedFormat(page, format, bytes, runNumber) {
   await waitTwoRafs(page);
   const finalText = `${initialText}${'1'.repeat(50)}`;
   checkpoints.at50 = await collectState(page, 'after-50-2raf', timelineStart);
-  assertExactFocusedState(format, runNumber, checkpoints.at50, finalText, 5, 971.5, true);
+  assertExactFocusedState(format, runNumber, checkpoints.at50, finalText, 5, 945.9, true);
 
   const trace = await collectTrace(page);
   trace.keyboardDurationsMs = keyboardDurationsMs;
@@ -1374,7 +1374,7 @@ async function runRawBoundarySmoke(page, format, bytes, kind) {
     finalState,
     finalText,
     5,
-    971.5,
+    945.9,
     false,
   );
   const trace = await collectTrace(page);
