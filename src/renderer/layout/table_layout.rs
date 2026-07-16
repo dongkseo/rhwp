@@ -5083,6 +5083,15 @@ impl LayoutEngine {
             let para_non_inline_h = para_top_and_bottom_h + para_other_non_inline_h;
             let mut comp = compose_paragraph(p);
             crate::renderer::composer::recompose_for_cell_width(&mut comp, p, inner_width, styles);
+            // [#2291] 부실 저장(ls==1 인데 실폭 초과) 문단 재분할 — 가로쓰기 셀 한정.
+            if cell.text_direction == 0 {
+                crate::renderer::composer::recompose_stored_single_line_if_overflowing(
+                    &mut comp,
+                    p,
+                    inner_width,
+                    styles,
+                );
+            }
             let para_style = styles.para_styles.get(p.para_shape_id as usize);
             let is_empty_spacer_para = p.text.trim().is_empty() && p.controls.is_empty();
             let preserve_vpos_empty_spacer = preserve_linear_single_cell_vpos
