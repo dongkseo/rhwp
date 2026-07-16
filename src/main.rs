@@ -13,6 +13,7 @@ fn main() {
         Some("export-render-tree") => export_render_tree(&args[2..]),
         Some("export-structure") => export_structure(&args[2..]),
         Some("export-png") => export_png(&args[2..]),
+        Some("insert-chart") => insert_chart(&args[2..]),
         Some("export-pdf") => export_pdf(&args[2..]),
         Some("export-text") => export_text(&args[2..]),
         Some("export-markdown") => export_markdown(&args[2..]),
@@ -888,6 +889,183 @@ fn extract_attr_f64(svg: &str, attr: &str) -> Option<f64> {
         }
     }
     None
+}
+
+#[cfg(not(feature = "native-skia"))]
+fn insert_chart(_args: &[String]) {
+    eprintln!("오류: insert-chart 명령은 native-skia feature 가 활성화되어야 합니다.");
+    eprintln!("       cargo build --release --features native-skia");
+}
+
+/// 차트를 OLE 개체로 삽입한다.
+///
+/// 미리보기 래스터화에 resvg 가 필요해 native-skia 전용이다 (export-png 와 같은 제약).
+#[cfg(feature = "native-skia")]
+fn insert_chart(args: &[String]) {
+    use rhwp::document_core::DocumentCore;
+    use rhwp::ooxml_chart::OoxmlChartType;
+    use rhwp::serializer::chart_preview::render_chart_preview;
+    use rhwp::serializer::chart_xml::{ChartSeries, ChartSpec};
+
+    const USAGE: &str =
+        "사용법: rhwp insert-chart <입력.hwp> --data <차트.json> -o <출력.hwp> [--para N]\n\
+         차트.json 예시:\n\
+         {\n\
+           \"type\": \"column\",            // column|bar|line|pie\n\
+           \"title\": \"2026 실적\",\n\
+           \"categories\": [\"1분기\",\"2분기\"],\n\
+           \"series\": [{\"name\":\"매출액\",\"values\":[184,210]}],\n\
+           \"widthMm\": 150, \"heightMm\": 90,   // 선택 (기본 150x90)\n\
+           \"xMm\": 30, \"yMm\": 60             // 선택: 용지 기준 위치 (기본 좌상단)\n\
+         }";
+
+    let mut input = None;
+    let mut data_path = None;
+    let mut output = None;
+    let mut para: usize = 0;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data" => {
+                i += 1;
+                data_path = args.get(i).cloned();
+            }
+            "-o" | "--output" => {
+                i += 1;
+                output = args.get(i).cloned();
+            }
+            "--para" => {
+                i += 1;
+                para = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            a if input.is_none() && !a.starts_with('-') => input = Some(a.to_string()),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let (Some(input), Some(data_path), Some(output)) = (input, data_path, output) else {
+        eprintln!("{}", USAGE);
+        process::exit(64);
+    };
+
+    let json = match fs::read_to_string(&data_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "오류: 차트 데이터를 읽을 수 없습니다 - {}: {}",
+                data_path, e
+            );
+            process::exit(66);
+        }
+    };
+    let v: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("오류: 차트 JSON 파싱 실패: {}", e);
+            process::exit(65);
+        }
+    };
+
+    let chart_type = match v["type"].as_str().unwrap_or("column") {
+        "bar" => OoxmlChartType::Bar,
+        "line" => OoxmlChartType::Line,
+        "pie" => OoxmlChartType::Pie,
+        _ => OoxmlChartType::Column,
+    };
+    let categories: Vec<String> = v["categories"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let series: Vec<ChartSeries> = v["series"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|s| ChartSeries {
+                    name: s["name"].as_str().unwrap_or("계열").to_string(),
+                    values: s["values"]
+                        .as_array()
+                        .map(|vs| vs.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let spec = ChartSpec {
+        chart_type,
+        title: v["title"].as_str().map(String::from),
+        categories,
+        series,
+    };
+
+    const MM: f64 = 7200.0 / 25.4;
+    let w_hu = (v["widthMm"].as_f64().unwrap_or(150.0) * MM) as u32;
+    let h_hu = (v["heightMm"].as_f64().unwrap_or(90.0) * MM) as u32;
+    let x_hu = v["xMm"].as_f64().map(|x| (x * MM) as i32);
+    let y_hu = v["yMm"].as_f64().map(|y| (y * MM) as i32);
+    let px_w = (w_hu as f64 / 7200.0 * 96.0) as u32;
+    let px_h = (h_hu as f64 / 7200.0 * 96.0) as u32;
+
+    let preview = match render_chart_preview(&spec, px_w, px_h) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("오류: 차트 미리보기 렌더 실패: {}", e);
+            process::exit(70);
+        }
+    };
+
+    let bytes = match fs::read(&input) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("오류: 파일을 읽을 수 없습니다 - {}: {}", input, e);
+            process::exit(66);
+        }
+    };
+    let mut core = match DocumentCore::from_bytes(&bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("오류: 문서 파싱 실패: {}", e);
+            process::exit(65);
+        }
+    };
+
+    match core.insert_chart_native(
+        0,
+        para,
+        &spec,
+        &preview.rgba,
+        preview.width,
+        preview.height,
+        w_hu,
+        h_hu,
+        x_hu,
+        y_hu,
+    ) {
+        Ok(r) => println!("삽입: {}", r),
+        Err(e) => {
+            eprintln!("오류: 차트 삽입 실패: {}", e);
+            process::exit(70);
+        }
+    }
+
+    match core.export_hwp_native() {
+        Ok(out) => match fs::write(&output, &out) {
+            Ok(_) => println!("저장 완료: {} ({}KB)", output, out.len() / 1024),
+            Err(e) => {
+                eprintln!("오류: 저장 실패 - {}: {}", output, e);
+                process::exit(73);
+            }
+        },
+        Err(e) => {
+            eprintln!("오류: 직렬화 실패: {}", e);
+            process::exit(70);
+        }
+    }
 }
 
 #[cfg(not(feature = "native-skia"))]
