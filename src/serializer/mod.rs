@@ -6,6 +6,7 @@
 pub mod body_text;
 pub mod byte_writer;
 pub mod cfb_writer;
+pub mod chart_ole;
 pub mod chart_xml;
 pub mod control;
 pub mod doc_info;
