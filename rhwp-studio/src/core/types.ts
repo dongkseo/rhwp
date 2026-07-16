@@ -924,6 +924,8 @@ export interface LayerInfo {
   textWrap?: string | null;
   zOrder: number;
   stableIndex: number;
+  /** 바탕쪽 유래 여부 (#2318). true 면 replay plane 이 behindText 로 상한 고정된다. */
+  masterPage?: boolean;
 }
 
 export type LayerNode = LayerGroupNode | LayerClipNode | LayerLeafNode;
