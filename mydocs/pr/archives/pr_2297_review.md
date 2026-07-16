@@ -37,3 +37,14 @@ PNG(skia) 축 추가 권고.
 
 **수정 요청(CHANGES_REQUESTED) 1건 후 merge 수용** — 회귀가 실증된 계약
 위반이므로 반영 전 approve 불가. 나머지 설계는 방향 정합.
+
+---
+
+## 재검토 (v2, 2026-07-16) — 수정 반영 확인 후 merge
+
+- `64333d0c`: ①export-png 기본 profile `Screen`→`HighQuality` (도움말·주석
+  포함) ②제보 픽스처·좌표 그대로의 PNG 회귀 테스트 신설 + **ci.yml
+  native-skia 실행 배선** (커버리지 공백 봉합).
+- 재실증: 기본 잉크 **5,776→0** (계약 복원), `--profile screen` 5,776
+  (옵트인 정상), 신설 테스트 2/2, default 3,230/0, studio 295/0,
+  인접 표적(#2292/#2293) 통과, CI 전 항목 green (CLEAN merge).
