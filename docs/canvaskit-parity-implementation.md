@@ -158,8 +158,10 @@ CanvasKit image decoding is page-failure-contained. Encoded size and decoded
 pixel limits reject pathological payloads, decode failures use a bounded
 negative cache, and the native `SkImage` cache is a bounded LRU that deletes
 evicted objects. `missingPicture` placeholders are editor visuals for screen
-profiles and are suppressed for print-equivalent profiles; OLE placeholders
-keep the existing static replay.
+profiles and are suppressed for print-equivalent profiles across layered SVG,
+Canvas2D, CanvasKit, and native Skia; OLE placeholders keep the existing static
+replay. The `export-png` CLI defaults to the `high-quality` profile; callers
+must request `--profile screen` explicitly to include editor-only visuals.
 
 Equation ops now carry their bounded semantic `layoutBox` in the layer JSON.
 CanvasKit replays that tree directly, so a missing or malformed equation SVG
@@ -257,10 +259,34 @@ cannot be narrowed with `--filter`,
 and CI pins the Chromium revision used for hard pixel comparisons. The browser
 version and pinned Chromium build ID are included in the generated report.
 
-Ordinary baseline and surface sweeps remain report-only. Only the explicit
-readiness command fails CI, and its JSON/Markdown reports are written before
-the process reports failure, including browser launch, document load, and
-screenshot capture failures.
+Ordinary visual differences and surface sweeps remain report-only. The explicit
+readiness command additionally gates selected visual thresholds. Every mode
+still fails on capture, provenance, or replay-contract failures, and writes its
+JSON/Markdown reports before reporting that failure.
+
+Ordinary baseline captures now retain the Rust replay-plan status, reason, and
+feature inventory beside page-scoped CanvasKit runtime diagnostics. Missing or
+invalid direct-only plans, incomplete renders, render errors, and unexpected
+runtime operations fail the baseline contract. Known direct-replay gaps remain
+visible as report inventory instead of being reclassified as successful output.
+
+The cross-backend corpus also renders the manifest's exact page index into a
+dedicated intrinsic-scale capture surface. This keeps nonzero-page diagnostics,
+repeated headers, and HWP/HWPX paired fixtures tied to the same page/profile
+identity instead of accidentally capturing the first visible viewport canvas.
+Canvas2D image resources, composed DOM images, and CanvasKit local typefaces
+must settle before the selected page is replayed and captured.
+
+The versioned corpus records a SHA-256 document digest and diagnostic axes for
+every sample. Browser and native comparisons require matching sample, digest,
+page, and profile identities before comparing pixels, while retaining backend
+and actual surface provenance. Identity mismatches are a separate result class,
+not visual noise. The default `representative` tier retains the existing 21-case
+runtime envelope. `--scope full` and the manual workflow's `corpus=full` input
+select the complete 120-case browser/native corpus; WebGPU/software surface
+sweeps remain representative. The selected multi-profile sweep also collects
+verified print-profile PDF artifacts, while selected CanvasKit readiness cases
+remain the bounded visual hard gate.
 
 ## Non-Goals
 

@@ -523,7 +523,23 @@ impl HwpDocument {
         scale: f64,
         layer_kind: &str,
     ) -> Result<(), JsValue> {
+        self.render_page_to_canvas_filtered_with_profile(
+            page_num, canvas, scale, layer_kind, "screen",
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = renderPageToCanvasFilteredWithProfile)]
+    pub fn render_page_to_canvas_filtered_with_profile(
+        &self,
+        page_num: u32,
+        canvas: &HtmlCanvasElement,
+        scale: f64,
+        layer_kind: &str,
+        profile: &str,
+    ) -> Result<(), JsValue> {
         use crate::model::shape::TextWrap;
+        use crate::paint::RenderProfile;
         use crate::renderer::layer_renderer::LayerRenderer;
         use crate::renderer::web_canvas::{LayerFilter, WebCanvasRenderer};
 
@@ -542,8 +558,10 @@ impl HwpDocument {
             }
         };
 
+        let profile = RenderProfile::parse(profile)
+            .ok_or_else(|| JsValue::from_str(&format!("unsupported render profile: {profile}")))?;
         let tree = self
-            .build_page_layer_tree(page_num)
+            .build_page_layer_tree_with_profile(page_num, profile)
             .map_err(JsValue::from)?;
 
         let scale = normalize_canvas_scale(tree.page_width, tree.page_height, scale)
@@ -613,17 +631,8 @@ impl HwpDocument {
         page_num: u32,
         profile: &str,
     ) -> Result<String, JsValue> {
-        let profile = match profile.trim() {
-            "fastPreview" => crate::paint::RenderProfile::FastPreview,
-            "screen" | "" => crate::paint::RenderProfile::Screen,
-            "print" => crate::paint::RenderProfile::Print,
-            "highQuality" => crate::paint::RenderProfile::HighQuality,
-            value => {
-                return Err(JsValue::from_str(&format!(
-                    "unsupported render profile: {value}"
-                )))
-            }
-        };
+        let profile = crate::paint::RenderProfile::parse(profile)
+            .ok_or_else(|| JsValue::from_str(&format!("unsupported render profile: {profile}")))?;
         self.get_page_layer_tree_with_profile_native(page_num, profile)
             .map_err(|error| error.into())
     }
@@ -637,6 +646,19 @@ impl HwpDocument {
     pub fn get_canvaskit_replay_plan(&self, page_num: u32, mode: &str) -> Result<String, JsValue> {
         self.get_canvaskit_replay_plan_native(page_num, mode)
             .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = getCanvasKitReplayPlanWithProfile)]
+    pub fn get_canvaskit_replay_plan_with_profile(
+        &self,
+        page_num: u32,
+        mode: &str,
+        profile: &str,
+    ) -> Result<String, JsValue> {
+        let profile = crate::paint::RenderProfile::parse(profile)
+            .ok_or_else(|| JsValue::from_str(&format!("unsupported render profile: {profile}")))?;
+        self.get_canvaskit_replay_plan_with_profile_native(page_num, mode, profile)
+            .map_err(|error| error.into())
     }
 
     /// 페이지 overlay 이미지 정보만 JSON 문자열로 반환한다.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::document::{Document, Section};
 use crate::model::paragraph::{LineSeg, Paragraph};
-use crate::paint::LAYER_TREE_SCHEMA;
+use crate::paint::{RenderProfile, LAYER_TREE_SCHEMA};
 use crate::parser::control::parse_common_obj_attr;
 use serde_json::Value;
 
@@ -1494,6 +1494,23 @@ fn test_page_layer_tree_export_uses_schema_contract() {
     assert!(parsed["buildOptions"].is_object());
     assert!(parsed["debugOptions"].is_object());
     assert!(parsed["outputOptions"].is_object());
+}
+
+#[test]
+fn test_page_layer_tree_export_uses_requested_profile() {
+    let doc = HwpDocument::create_empty();
+    for (profile, expected) in [
+        (RenderProfile::FastPreview, "fastPreview"),
+        (RenderProfile::Screen, "screen"),
+        (RenderProfile::Print, "print"),
+        (RenderProfile::HighQuality, "highQuality"),
+    ] {
+        let json = doc
+            .get_page_layer_tree_with_profile_native(0, profile)
+            .expect("profiled layer tree should export");
+        let parsed: Value = serde_json::from_str(&json).expect("PageLayerTree JSON");
+        assert_eq!(parsed["profile"].as_str(), Some(expected));
+    }
 }
 
 #[test]

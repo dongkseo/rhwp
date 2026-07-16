@@ -444,11 +444,26 @@ export class WasmBridge {
     canvas: HTMLCanvasElement,
     scale: number,
     layerKind: 'all' | 'background' | 'flow' | 'flow-dynamic' | 'flow-static' | 'behind' | 'front',
+    profile: LayerRenderProfile = 'screen',
   ): void {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
       renderPageToCanvasFiltered?: (p: number, c: HTMLCanvasElement, s: number, k: string) => void;
+      renderPageToCanvasFilteredWithProfile?: (
+        p: number,
+        c: HTMLCanvasElement,
+        s: number,
+        k: string,
+        profile: string,
+      ) => void;
     };
+    if (typeof d.renderPageToCanvasFilteredWithProfile === 'function') {
+      d.renderPageToCanvasFilteredWithProfile(pageNum, canvas, scale, layerKind, profile);
+      return;
+    }
+    if (profile !== 'screen') {
+      throw new Error('[WasmBridge] 현재 WASM은 profile별 Canvas2D 렌더링을 지원하지 않습니다');
+    }
     if (typeof d.renderPageToCanvasFiltered === 'function') {
       d.renderPageToCanvasFiltered(pageNum, canvas, scale, layerKind);
       return;
@@ -477,8 +492,12 @@ export class WasmBridge {
       getPageLayerTreeWithProfile?: (p: number, profile: string) => string;
       getPageLayerTree?: (p: number) => string;
     };
-    const json = typeof d.getPageLayerTreeWithProfile === 'function'
-      ? d.getPageLayerTreeWithProfile(pageNum, profile)
+    const hasProfileApi = typeof d.getPageLayerTreeWithProfile === 'function';
+    if (!hasProfileApi && profile !== 'screen') {
+      throw new Error('[WasmBridge] 현재 WASM은 profile별 PageLayerTree를 지원하지 않습니다');
+    }
+    const json = hasProfileApi
+      ? d.getPageLayerTreeWithProfile!(pageNum, profile)
       : this.getPageLayerTree(pageNum);
     let parsed: unknown;
     try {
@@ -524,7 +543,11 @@ export class WasmBridge {
     if (rootKind !== 'group' && rootKind !== 'clipRect' && rootKind !== 'leaf') {
       throw new Error(`[WasmBridge] PageLayerTree JSON shape 오류 (page=${pageNum}): 알 수 없는 root.kind=${String(rootKind)}`);
     }
-    tree.profile = profile;
+    if (tree.profile !== profile) {
+      throw new Error(
+        `[WasmBridge] PageLayerTree profile 불일치 (page=${pageNum}): requested=${profile}, actual=${String(tree.profile)}`,
+      );
+    }
     const outputOptions = tree.outputOptions ?? {};
     const buildOptions = tree.buildOptions ?? {};
     buildOptions.showTransparentBorders ??= outputOptions.showTransparentBorders ?? false;
@@ -546,11 +569,22 @@ export class WasmBridge {
     /* Reserved for JS-value resource transport builds. JSON export is self-contained. */
   }
 
-  getCanvasKitReplayPlan(pageNum: number, mode: 'default' | 'compat' = 'default'): string {
+  getCanvasKitReplayPlan(
+    pageNum: number,
+    mode: 'default' | 'compat' = 'default',
+    profile: LayerRenderProfile = 'screen',
+  ): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
       getCanvasKitReplayPlan?: (p: number, mode: string) => string;
+      getCanvasKitReplayPlanWithProfile?: (p: number, mode: string, profile: string) => string;
     };
+    if (typeof d.getCanvasKitReplayPlanWithProfile === 'function') {
+      return d.getCanvasKitReplayPlanWithProfile(pageNum, mode, profile);
+    }
+    if (profile !== 'screen') {
+      throw new Error('[WasmBridge] 현재 WASM은 profile별 CanvasKit replay plan을 지원하지 않습니다');
+    }
     if (typeof d.getCanvasKitReplayPlan === 'function') {
       return d.getCanvasKitReplayPlan(pageNum, mode);
     }

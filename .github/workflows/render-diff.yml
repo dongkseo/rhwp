@@ -312,6 +312,8 @@ jobs:
           node --check e2e/canvas-render-diff.test.mjs
           node --check e2e/pdf-render-diff-report.mjs
           node --check e2e/renderer-baseline.mjs
+          node --check e2e/renderer-baseline-native-diff.mjs
+          node e2e/renderer-baseline-native-diff.mjs --self-test
           node --check e2e/run-render-diff.mjs
           python3 -m py_compile ../scripts/renderer_baseline.py
           npm run e2e:renderer-contract

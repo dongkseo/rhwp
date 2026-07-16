@@ -627,7 +627,15 @@ impl DocumentCore {
     }
 
     pub fn render_page_svg_layer_native(&self, page_num: u32) -> Result<String, HwpError> {
-        let layer_tree = self.build_page_layer_tree(page_num)?;
+        self.render_page_svg_layer_with_profile_native(page_num, RenderProfile::Screen)
+    }
+
+    pub fn render_page_svg_layer_with_profile_native(
+        &self,
+        page_num: u32,
+        profile: RenderProfile,
+    ) -> Result<String, HwpError> {
+        let layer_tree = self.build_page_layer_tree_with_profile(page_num, profile)?;
         let mut renderer = SvgLayerRenderer::new();
         renderer.inner_mut().show_paragraph_marks = self.show_paragraph_marks;
         renderer.inner_mut().show_control_codes = self.show_control_codes;
@@ -672,6 +680,28 @@ impl DocumentCore {
         let mut svg_pages = Vec::with_capacity(page_nums.len());
         for &page_num in page_nums {
             svg_pages.push(self.render_page_svg_native(page_num)?);
+        }
+        crate::renderer::pdf::svgs_to_pdf_with_options(&svg_pages, options)
+            .map_err(HwpError::RenderError)
+    }
+
+    /// PDF export using the layered SVG compatibility path for an explicit output profile.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_pages_pdf_native_with_profile_and_options(
+        &self,
+        page_nums: &[u32],
+        profile: RenderProfile,
+        options: &crate::renderer::pdf::PdfExportOptions,
+    ) -> Result<Vec<u8>, HwpError> {
+        if page_nums.is_empty() {
+            return Err(HwpError::RenderError(
+                "PDF export requires at least one page".to_string(),
+            ));
+        }
+
+        let mut svg_pages = Vec::with_capacity(page_nums.len());
+        for &page_num in page_nums {
+            svg_pages.push(self.render_page_svg_layer_with_profile_native(page_num, profile)?);
         }
         crate::renderer::pdf::svgs_to_pdf_with_options(&svg_pages, options)
             .map_err(HwpError::RenderError)
@@ -759,6 +789,15 @@ impl DocumentCore {
         page_num: u32,
         mode: &str,
     ) -> Result<String, HwpError> {
+        self.get_canvaskit_replay_plan_with_profile_native(page_num, mode, RenderProfile::Screen)
+    }
+
+    pub fn get_canvaskit_replay_plan_with_profile_native(
+        &self,
+        page_num: u32,
+        mode: &str,
+        profile: RenderProfile,
+    ) -> Result<String, HwpError> {
         use crate::renderer::canvaskit_policy::{
             analyze_canvaskit_replay_plan, CanvasKitReplayMode,
         };
@@ -768,7 +807,7 @@ impl DocumentCore {
                 "지원하지 않는 CanvasKit replay mode입니다: {mode}. allowed modes: default, compat"
             ))
         })?;
-        let tree = self.build_page_layer_tree(page_num)?;
+        let tree = self.build_page_layer_tree_with_profile(page_num, profile)?;
         let plan = analyze_canvaskit_replay_plan(&tree, mode);
         serde_json::to_string(&plan).map_err(|error| {
             HwpError::RenderError(format!(
@@ -811,10 +850,24 @@ impl DocumentCore {
         page_num: u32,
         options: &PngExportOptions,
     ) -> Result<Vec<u8>, HwpError> {
+        self.render_page_png_native_with_profile_and_export_options(
+            page_num,
+            RenderProfile::Screen,
+            options,
+        )
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-skia"))]
+    pub fn render_page_png_native_with_profile_and_export_options(
+        &self,
+        page_num: u32,
+        profile: RenderProfile,
+        options: &PngExportOptions,
+    ) -> Result<Vec<u8>, HwpError> {
         use crate::renderer::layer_renderer::{LayerRasterRenderer, RasterRenderOptions};
         use crate::renderer::skia::SkiaLayerRenderer;
 
-        let layer_tree = self.build_page_layer_tree(page_num)?;
+        let layer_tree = self.build_page_layer_tree_with_profile(page_num, profile)?;
 
         // 페이지 크기에서 effective scale + max_dimension 결정
         let mut raster_options = RasterRenderOptions::default();

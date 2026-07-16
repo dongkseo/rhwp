@@ -80,6 +80,9 @@ fn print_help() {
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!(
+        "      --profile <프로필>      layer 출력 프로필: screen|print|high-quality|fast-preview"
+    );
     println!("      --show-para-marks       문단부호(↵/↓) 표시");
     println!("      --show-control-codes    조판부호 보이기 (문단부호 + 개체 마커 등)");
     println!("      --debug-overlay         디버그 오버레이 (문단/표 경계 + 인덱스 라벨)");
@@ -111,6 +114,9 @@ fn print_help() {
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!(
+        "      --profile <프로필>      출력 프로필: screen|print|high-quality|fast-preview (기본: high-quality)"
+    );
     println!("      --font-path <경로>      폰트 파일 탐색 경로 (여러 번 지정 가능)");
     println!("                              한컴 전용 폰트 (HY견명조 등) 가 시스템에 없을 때 ttfs 디렉토리 지정");
     println!("      --scale <배율>          렌더링 배율 (기본: 1.0)");
@@ -147,6 +153,9 @@ fn print_help() {
     println!();
     println!("      -o, --output <파일>      출력 PDF 파일 (기본: output/<입력명>.pdf)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!(
+        "      --profile <프로필>      layer 출력 프로필: screen|print|high-quality|fast-preview"
+    );
     println!("      --font-path <경로>      폰트 파일 탐색 경로 (여러 번 지정 가능)");
     println!("      --fallback-serif <명>   PDF serif generic fallback family");
     println!("      --fallback-sans <명>    PDF sans-serif generic fallback family");
@@ -304,6 +313,7 @@ fn export_svg(args: &[String]) {
     let mut respect_vpos_reset = false;
     let mut font_embed_mode = rhwp::renderer::svg::FontEmbedMode::None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut render_profile: Option<rhwp::paint::RenderProfile> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -329,6 +339,21 @@ fn export_svg(args: &[String]) {
                     i += 2;
                 } else {
                     eprintln!("오류: --page 뒤에 페이지 번호가 필요합니다.");
+                    return;
+                }
+            }
+            "--profile" => {
+                if i + 1 < args.len() {
+                    render_profile = rhwp::paint::RenderProfile::parse(&args[i + 1]);
+                    if render_profile.is_none() {
+                        eprintln!(
+                            "오류: --profile 값이 올바르지 않습니다 (screen|print|high-quality|fast-preview)."
+                        );
+                        return;
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("오류: --profile 뒤에 프로필 이름이 필요합니다.");
                     return;
                 }
             }
@@ -425,6 +450,11 @@ fn export_svg(args: &[String]) {
         }
     }
 
+    if render_profile.is_some() && font_embed_mode != rhwp::renderer::svg::FontEmbedMode::None {
+        eprintln!("오류: --profile은 --font-style/--embed-fonts와 함께 사용할 수 없습니다.");
+        return;
+    }
+
     // 파일 읽기
     let data = match fs::read(file_path) {
         Ok(d) => d,
@@ -503,7 +533,9 @@ fn export_svg(args: &[String]) {
         .unwrap_or("page");
 
     for page_num in &pages {
-        let svg_result = if font_embed_mode != rhwp::renderer::svg::FontEmbedMode::None {
+        let svg_result = if let Some(profile) = render_profile {
+            doc.render_page_svg_layer_with_profile_native(*page_num, profile)
+        } else if font_embed_mode != rhwp::renderer::svg::FontEmbedMode::None {
             doc.render_page_svg_with_fonts(*page_num, font_embed_mode, &font_paths)
         } else {
             doc.render_page_svg_native(*page_num)
@@ -938,6 +970,8 @@ fn export_png(args: &[String]) {
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
     let mut dpi: Option<f64> = None;
+    // PNG export is print-equivalent output. Editor visuals require an explicit screen profile.
+    let mut render_profile = rhwp::paint::RenderProfile::HighQuality;
 
     let mut i = 1;
     while i < args.len() {
@@ -963,6 +997,21 @@ fn export_png(args: &[String]) {
                     i += 2;
                 } else {
                     eprintln!("오류: --page 뒤에 페이지 번호가 필요합니다.");
+                    return;
+                }
+            }
+            "--profile" => {
+                if i + 1 < args.len() {
+                    let Some(profile) = rhwp::paint::RenderProfile::parse(&args[i + 1]) else {
+                        eprintln!(
+                            "오류: --profile 값이 올바르지 않습니다 (screen|print|high-quality|fast-preview)."
+                        );
+                        return;
+                    };
+                    render_profile = profile;
+                    i += 2;
+                } else {
+                    eprintln!("오류: --profile 뒤에 프로필 이름이 필요합니다.");
                     return;
                 }
             }
@@ -1112,9 +1161,14 @@ fn export_png(args: &[String]) {
         let has_options = png_options.scale.is_some()
             || png_options.max_dimension.is_some()
             || png_options.vlm_target.is_some()
-            || png_options.dpi.is_some();
+            || png_options.dpi.is_some()
+            || render_profile != rhwp::paint::RenderProfile::Screen;
         let result = if has_options {
-            core.render_page_png_native_with_export_options(*page_num, &png_options)
+            core.render_page_png_native_with_profile_and_export_options(
+                *page_num,
+                render_profile,
+                &png_options,
+            )
         } else if !font_paths.is_empty() {
             core.render_page_png_native_with_fonts(*page_num, &font_paths)
         } else {
@@ -1173,6 +1227,7 @@ fn export_pdf(args: &[String]) {
         let mut output_file = String::new();
         let mut target_page: Option<u32> = None;
         let mut pdf_options = rhwp::renderer::pdf::PdfExportOptions::default();
+        let mut render_profile: Option<rhwp::paint::RenderProfile> = None;
 
         let mut i = 1;
         while i < args.len() {
@@ -1198,6 +1253,21 @@ fn export_pdf(args: &[String]) {
                         i += 2;
                     } else {
                         eprintln!("오류: --page 뒤에 페이지 번호가 필요합니다.");
+                        return;
+                    }
+                }
+                "--profile" => {
+                    if i + 1 < args.len() {
+                        render_profile = rhwp::paint::RenderProfile::parse(&args[i + 1]);
+                        if render_profile.is_none() {
+                            eprintln!(
+                                "오류: --profile 값이 올바르지 않습니다 (screen|print|high-quality|fast-preview)."
+                            );
+                            return;
+                        }
+                        i += 2;
+                    } else {
+                        eprintln!("오류: --profile 뒤에 프로필 이름이 필요합니다.");
                         return;
                     }
                 }
@@ -1352,7 +1422,13 @@ fn export_pdf(args: &[String]) {
             None => (0..page_count).collect(),
         };
 
-        let pdf_bytes = match doc.render_pages_pdf_native_with_options(&pages, &pdf_options) {
+        let pdf_result = match render_profile {
+            Some(profile) => {
+                doc.render_pages_pdf_native_with_profile_and_options(&pages, profile, &pdf_options)
+            }
+            None => doc.render_pages_pdf_native_with_options(&pages, &pdf_options),
+        };
+        let pdf_bytes = match pdf_result {
             Ok(bytes) => bytes,
             Err(e) => {
                 eprintln!("오류: PDF 변환 실패 - {}", e);
@@ -1377,6 +1453,9 @@ fn print_export_pdf_usage() {
     eprintln!("사용법: rhwp export-pdf <파일.hwp|파일.hwpx|파일.hml> [옵션]");
     eprintln!("  -o, --output <파일>       출력 PDF 파일");
     eprintln!("  -p, --page <번호>        특정 페이지만 내보내기 (0부터 시작)");
+    eprintln!(
+        "      --profile <프로필>   layer 출력 프로필 (screen|print|high-quality|fast-preview)"
+    );
     eprintln!("      --font-path <경로>   폰트 파일 탐색 경로 (여러 번 지정 가능)");
     eprintln!("      --fallback-serif <명>");
     eprintln!("      --fallback-sans <명>");
