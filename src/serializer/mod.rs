@@ -12,6 +12,7 @@ pub mod header;
 pub mod hwpx;
 pub mod mini_cfb;
 pub mod record_writer;
+pub mod wmf_writer;
 
 pub use cfb_writer::serialize_hwp;
 pub use hwpx::serialize_hwpx;
