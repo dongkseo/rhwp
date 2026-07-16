@@ -1,5 +1,6 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile } from '@/core/types';
+import { layerPaintOpReplayPlane } from './canvaskit/replay-plane';
 import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
 import {
   collectFlowImagePaintOps,
@@ -1052,21 +1053,10 @@ function collectLayerPlaneSummary(
   }
 }
 
+// #2318: 로컬 중복 구현을 제거하고 공유 분류기(replay-plane.ts)로 통일 —
+// masterPage provenance cap 을 포함한 단일 진실 원천.
 function layerReplayPlane(op: any, layer: any): 'background' | 'behindText' | 'flow' | 'inFrontOfText' {
-  if (op?.type === 'pageBackground') {
-    return 'background';
-  }
-  if (layer?.textWrap === 'behindText') {
-    return 'behindText';
-  }
-  if (layer?.textWrap === 'inFrontOfText') {
-    return 'inFrontOfText';
-  }
-  if (op?.type === 'image') {
-    if (op.wrap === 'behindText') return 'behindText';
-    if (op.wrap === 'inFrontOfText') return 'inFrontOfText';
-  }
-  return 'flow';
+  return layerPaintOpReplayPlane(op, layer);
 }
 
 function applyFlowImageCrop(

@@ -224,6 +224,38 @@ test('CanvasKit replay plane helper lets LayerNode metadata override non-image o
   assert.equal(layerPaintOpReplayPlane(rect, front), 'inFrontOfText');
 });
 
+test('CanvasKit replay plane caps master-page layers at behindText (#2318)', () => {
+  // 한컴 의미론: 바탕쪽 개체의 textWrap 은 바탕쪽 내부 순서에만 적용되고
+  // 바탕쪽 전체는 본문 뒤에 깔린다. masterPage provenance 가 있으면
+  // front/flow 분류를 behindText 로 상한 고정한다 (rust cap_master_page_plane 동일 계약).
+  const bbox = { x: 0, y: 0, width: 10, height: 10 };
+  const rect: LayerPaintOp = { type: 'rectangle', bbox, style: { fillColor: '#ff0000' } };
+  const image: LayerPaintOp = { type: 'image', bbox, wrap: 'inFrontOfText' };
+  const pageBg: LayerPaintOp = { type: 'pageBackground', bbox };
+
+  const masterFront: LayerInfo = {
+    textWrap: 'inFrontOfText', zOrder: 1, stableIndex: 1, masterPage: true,
+  };
+  const masterPlain: LayerInfo = { textWrap: null, zOrder: 0, stableIndex: 0, masterPage: true };
+  const masterBehind: LayerInfo = {
+    textWrap: 'behindText', zOrder: 1, stableIndex: 1, masterPage: true,
+  };
+
+  // 바탕쪽 글상자(글 앞으로) → behindText 로 cap (shortcut.hwp 재현 형상)
+  assert.equal(renderLayerReplayPlane(masterFront), 'behindText');
+  assert.equal(layerPaintOpReplayPlane(rect, masterFront), 'behindText');
+  assert.equal(layerPaintOpReplayPlane(image, masterFront), 'behindText');
+  // 바탕쪽 텍스트(layer 상속, wrap 없음) → flow 가 아니라 behindText
+  assert.equal(layerPaintOpReplayPlane(rect, masterPlain), 'behindText');
+  // 이미 behindText 인 바탕쪽 개체는 그대로
+  assert.equal(renderLayerReplayPlane(masterBehind), 'behindText');
+  // pageBackground 는 cap 대상 아님
+  assert.equal(layerPaintOpReplayPlane(pageBg, masterFront), 'background');
+  // masterPage 미표시 layer 는 기존 분류 유지
+  const bodyFront: LayerInfo = { textWrap: 'inFrontOfText', zOrder: 1, stableIndex: 1 };
+  assert.equal(renderLayerReplayPlane(bodyFront), 'inFrontOfText');
+});
+
 test('CanvasKit renderer source replays the root once per replay plane', () => {
   const source = readFileSync(new URL('../src/view/canvaskit-renderer.ts', import.meta.url), 'utf8');
   assert.match(source, /for \(const replayPlane of CANVASKIT_REPLAY_PLANES\)/);
