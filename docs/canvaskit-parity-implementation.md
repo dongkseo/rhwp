@@ -160,7 +160,8 @@ negative cache, and the native `SkImage` cache is a bounded LRU that deletes
 evicted objects. `missingPicture` placeholders are editor visuals for screen
 profiles and are suppressed for print-equivalent profiles across layered SVG,
 Canvas2D, CanvasKit, and native Skia; OLE placeholders keep the existing static
-replay.
+replay. The `export-png` CLI defaults to the `high-quality` profile; callers
+must request `--profile screen` explicitly to include editor-only visuals.
 
 Equation ops now carry their bounded semantic `layoutBox` in the layer JSON.
 CanvasKit replays that tree directly, so a missing or malformed equation SVG

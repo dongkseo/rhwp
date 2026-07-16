@@ -114,7 +114,9 @@ fn print_help() {
     println!();
     println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
     println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
-    println!("      --profile <프로필>      출력 프로필: screen|print|high-quality|fast-preview");
+    println!(
+        "      --profile <프로필>      출력 프로필: screen|print|high-quality|fast-preview (기본: high-quality)"
+    );
     println!("      --font-path <경로>      폰트 파일 탐색 경로 (여러 번 지정 가능)");
     println!("                              한컴 전용 폰트 (HY견명조 등) 가 시스템에 없을 때 ttfs 디렉토리 지정");
     println!("      --scale <배율>          렌더링 배율 (기본: 1.0)");
@@ -968,7 +970,8 @@ fn export_png(args: &[String]) {
     let mut max_dimension: Option<i32> = None;
     let mut vlm_target: Option<VlmTarget> = None;
     let mut dpi: Option<f64> = None;
-    let mut render_profile = rhwp::paint::RenderProfile::Screen;
+    // PNG export is print-equivalent output. Editor visuals require an explicit screen profile.
+    let mut render_profile = rhwp::paint::RenderProfile::HighQuality;
 
     let mut i = 1;
     while i < args.len() {
