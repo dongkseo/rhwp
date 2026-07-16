@@ -32,6 +32,10 @@ const CFB_SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 struct DirEntry {
     name: String,
     obj_type: u8,
+    /// 개체 클래스 ID (16바이트). Root Entry 에만 의미가 있으며, OLE 개체는
+    /// 이 값으로 종류를 식별한다 — 비어 있으면 한컴은 정체 모를 OLE 로 보고
+    /// 미리보기만 그린다 (차트 편집 불가). 일반 .hwp 본체 CFB 에는 불필요.
+    clsid: [u8; 16],
     data: Vec<u8>,
     parent: usize,
     children: Vec<usize>,
@@ -47,6 +51,7 @@ impl DirEntry {
         DirEntry {
             name: name.to_string(),
             obj_type,
+            clsid: [0u8; 16],
             data: Vec::new(),
             parent,
             children: Vec::new(),
@@ -69,8 +74,23 @@ impl DirEntry {
 /// # 반환
 /// CFB v3 바이너리 바이트.
 pub fn build_cfb(named_streams: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+    build_cfb_with_clsid(named_streams, [0u8; 16])
+}
+
+/// `build_cfb` 에 Root Entry CLSID 를 지정한다.
+///
+/// OLE 개체(차트 등)의 내부 CFB 는 이 값으로 종류가 식별된다. 비워 두면
+/// 한컴이 개체를 인식하지 못해 미리보기 그림만 표시하고 편집이 되지 않는다.
+/// (실측: 한컴 차트 = `{4C3DA137-DC90-47B9-9BED-59DAE352A280}`)
+pub fn build_cfb_with_clsid(
+    named_streams: &[(&str, &[u8])],
+    root_clsid: [u8; 16],
+) -> Result<Vec<u8>, String> {
     // 1. 엔트리 목록 구축
     let mut entries = build_entries(named_streams);
+    if let Some(root) = entries.first_mut() {
+        root.clsid = root_clsid;
+    }
 
     // 2. 디렉토리 트리 구축
     build_tree(&mut entries, 0);
@@ -510,7 +530,8 @@ fn write_dir_entry(output: &mut [u8], offset: usize, entry: &DirEntry) {
     // Child
     buf[76..80].copy_from_slice(&entry.child.to_le_bytes());
 
-    // CLSID (16 bytes) — 이미 0
+    // CLSID (16 bytes) — OLE 개체 종류 식별자 (Root Entry 에만 의미)
+    buf[80..96].copy_from_slice(&entry.clsid);
     // State bits — 이미 0
 
     // Creation/Modified time (FILETIME, 8 bytes each)
