@@ -404,6 +404,11 @@ struct TypesetState {
     /// [Task #1082] 현재 단에서 마지막으로 배치된 본문 FullParagraph 의 bottom vpos (HU,
     /// 섹션 절대값). 미주 vpos-delta 누적의 첫 항목 base 시드용. 단 advance 시 None.
     prev_body_bottom_vpos: Option<i32>,
+    /// [#2279] 현재 단의 flow 과소 누계 (px) — 문단 place 시 flow_advance_height 가
+    /// spacing_after/trailing ls 를 트림한 차액(total_height − advance)의 합.
+    /// 렌더러(layout)와 한글은 이 성분을 가산하므로, footer(발신명의) fit 판정의
+    /// 렌더-정합 좌표 복원용. 단 advance 시 0.
+    flow_underrun: f64,
     /// 현재 단 인덱스
     current_column: u16,
     /// 단 수
@@ -1722,6 +1727,7 @@ impl TypesetState {
             current_start_height: 0.0,
             current_endnote_flow: false,
             prev_body_bottom_vpos: None,
+            flow_underrun: 0.0,
             current_column: 0,
             col_count,
             layout,
@@ -1891,6 +1897,8 @@ impl TypesetState {
         }
         // [Task #1082] 단 flush 시 본문 last bottom vpos 리셋(미주 vpos-delta 시드 정합).
         self.prev_body_bottom_vpos = None;
+        // [#2279] flow 과소 누계도 단 단위 — 리셋.
+        self.flow_underrun = 0.0;
     }
 
     /// [Task #1745] 흡수된 어울림 문단 기록 — 다쪽 분할 표는 첫 fragment column 에 소급.
@@ -10865,7 +10873,9 @@ impl TypesetEngine {
                 let inner = (cw - margin_l - margin_r).max(0.0);
                 if inner > 0.0 {
                     let mut cloned = c.clone();
-                    crate::renderer::composer::recompose_for_cell_width(
+                    // [#2279] 본문 NO_LS 는 글자모양 재분할 포함 래퍼 사용 —
+                    // paragraph_layout(렌더)와 동일 (측정/렌더 줄수·pitch 정합).
+                    crate::renderer::composer::recompose_for_body_width(
                         &mut cloned,
                         para,
                         inner,
@@ -11521,8 +11531,9 @@ impl TypesetEngine {
             //   - 다단 (col_count > 1): height_for_fit (exam_eng 8p 정상 단 채움 복원)
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
-            st.current_height +=
-                fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+            let advance = fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+            st.current_height += advance;
+            st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
             }
@@ -11569,8 +11580,10 @@ impl TypesetEngine {
                 st.current_items.push(PageItem::FullParagraph {
                     para_index: para_idx,
                 });
-                st.current_height +=
+                let advance =
                     fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+                st.current_height += advance;
+                st.flow_underrun += (fmt.total_height - advance).max(0.0);
                 if let Some(v) = body_bottom_vpos {
                     st.prev_body_bottom_vpos = Some(v);
                 }
@@ -11677,8 +11690,9 @@ impl TypesetEngine {
             //   - 다단 (col_count > 1): height_for_fit (exam_eng 8p 정상 단 채움 복원)
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
-            st.current_height +=
-                fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+            let advance = fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
+            st.current_height += advance;
+            st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
             }
@@ -14549,7 +14563,33 @@ impl TypesetEngine {
                 // 기지 한계). 부수 발견: 한글 자체가 fresh-open/warm-open 에 따라
                 // 같은 문서를 1쪽/2쪽으로 다르게 레이아웃(PDF 포함) — 권위 판정은
                 // warm PDF 로 통일(#2138 stage1).
-                let uncertain_anchor_margin = if anchor_vpos <= 0 { 62.0 } else { 0.0 };
+                // [#2279 성분②] 재구성 사다리의 host 줄박스 정합으로 본문 흐름
+                // 좌표가 om_bottom(~11.4px)만큼 전진 — 압축-사다리 좌표계 기준이던
+                // 62px 를 같은 폭만큼 하향(50). 코호트 재판정: 분할 정답 최대 슬랙
+                // 42.5(36395825) < 50 < 흡수 정답 최소 슬랙 56.4(36376848) 로
+                // 62 시절의 기지 한계(저슬랙 흡수 2건) 외 오분류 없음.
+                let uncertain_anchor_margin = if anchor_vpos <= 0 { 50.0 } else { 0.0 };
+                // [#2279 진단] footer 흡수/분할 판정 변수 분해 — 동작 불변.
+                // underrun = 이 단의 문단 place 가 트림한 (total_height − advance) 누계
+                // (렌더/한글 좌표와의 발산 중 문단-sa 성분; 표 place 성분은 미포함).
+                if std::env::var("RHWP_DIAG_SCAN").is_ok() {
+                    eprintln!(
+                        "DIAG_SCAN FOOTER pi={} anchor_vpos={} cur_h={:.2} target_y={:.2} sync_h={:.2} \
+                         block_h={:.2} v_off={:.2} avail={:.2} avail_after={:.2} slack_code={:.2} margin={:.1} underrun={:.2}",
+                        para_idx,
+                        anchor_vpos,
+                        st.current_height,
+                        target_y,
+                        sync_h,
+                        block_height,
+                        v_off,
+                        available,
+                        avail_after,
+                        avail_after - sync_h,
+                        uncertain_anchor_margin,
+                        st.flow_underrun,
+                    );
+                }
                 if sync_h + uncertain_anchor_margin <= avail_after {
                     // 현재 쪽 하단에 배치 — 본문 흐름은 vpos 동기 위치까지만 전진.
                     st.current_height = sync_h;
@@ -14705,12 +14745,18 @@ impl TypesetEngine {
                     saved_anchor_splits_here
                 );
             }
+            // [#2279 5축] 선언-이월의 저장 증거는 **host 문단 단위**(saved_span)로
+            // 판정한다. 종전 구역 전역 st.has_stored_line_segs 는 구역 내 다른
+            // 문단의 LS 만으로 no-LS host 의 RowBreak float 까지 통째 이월시켰다
+            // — 한글은 이 형상(86712 pi=30: 4×3 RowBreak, saved=None, 측정 비적합
+            // 980.8>971.3)을 행 분할해 현재 쪽에 머리 행들을 남긴다(p10/p11).
+            // 위 주석의 원 의도("LS 없는 계열은 측정 fit 일 때만 선언 이월")와 정합.
             if !st.current_items.is_empty()
                 && declared_overflows_current
                 && !saved_object_bottom_fits_current
                 && !saved_anchor_splits_here
                 && !single_row_object_declared_fits_current
-                && (st.has_stored_line_segs || measured_fits_current)
+                && (saved_span.is_some() || measured_fits_current)
                 && declared_total <= available
             {
                 st.advance_column_or_new_page();
