@@ -2639,11 +2639,16 @@ impl DocumentCore {
             section.raw_stream = None;
         }
 
+        // [Task #2299] 리셋 판별용 — reflow 이전 저장 흐름 end 캡처.
+        let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
+            &self.document.sections[section_idx].paragraphs[parent_para_idx],
+        );
         self.reflow_paragraph(section_idx, parent_para_idx);
         crate::renderer::composer::recalculate_section_vpos(
             &mut self.document.sections[section_idx].paragraphs,
             parent_para_idx,
             None,
+            stored_end_for_reset,
             &self.styles,
             self.dpi,
             self.document.is_hwp3_variant,

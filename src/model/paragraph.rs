@@ -990,8 +990,14 @@ impl Paragraph {
             ),
             _ => (400, 400, 320, 0, 0, LineSeg::TAG_SINGLE_SEGMENT_LINE),
         };
+        // [Task #2299] split_at 과 동일하게 호스트(self)의 원본 vertical_pos 를
+        // 유지한다 — 병합해도 문단 첫 줄 위치는 변하지 않으며, 0 placeholder 로
+        // 재생성하면 편집발 vpos 재계산이 이를 저장 단/쪽 리셋으로 오인해 병합
+        // 문단을 구역 상단 좌표에 동결시킨다 (밴드 내 range-delete 시 +1 팬텀 쪽).
+        let orig_vpos = orig_line_seg.as_ref().map(|o| o.vertical_pos).unwrap_or(0);
         self.line_segs = vec![LineSeg {
             text_start: 0,
+            vertical_pos: orig_vpos,
             line_height: lh,
             text_height: th,
             baseline_distance: bd,

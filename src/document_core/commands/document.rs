@@ -1046,6 +1046,7 @@ impl DocumentCore {
                     &mut section.paragraphs,
                     start,
                     None,
+                    None,
                     &self.styles,
                     self.dpi,
                     self.document.is_hwp3_variant,
