@@ -2128,6 +2128,7 @@ export class InputHandler {
     if (newPos) {
       this.prepareTextMutationBeforeCursor(IMMEDIATE_TEXT_MUTATION_EFFECTS);
       this.clearTableResizeRuntimeCache();
+      this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
       this.afterEdit();
     }
@@ -2141,8 +2142,28 @@ export class InputHandler {
         this.history.consumeLastExecutionEffects(),
       );
       this.clearTableResizeRuntimeCache();
+      this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
       this.afterEdit(!boundaryHandled);
+    }
+  }
+
+  /**
+   * [Task #2303] undo/redo 는 문단 컨트롤 구성을 되돌릴 수 있으므로, 위치 기반
+   * 개체/표 선택 ref({sec, ppi, ci})가 실제 컨트롤과 어긋난 채 남을 수 있다(stale).
+   * 이후 개체 속성 등 ref 를 신뢰하는 커맨드가 WASM 예외로 실패하므로
+   * (예: "지정된 컨트롤이 그림이 아닙니다"), 히스토리 점프가 실제로 수행될 때
+   * 개체/표 선택 모드를 해제한다. 비선택 상태에서는 no-op.
+   */
+  private exitObjectSelectionAfterHistoryJump(): void {
+    if (this.cursor.isInPictureObjectSelection()) {
+      this.cursor.exitPictureObjectSelection();
+      this.pictureObjectRenderer?.clear();
+      this.eventBus.emit('picture-object-selection-changed', false);
+    }
+    if (this.cursor.isInTableObjectSelection()) {
+      this.cursor.exitTableObjectSelection();
+      this.eventBus.emit('table-object-selection-changed', false);
     }
   }
 
