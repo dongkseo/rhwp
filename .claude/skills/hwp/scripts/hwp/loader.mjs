@@ -1,38 +1,60 @@
 // rhwp WASM 로더 — 모든 HWP 생성/편집 스크립트의 공통 진입점.
 //
-// pkg/ 는 `wasm-pack build --target web` 산출물이라 node 에서는 wasm 바이트를
+// rhwp WASM 은 `wasm-pack build --target web` 산출물이라 node 에서는 wasm 바이트를
 // 직접 주입해야 한다 (node 의 fetch 는 file:// 를 지원하지 않는다).
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const PKG = '@dongkseo/rhwp-core';
 
 let _mod = null;
 
-/** pkg/ 디렉터리를 찾는다: $RHWP_PKG → 스킬 위치에서 상위로 탐색 */
+/**
+ * glue(js) 와 wasm 바이트의 경로를 찾는다.
+ *   1. $RHWP_PKG — pkg/ 디렉터리를 직접 지정한 경우
+ *   2. 설치된 @dongkseo/rhwp-core — 보통 이 경로다
+ *   3. 상위 폴더의 pkg/ — rhwp 저장소 안에서 개발할 때
+ */
 function findPkg() {
-  if (process.env.RHWP_PKG) return resolve(process.env.RHWP_PKG);
+  if (process.env.RHWP_PKG) {
+    const p = resolve(process.env.RHWP_PKG);
+    if (!existsSync(join(p, 'rhwp.js'))) throw new Error(`RHWP_PKG=${p} 에 rhwp.js 가 없다.`);
+    return { js: join(p, 'rhwp.js'), wasm: join(p, 'rhwp_bg.wasm') };
+  }
+
+  // cwd 기준으로 찾아야 스킬 파일이 어디에 있든 소비자의 node_modules 를 본다.
+  const req = createRequire(join(process.cwd(), 'noop.js'));
+  try {
+    return { js: req.resolve(PKG), wasm: req.resolve(`${PKG}/wasm`) };
+  } catch { /* 미설치 — 아래로 */ }
+
+  // rhwp 저장소 안에서 개발 중일 때.
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 8; i++) {
     const p = join(dir, 'pkg');
-    if (existsSync(join(p, 'rhwp.js'))) return p;
+    if (existsSync(join(p, 'rhwp.js'))) return { js: join(p, 'rhwp.js'), wasm: join(p, 'rhwp_bg.wasm') };
     dir = dirname(dir);
   }
+
   throw new Error(
-    'pkg/ 를 찾을 수 없다. 저장소 루트에서 WASM 을 빌드하라:\n' +
-      '  cp .env.docker.example .env.docker   # 최초 1회 (내용 수정 금지 — UID/GID 는 1000 그대로)\n' +
-      '  docker compose --env-file .env.docker run --rm wasm\n' +
-      '또는 RHWP_PKG=/path/to/pkg 로 지정하라.'
+    `${PKG} 가 설치되어 있지 않다. 설치하라:\n\n` +
+      `  npm i github:dongkseo/rhwp\n\n` +
+      `차트를 만들 거라면 래스터라이저도 함께 설치한다:\n\n` +
+      `  npm i @resvg/resvg-js\n\n` +
+      `(설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.)`
   );
 }
 
 /** WASM 초기화 (프로세스당 1회). HwpDocument 클래스를 반환한다. */
 export async function loadWasm() {
   if (_mod) return _mod;
-  const pkg = findPkg();
-  const glue = await import(pathToFileURL(join(pkg, 'rhwp.js')).href);
-  await glue.default({ module_or_path: readFileSync(join(pkg, 'rhwp_bg.wasm')) });
+  const { js, wasm } = findPkg();
+  const glue = await import(pathToFileURL(js).href);
+  await glue.default({ module_or_path: readFileSync(wasm) });
   _mod = glue;
   return glue;
 }
