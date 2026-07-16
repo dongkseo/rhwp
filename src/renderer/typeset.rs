@@ -3031,6 +3031,9 @@ impl TypesetEngine {
             }
             // 표 컨트롤 감지
             let has_table = self.paragraph_has_table(para);
+            if std::env::var("RHWP_DIAG_FLOW").is_ok() {
+                eprintln!("DIAG_ROUTE pi={} has_table={}", para_idx, has_table);
+            }
 
             // [Task #702] 새 ColumnDef 검출. shortcut.hwp p2/p3 파일/미리보기/편집 등은
             // [쪽나누기]+단정의:1단 (header) → [단나누기]+단정의:2단 (content) 패턴 사용.
@@ -12453,6 +12456,12 @@ impl TypesetEngine {
                 st.vpos_col_anchor,
             );
         }
+        // [#2322] 자리차지 float(양수 v_off) 표가 만든 배타 영역을 표 문단 경로도
+        // 소비한다 — 종전에는 텍스트 경로(typeset_paragraph)만 소비해, 후속 표
+        // 문단의 블록 표 fit 이 존 위에 겹쳐 배치됐다 (19439117: 870px 서식 표
+        // 존 [31..902] 위에 866px 표가 y≈36 에 통배치 → 1쪽, 한글 2쪽).
+        st.apply_visible_float_exclusions(0.0);
+
         // 호스트 문단 format (TAC 표의 높이 보정용)
         let host_col_w = st
             .layout
@@ -13146,7 +13155,37 @@ impl TypesetEngine {
         // 새 페이지 상단부터" 라고 명시한 신호. fit 검사는 표 크기가 잔여 영역에
         // 들어가면 통과시키지만 명시 신호를 존중하려면 fit 이전에 advance.
         // 케이스: 2022년 국립국어원 업무계획.hwp pi=586 ci=1 (별첨 박스).
-        let intra_para_reset = ctrl_idx > 0
+        let tac_table_line_idx = self.tac_table_line_index(para, table, fmt);
+        let prior_tac = para
+            .controls
+            .iter()
+            .take(ctrl_idx)
+            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
+            .count();
+        let tac_seg_idx = if tac_count > 1 {
+            // [#2322] 텍스트-host 다중 TAC: 선행 텍스트 줄 수만큼 lineseg 매핑을
+            // 오프셋한다. 종전 count 기반 매핑은 제목 줄이 있는 문단에서 표1을
+            // 텍스트 줄(예: 16px)에 매핑해 851px 표가 16px 로 계상됐다 (20862337
+            // r15 재검증 −1 서식 계열). 빈-host 1:1 문서는 오프셋 0 으로 불변.
+            let leading_offset = para
+                .controls
+                .iter()
+                .find_map(|c| match c {
+                    Control::Table(t) if self.is_effective_tac_table(para, t, fmt) => Some(t),
+                    _ => None,
+                })
+                .and_then(|t| self.tac_table_line_index(para, t, fmt))
+                .unwrap_or(0);
+            leading_offset + prior_tac
+        } else {
+            tac_table_line_idx.unwrap_or(0)
+        };
+
+        // [Task #1152] 호스트 문단의 intra-paragraph vpos-reset 가드 —
+        // (a) 빈-host ctrl 1:1 매핑(원형), (b) [#2322] 텍스트-host 포함 일반형:
+        // 표의 매핑 lineseg(tac_seg_idx>0)가 저장 vpos==0 이면 "이 표를 새 쪽
+        // 상단부터"라는 명시 신호다. fit 이전에 advance 로 존중한다.
+        let ctrl_reset = ctrl_idx > 0
             && para.text.is_empty()
             && para.line_segs.len() == para.controls.len()
             && para
@@ -13155,25 +13194,22 @@ impl TypesetEngine {
                 .map(|s| s.vertical_pos)
                 .unwrap_or(-1)
                 == 0;
+        let seg_reset = tac_seg_idx > 0
+            && para
+                .line_segs
+                .get(tac_seg_idx)
+                .filter(|s| !is_synthetic_line_seg(s))
+                .map(|s| s.vertical_pos)
+                == Some(0);
+        let intra_para_reset = ctrl_reset || seg_reset;
         if intra_para_reset && !st.current_items.is_empty() {
             st.advance_column_or_new_page();
         }
-
-        let tac_table_line_idx = self.tac_table_line_index(para, table, fmt);
-        let tac_seg_idx = if tac_count > 1 {
-            para.controls
-                .iter()
-                .take(ctrl_idx)
-                .filter(
-                    |c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)),
-                )
-                .count()
-        } else {
-            tac_table_line_idx.unwrap_or(0)
-        };
         // 다중 TAC 표: LINE_SEG 기반 개별 높이 계산
         let table_height = if tac_count > 1 {
-            let is_last_tac = tac_seg_idx + 1 == tac_count;
+            // [#2322] 마지막 TAC 판정은 개수 기반(prior_tac) — tac_seg_idx 는
+            // 선행 텍스트 줄 오프셋을 포함하므로 count 비교에 쓰지 않는다.
+            let is_last_tac = prior_tac + 1 == tac_count;
             para.line_segs
                 .get(tac_seg_idx)
                 .map(|seg| {
@@ -13197,12 +13233,12 @@ impl TypesetEngine {
             // 분리된 문서에서, 표 자체는 남은 영역에 들어가는데도 spacing 때문에
             // 표가 다음 페이지로 밀린다(2025 donations HWPX pi=25).
             fmt.line_heights[0]
-        } else if intra_para_reset && ctrl_idx < fmt.line_heights.len() {
+        } else if intra_para_reset && tac_seg_idx < fmt.line_heights.len() {
             // [#2311] intra-para reset(저장 vpos==0)으로 새 쪽에 온 표는 자신의
-            // 줄(ctrl 1:1 lineseg)부터만 계상한다. 문단 전체 height_for_fit 을
+            // 줄(매핑 lineseg)부터만 계상한다. 문단 전체 height_for_fit 을
             // 쓰면 이전 쪽에 남은 선행 줄(전면 tac 그림 등)의 높이가 새 쪽에
             // 유령 계상되어 후속 문단을 한 쪽 더 밀어낸다 (156744475 4쪽→3쪽).
-            (ctrl_idx..fmt.line_heights.len())
+            (tac_seg_idx..fmt.line_heights.len())
                 .map(|li| fmt.line_advance(li))
                 .sum::<f64>()
         } else if fmt.total_height > 0.0 {

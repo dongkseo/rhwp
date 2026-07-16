@@ -79,6 +79,27 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
         return true;
     }
 
+    // [#2322] 저장 LINE_SEG 가 이 표를 자기 줄(후행 줄, 높이 = 표높이+outer 여백)
+    // 로 인코딩한 **전면급(≥30000HU≈417px)** 표는 인라인이 아니다 — 텍스트-host
+    // 전면 서식 표(예: 20862337 851px/866px TAC 표 2장)가 폭 기준으로 인라인
+    // 오판되어 텍스트 경로에서 문단 전체가 한 줄(1789px)로 합성, 쪽 분할이
+    // 불가능해지던 결함. 소형 TAC 표는 높이 우연 일치로 오발동할 수 있어
+    // (sample16 pi=394 30px 1×1 표 — 64쪽 핀 회귀) 전면급으로 한정한다.
+    const FULL_PAGE_SCALE_TABLE_HU: i64 = 30_000;
+    let tbl_line_h = table.common.height as i64
+        + table.outer_margin_top as i64
+        + table.outer_margin_bottom as i64;
+    let own_line_evidence = tbl_line_h >= FULL_PAGE_SCALE_TABLE_HU
+        && para.line_segs.len() >= 2
+        && para
+            .line_segs
+            .iter()
+            .skip(1)
+            .any(|ls| (ls.line_height as i64 - tbl_line_h).abs() <= 75);
+    if own_line_evidence {
+        return false;
+    }
+
     is_tac_table_inline(table, seg_width, &para.text, &para.controls)
 }
 
