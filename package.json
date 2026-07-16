@@ -1,0 +1,51 @@
+{
+  "name": "@dongkseo/rhwp-core",
+  "version": "0.7.18",
+  "description": "HWP/HWPX 파서·렌더러·편집기 (Rust + WebAssembly) — edwardkim/rhwp 포크. 차트 생성 API 추가.",
+  "type": "module",
+  "main": "pkg/rhwp.js",
+  "types": "pkg/rhwp.d.ts",
+  "files": [
+    "pkg/rhwp.js",
+    "pkg/rhwp.d.ts",
+    "pkg/rhwp_bg.wasm",
+    "pkg/rhwp_bg.wasm.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./pkg/rhwp.d.ts",
+      "default": "./pkg/rhwp.js"
+    },
+    "./wasm": "./pkg/rhwp_bg.wasm"
+  },
+  "keywords": [
+    "hwp",
+    "hwpx",
+    "hancom",
+    "hangul",
+    "한글",
+    "document",
+    "parser",
+    "renderer",
+    "chart",
+    "wasm",
+    "webassembly",
+    "rust"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dongkseo/rhwp.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  },
+  "sideEffects": [
+    "./pkg/rhwp.js"
+  ]
+}
