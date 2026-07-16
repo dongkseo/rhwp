@@ -1627,6 +1627,29 @@ impl LayoutEngine {
                     if rowspan_touched && su.is_empty() && eu.is_empty() && !has_single_row_cells {
                         continue;
                     }
+                    // [#2287 후속/1.hwpx p14] 컷 없는(whole-row) **순수 텍스트**
+                    // 행은 재계산하지 않는다 — resolve_row_heights 가
+                    // mt.row_heights(= typeset 조각 소비와 동일 측정 공간)를 이미
+                    // 반영했는데, row_cut_content_height(whole-row)로 덮으면
+                    // content(ls 계상 규칙 상이)가 선언 셀높이보다 커지는 행에서
+                    // 렌더만 부풀어(85×3 표 41행 × +4.0px = +152px) typeset 소비
+                    // 밖으로 조각 꼬리가 밀린다 — p14 QUR-001~005 행이 page frame
+                    // 밖(y 1058~1164)으로 사라진 결함. 중첩 표 포함 행은 반대로
+                    // mt 가 중첩 높이를 과소 계상해 재계산이 행 겹침을 막고
+                    // 있으므로(rowbreak-problem-pages p7 pi=21 r2, 기존 회귀
+                    // 테스트) 종전 재계산을 유지한다.
+                    if su.is_empty() && eu.is_empty() && measured_table.is_some() {
+                        let row_has_nested = table.cells.iter().any(|c| {
+                            c.row as usize == r
+                                && c.row_span == 1
+                                && c.paragraphs.iter().any(|p| {
+                                    p.controls.iter().any(|ct| matches!(ct, Control::Table(_)))
+                                })
+                        });
+                        if !row_has_nested {
+                            continue;
+                        }
+                    }
                     let h = self.row_cut_content_height(table, r, su, eu, styles);
                     if h > 0.0 {
                         row_heights[r] = h;
