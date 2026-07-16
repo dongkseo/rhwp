@@ -13,6 +13,11 @@
 //! 안 보이고, XML 을 바꿔도 화면은 그대로). rhwp 는 반대로 XML 만 본다. 따라서
 //! 둘 다 같은 데이터에서 만들어야 화면이 일치한다.
 //!
+//! **여기서는 생 CFB 만 만든다.** deflate 압축과 4바이트 길이 프리픽스는
+//! `cfb_writer` 가 붙인다 (`BinDataType::Storage` + CFB 매직으로 시작하는 데이터를
+//! OLE Storage 로 인식해 프리픽스를 복원한다 — 파서가 `drain(..4)` 로 떼어낸 것을
+//! 되돌리는 계약). 여기서 미리 압축하면 매직이 가려져 그 인식이 실패한다.
+//!
 //! `Contents`(레거시) 는 넣지 않는다. 뷰어 표시에는 불필요함을 확인했으나,
 //! 한컴에서 차트로 편집 가능한지는 미검증이다 — 그림처럼 박힐 수 있다.
 
@@ -23,24 +28,11 @@ use super::wmf_writer::{ole_presentation_stream, wmf_from_rgba};
 /// 조립된 차트 OLE.
 #[derive(Debug)]
 pub struct ChartOle {
-    /// `BinData/BINxxxx.OLE` 에 넣을 최종 바이트 (deflate 압축됨)
-    pub bin_data: Vec<u8>,
-    /// 압축 전 크기 (디버깅용)
-    pub raw_len: usize,
+    /// `BinDataContent.data` 에 넣을 **생 CFB** (압축·프리픽스 없음 — cfb_writer 가 붙인다)
+    pub cfb: Vec<u8>,
 }
 
-/// raw deflate (wbits=-15) — HWP BinData 규약.
-fn deflate(data: &[u8]) -> Result<Vec<u8>, String> {
-    use flate2::write::DeflateEncoder;
-    use flate2::Compression;
-    use std::io::Write;
-
-    let mut enc = DeflateEncoder::new(Vec::new(), Compression::best());
-    enc.write_all(data).map_err(|e| e.to_string())?;
-    enc.finish().map_err(|e| e.to_string())
-}
-
-/// 차트 사양 + 미리보기 픽셀 → BinData OLE 바이트.
+/// 차트 사양 + 미리보기 픽셀 → 생 CFB (`BinDataContent.data` 용).
 ///
 /// `rgba`: 미리보기 이미지 (위→아래 행 순서, 4바이트/픽셀).
 /// `extent_hu`: OLE 개체 영역 (HWPUNIT). 미리보기 스트림 헤더에 기록된다.
@@ -68,16 +60,7 @@ pub fn build_chart_ole(
     // 스트림 순서는 실물(묶은세로막대형.hwp)과 같게 둔다.
     let cfb = build_cfb(&[("\u{2}OlePres000", &pres), ("OOXMLChartContents", &xml)])?;
 
-    // 실물 규약: CFB 앞에 4바이트 길이 프리픽스가 붙는다 (실측 prefix=002e0400).
-    let mut raw = Vec::with_capacity(4 + cfb.len());
-    raw.extend_from_slice(&(cfb.len() as u32).to_le_bytes());
-    raw.extend_from_slice(&cfb);
-    let raw_len = raw.len();
-
-    Ok(ChartOle {
-        bin_data: deflate(&raw)?,
-        raw_len,
-    })
+    Ok(ChartOle { cfb })
 }
 
 #[cfg(test)]
@@ -103,38 +86,23 @@ mod tests {
     }
 
     #[test]
-    fn assembles_and_deflates() {
+    fn produces_bare_cfb_for_serializer_contract() {
         let ole = build_chart_ole(&spec(), &rgba(32, 24), 32, 24, 20000, 12000).unwrap();
-        assert!(!ole.bin_data.is_empty());
-        assert!(
-            ole.bin_data.len() < ole.raw_len,
-            "압축이 되어야 한다: {} → {}",
-            ole.raw_len,
-            ole.bin_data.len()
+        // cfb_writer 는 CFB 매직으로 시작하는 데이터만 OLE Storage 로 인식한다.
+        assert_eq!(
+            &ole.cfb[..8],
+            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
+            "생 CFB 로 시작해야 직렬화기가 OLE 로 인식한다 (압축·프리픽스 금지)"
         );
     }
 
-    /// 실물과 같은 방식으로 되읽을 수 있는가: inflate → 4B 건너뛰기 → CFB 시그니처.
     #[test]
-    fn inflates_back_to_cfb_with_length_prefix() {
+    fn cfb_carries_both_streams() {
         let ole = build_chart_ole(&spec(), &rgba(16, 16), 16, 16, 20000, 12000).unwrap();
-
-        let mut dec = flate2::read::DeflateDecoder::new(&ole.bin_data[..]);
-        let mut raw = Vec::new();
-        std::io::Read::read_to_end(&mut dec, &mut raw).expect("raw deflate 로 풀려야 한다");
-        assert_eq!(raw.len(), ole.raw_len);
-
-        let declared = u32::from_le_bytes(raw[..4].try_into().unwrap()) as usize;
-        assert_eq!(
-            declared,
-            raw.len() - 4,
-            "길이 프리픽스가 CFB 크기와 맞아야 한다"
-        );
-        assert_eq!(
-            &raw[4..12],
-            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
-            "프리픽스 뒤는 CFB 시그니처"
-        );
+        let s = String::from_utf8_lossy(&ole.cfb);
+        assert!(s.contains("c:chartSpace"), "XML 이 들어있어야 한다");
+        assert!(s.contains("1분기"), "카테고리");
+        assert!(s.contains("매출액"), "계열명");
     }
 
     #[test]
