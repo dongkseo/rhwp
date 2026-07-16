@@ -866,7 +866,10 @@ impl DocumentCore {
         let dpi = self.dpi;
         let mut reflowed = 0usize;
 
-        for section in &mut self.document.sections {
+        // 단 전환 판별에 쓴다. 아래 루프가 self.document 를 빌리므로 미리 떠 둔다.
+        let col_maps = self.para_column_map.clone();
+
+        for (section_idx, section) in self.document.sections.iter_mut().enumerate() {
             let page_def = &section.section_def.page_def;
             let column_def = Self::find_initial_column_def(&section.paragraphs);
             let layout = PageLayoutInfo::from_page_def(page_def, &column_def, dpi);
@@ -918,7 +921,12 @@ impl DocumentCore {
             // 의 vpos 연속성이 깨짐. paginator 의 vpos_h 기반 current_height 조정이
             // 잘못된 값으로 적용되어 페이지가 과다 분할되는 회귀의 원인.
             if let Some(start) = min_reflowed_idx {
-                crate::renderer::composer::recalculate_section_vpos(&mut section.paragraphs, start);
+                let col_map: &[u16] = col_maps.get(section_idx).map_or(&[], |v| v.as_slice());
+                crate::renderer::composer::recalculate_section_vpos(
+                    &mut section.paragraphs,
+                    start,
+                    col_map,
+                );
             }
         }
 

@@ -2640,10 +2640,7 @@ impl DocumentCore {
         }
 
         self.reflow_paragraph(section_idx, parent_para_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            parent_para_idx,
-        );
+        self.recalc_section_vpos(section_idx, parent_para_idx);
         self.recompose_section(section_idx);
         self.paginate_if_needed();
 

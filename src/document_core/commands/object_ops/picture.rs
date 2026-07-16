@@ -544,10 +544,7 @@ impl DocumentCore {
         }
         if reflow_text_para_after_floating {
             self.reflow_paragraph(section_idx, parent_para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                parent_para_idx,
-            );
+            self.recalc_section_vpos(section_idx, parent_para_idx);
         }
         // 캡션 생성/삭제 시 AutoNumber 재할당. 생성 path 는 문단 placeholder 도 보강한다.
         if caption_created || caption_removed {

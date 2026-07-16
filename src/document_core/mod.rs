@@ -159,6 +159,30 @@ pub struct ActiveFieldInfo {
 }
 
 impl DocumentCore {
+    /// 구역의 문단→단 인덱스 대응표 (진단/테스트용).
+    pub fn para_column_map_for_test(&self, section_idx: usize) -> Vec<u16> {
+        self.para_column_map
+            .get(section_idx)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 구역 문단들의 vpos를 재계산한다 (단 전환 정보 포함).
+    ///
+    /// `recalculate_section_vpos` 를 직접 부르지 말고 이걸 써라 — 단 전환 판별에 필요한
+    /// `para_column_map` 을 함께 넘긴다. 빠뜨리면 다단 문서 편집 시 단-밴드가 소멸한다.
+    pub(crate) fn recalc_section_vpos(&mut self, section_idx: usize, start_para: usize) {
+        let col_map: &[u16] = self
+            .para_column_map
+            .get(section_idx)
+            .map_or(&[], |v| v.as_slice());
+        crate::renderer::composer::recalculate_section_vpos(
+            &mut self.document.sections[section_idx].paragraphs,
+            start_para,
+            col_map,
+        );
+    }
+
     /// 총 페이지 수를 반환한다.
     pub fn page_count(&self) -> u32 {
         self.pagination

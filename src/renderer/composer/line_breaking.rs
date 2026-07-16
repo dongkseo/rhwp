@@ -1267,21 +1267,50 @@ pub(crate) fn reflow_line_segs(
 ///
 /// `start_para`부터 구역 끝까지 각 문단의 vpos를 이전 문단의 vpos_end 기준으로 재계산.
 /// 표 등 특수 문단의 line_height는 보존하고 vpos만 갱신한다.
-pub(crate) fn recalculate_section_vpos(paragraphs: &mut [Paragraph], start_para: usize) {
+///
+/// `col_map[para_idx] = 단 인덱스` (직전 페이지네이션 결과). 비어 있으면 단 전환은 없는
+/// 것으로 본다.
+///
+/// ## 왜 단순 누적으로는 안 되는가
+///
+/// 다단 문서에서 다음 단 첫 문단의 저장 vpos는 단 상단으로 되돌아간다. 이를 선형 누적으로
+/// 뭉개면 단-밴드가 소멸해 1단으로 펴지고 쪽수가 늘어난다 (#2299). 그 지점에서는 누적 좌표
+/// 대신 저장값을 그대로 살려야 한다.
+///
+/// ## 왜 vpos로 그 지점을 찾으면 안 되는가
+///
+/// vpos만 보면 "급감" 이나 "직전과 동일" 이 리셋 신호처럼 보인다. 그러나 편집된 문서에는
+/// 낡은 vpos가 널려 있고 (문단 분할 직후 여러 문단이 vpos=0을 지닌다), 그것들이 진짜 단
+/// 전환과 **좌표상 구분되지 않는다**. 낡은 값까지 리셋으로 잡으면 아래로 밀려야 할 문단이
+/// 제자리에 못 박혀, 줄간격을 키워도 쪽이 늘지 않는다.
+///
+/// 그래서 좌표를 추측하지 않고 구조를 본다. shortcut.hwp 실측 — 리셋 지점 전부가 아래 두
+/// 신호 중 하나로 표시되고, 평범한 문단은 둘 다 없다:
+///
+/// | 문단 | col | cs | 신호 |
+/// |---|---|---|---|
+/// | 2 | 0 | 2000 | cs 변경 (전폭 cs=0 → 2단 존 cs=2000) |
+/// | 3~15 | 0 | 2000 | 없음 → 누적 |
+/// | 16 | **1** | 2000 | col 변경 (좌 → 우 단) |
+pub(crate) fn recalculate_section_vpos(
+    paragraphs: &mut [Paragraph],
+    start_para: usize,
+    col_map: &[u16],
+) {
     if paragraphs.is_empty() || start_para >= paragraphs.len() {
         return;
     }
 
-    // 저장된 원본 vpos 스냅샷 — 다단/쪽 리셋 신호(vpos 급감) 판별용.
-    // 아래 루프가 vpos를 덮어쓰므로 미리 떠 둔다.
-    //
-    // 다단 문서에서 다음 단 첫 문단의 저장 vpos는 단 상단으로 되돌아간다(급감).
-    // 이를 선형 누적으로 뭉개면 다단이 1단으로 펴져 쪽수가 배로 늘어난다.
-    // (#2158과 동일 기제 — 그쪽은 로딩 시 reflow, 이쪽은 편집 시 재계산)
-    let orig_start: Vec<Option<i32>> = paragraphs
-        .iter()
-        .map(|p| p.line_segs.first().map(|ls| ls.vertical_pos))
-        .collect();
+    // 문단의 단-밴드: (단 인덱스, column_start).
+    // 진짜 단/존 경계는 단 인덱스가 바뀌거나(좌→우 단) 단 시작 x가 바뀐다(전폭→다단 존).
+    // segment_width는 표 삭제 등에서 몇 HWPUNIT씩 미세하게 흔들려 오탐을 내므로 쓰지 않는다.
+    // 루프는 vertical_pos만 건드리므로 column_start는 그대로 읽어도 된다.
+    let band_of = |paragraphs: &[Paragraph], pi: usize| -> Option<(u16, i32)> {
+        paragraphs[pi]
+            .line_segs
+            .first()
+            .map(|ls| (col_map.get(pi).copied().unwrap_or(0), ls.column_start))
+    };
 
     // 시작 문단의 초기 vpos 결정
     let mut next_vpos = if start_para > 0 {
@@ -1301,31 +1330,24 @@ pub(crate) fn recalculate_section_vpos(paragraphs: &mut [Paragraph], start_para:
             .unwrap_or(0)
     };
 
-    // 직전 문단의 "저장된" 시작 vpos (리셋 급감 판별 기준)
-    let mut prev_orig: Option<i32> = if start_para > 0 {
-        orig_start[..start_para].iter().rev().find_map(|x| *x)
-    } else {
-        None
-    };
+    // 직전 문단의 밴드 (경계 판별 기준)
+    let mut prev_band: Option<(u16, i32)> =
+        (0..start_para).rev().find_map(|i| band_of(paragraphs, i));
 
     for pi in start_para..paragraphs.len() {
-        let para = &mut paragraphs[pi];
-        if para.line_segs.is_empty() {
+        let Some(current_band) = band_of(paragraphs, pi) else {
             continue;
-        }
+        };
+        let para = &mut paragraphs[pi];
 
-        // 현재 문단의 vpos 시작값과의 차이 계산
+        // 현재 문단의 vpos 시작값 (아직 이번 루프가 건드리지 않은 저장값)
         let current_start = para.line_segs[0].vertical_pos;
 
-        // 리셋 신호 보존: 저장 vpos가 직전 문단보다 앞서지 못하면 단/쪽 경계다.
-        // (다음 단 첫 문단은 단-밴드 상단 = 직전 문단과 동일 vpos 이므로 <= 로 잡는다)
-        // 누적 좌표로 밀어내지 말고 저장값을 그대로 살린다.
-        if let Some(prev) = prev_orig {
-            if current_start <= prev {
-                next_vpos = current_start;
-            }
+        // 밴드가 바뀌면 새 단/존의 상단이다 — 누적 좌표로 밀어내지 말고 저장값을 살린다.
+        if prev_band.is_some_and(|prev| prev != current_band) {
+            next_vpos = current_start;
         }
-        prev_orig = Some(current_start);
+        prev_band = Some(current_band);
 
         let delta = next_vpos - current_start;
 

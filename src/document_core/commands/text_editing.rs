@@ -484,10 +484,7 @@ impl DocumentCore {
             .copied()
             .unwrap_or(0);
         self.reflow_paragraph(section_idx, para_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            para_idx,
-        );
+        self.recalc_section_vpos(section_idx, para_idx);
         self.recompose_paragraph(section_idx, para_idx);
         self.paginate_if_needed();
 
@@ -502,10 +499,7 @@ impl DocumentCore {
                 break;
             }
             self.reflow_paragraph(section_idx, para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                para_idx,
-            );
+            self.recalc_section_vpos(section_idx, para_idx);
             self.recompose_paragraph(section_idx, para_idx);
             self.paginate_if_needed();
         }
@@ -594,10 +588,7 @@ impl DocumentCore {
             .copied()
             .unwrap_or(0);
         self.reflow_paragraph(section_idx, para_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            para_idx,
-        );
+        self.recalc_section_vpos(section_idx, para_idx);
         self.recompose_paragraph(section_idx, para_idx);
         self.paginate_if_needed();
 
@@ -612,10 +603,7 @@ impl DocumentCore {
                 break;
             }
             self.reflow_paragraph(section_idx, para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                para_idx,
-            );
+            self.recalc_section_vpos(section_idx, para_idx);
             self.recompose_paragraph(section_idx, para_idx);
             self.paginate_if_needed();
         }
@@ -1255,10 +1243,7 @@ impl DocumentCore {
                     self.document.sections[section_idx].paragraphs[start_para]
                         .delete_text_at(start_offset, count);
                     self.reflow_paragraph(section_idx, start_para);
-                    crate::renderer::composer::recalculate_section_vpos(
-                        &mut self.document.sections[section_idx].paragraphs,
-                        start_para,
-                    );
+                    self.recalc_section_vpos(section_idx, start_para);
                 }
                 // 변경 문단만 재구성
                 self.recompose_paragraph(section_idx, start_para);
@@ -1295,10 +1280,7 @@ impl DocumentCore {
                     self.document.sections[section_idx].paragraphs[start_para].merge_from(&next);
                 }
                 self.reflow_paragraph(section_idx, start_para);
-                crate::renderer::composer::recalculate_section_vpos(
-                    &mut self.document.sections[section_idx].paragraphs,
-                    start_para,
-                );
+                self.recalc_section_vpos(section_idx, start_para);
                 // 병합된 문단 재구성
                 self.recompose_paragraph(section_idx, start_para);
             }
@@ -1429,10 +1411,7 @@ impl DocumentCore {
                 .copied()
                 .unwrap_or(0);
             self.reflow_paragraph(section_idx, new_para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                para_idx,
-            );
+            self.recalc_section_vpos(section_idx, para_idx);
             self.insert_composed_paragraph(section_idx, new_para_idx);
             self.paginate_if_needed();
 
@@ -1447,10 +1426,7 @@ impl DocumentCore {
                     break;
                 }
                 self.reflow_paragraph(section_idx, new_para_idx);
-                crate::renderer::composer::recalculate_section_vpos(
-                    &mut self.document.sections[section_idx].paragraphs,
-                    para_idx,
-                );
+                self.recalc_section_vpos(section_idx, para_idx);
                 self.recompose_paragraph(section_idx, new_para_idx);
                 self.paginate_if_needed();
             }
@@ -1495,10 +1471,7 @@ impl DocumentCore {
             if !keep_wrap_zone {
                 self.reflow_paragraph(section_idx, new_para_idx);
             }
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                para_idx,
-            );
+            self.recalc_section_vpos(section_idx, para_idx);
             self.insert_composed_paragraph(section_idx, new_para_idx);
             self.paginate_if_needed();
 
@@ -1543,10 +1516,7 @@ impl DocumentCore {
             .unwrap_or(0);
         self.reflow_paragraph(section_idx, para_idx);
         self.reflow_paragraph(section_idx, new_para_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            para_idx,
-        );
+        self.recalc_section_vpos(section_idx, para_idx);
         self.recompose_paragraph(section_idx, para_idx);
         self.insert_composed_paragraph(section_idx, new_para_idx);
         self.paginate_if_needed();
@@ -1563,10 +1533,7 @@ impl DocumentCore {
             }
             self.reflow_paragraph(section_idx, para_idx);
             self.reflow_paragraph(section_idx, new_para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                para_idx,
-            );
+            self.recalc_section_vpos(section_idx, para_idx);
             self.recompose_paragraph(section_idx, para_idx);
             self.recompose_paragraph(section_idx, new_para_idx);
             self.paginate_if_needed();
@@ -1634,10 +1601,7 @@ impl DocumentCore {
         self.reflow_paragraph(section_idx, new_para_idx);
 
         // 삽입 지점부터 구역 끝까지 vpos 재계산 (페이지 재배치에 필요)
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            new_para_idx,
-        );
+        self.recalc_section_vpos(section_idx, new_para_idx);
 
         // 전체 구역 재구성 + 재페이지네이션
         self.recompose_section(section_idx);
@@ -1698,10 +1662,7 @@ impl DocumentCore {
         self.reflow_paragraph(section_idx, para_idx);
         self.reflow_paragraph(section_idx, new_para_idx);
 
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            new_para_idx,
-        );
+        self.recalc_section_vpos(section_idx, new_para_idx);
 
         self.recompose_section(section_idx);
         self.paginate_if_needed();
@@ -1841,10 +1802,7 @@ impl DocumentCore {
             self.document.sections[section_idx].paragraphs[prev_idx].merge_from(&current_para);
 
         if preserve_square_ole_wrap_line {
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                prev_idx,
-            );
+            self.recalc_section_vpos(section_idx, prev_idx);
             self.remove_composed_paragraph(section_idx, para_idx);
             self.recompose_paragraph(section_idx, prev_idx);
             self.paginate_if_needed();
@@ -1867,10 +1825,7 @@ impl DocumentCore {
             .copied()
             .unwrap_or(0);
         self.reflow_paragraph(section_idx, prev_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            prev_idx,
-        );
+        self.recalc_section_vpos(section_idx, prev_idx);
         self.remove_composed_paragraph(section_idx, para_idx);
         self.recompose_paragraph(section_idx, prev_idx);
         self.paginate_if_needed();
@@ -1886,10 +1841,7 @@ impl DocumentCore {
                 break;
             }
             self.reflow_paragraph(section_idx, prev_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                prev_idx,
-            );
+            self.recalc_section_vpos(section_idx, prev_idx);
             self.recompose_paragraph(section_idx, prev_idx);
             self.paginate_if_needed();
         }
@@ -1951,10 +1903,7 @@ impl DocumentCore {
         if reflow_idx < self.document.sections[section_idx].paragraphs.len() {
             self.reflow_paragraph(section_idx, reflow_idx);
         }
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            reflow_idx,
-        );
+        self.recalc_section_vpos(section_idx, reflow_idx);
         if reflow_idx < self.document.sections[section_idx].paragraphs.len() {
             self.recompose_paragraph(section_idx, reflow_idx);
         }
@@ -1973,10 +1922,7 @@ impl DocumentCore {
             if reflow_idx < self.document.sections[section_idx].paragraphs.len() {
                 self.reflow_paragraph(section_idx, reflow_idx);
             }
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                reflow_idx,
-            );
+            self.recalc_section_vpos(section_idx, reflow_idx);
             if reflow_idx < self.document.sections[section_idx].paragraphs.len() {
                 self.recompose_paragraph(section_idx, reflow_idx);
             }
@@ -2037,10 +1983,7 @@ impl DocumentCore {
             .copied()
             .unwrap_or(0);
         self.reflow_paragraph(section_idx, para_idx);
-        crate::renderer::composer::recalculate_section_vpos(
-            &mut self.document.sections[section_idx].paragraphs,
-            reflow_target,
-        );
+        self.recalc_section_vpos(section_idx, reflow_target);
         self.insert_composed_paragraph(section_idx, para_idx);
         self.paginate_if_needed();
 
@@ -2055,10 +1998,7 @@ impl DocumentCore {
                 break;
             }
             self.reflow_paragraph(section_idx, para_idx);
-            crate::renderer::composer::recalculate_section_vpos(
-                &mut self.document.sections[section_idx].paragraphs,
-                reflow_target,
-            );
+            self.recalc_section_vpos(section_idx, reflow_target);
             self.recompose_paragraph(section_idx, para_idx);
             self.paginate_if_needed();
         }
