@@ -5,8 +5,8 @@ import { CaretRenderer } from './caret-renderer';
 import { FieldMarkerRenderer } from './field-marker-renderer';
 import { SelectionRenderer } from './selection-renderer';
 import { CommandHistory } from './history';
-import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand } from './command';
-import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy } from './command';
+import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS } from './command';
+import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects } from './command';
 import { VirtualScroll } from '@/view/virtual-scroll';
 import { ViewportManager } from '@/view/viewport-manager';
 import type {
@@ -37,6 +37,7 @@ import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
 import { computeHangingIndentPx } from './hanging-indent';
 import { isPageLocalTextEditCommand, type PageLocalTextEditOptions } from './input-edit-invalidation';
+import type { NavigationKeyInput } from './navigation-keymap';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DRAG_SCROLL_EDGE_PX = 48;
@@ -309,6 +310,7 @@ export class InputHandler {
   private protectedCellHoverEl: HTMLDivElement | null = null;
   private deferredPaginationFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private deferredPaginationPending = false;
+  private rawTextMutationEffects = new TextMutationEffectAccumulator();
 
   // 표 경계선 리사이즈 드래그 상태
   private isResizeDragging = false;
@@ -445,6 +447,9 @@ export class InputHandler {
   private isComposing = false;
   private compositionAnchor: DocumentPosition | null = null;
   private compositionLength = 0; // 문서에 삽입된 조합 텍스트 길이
+  private _lastCompositionText = '';
+  private _lastComposedText = '';
+  private _pendingNavAfterIME: NavigationKeyInput | null = null;
   // iOS 폴백: composition 이벤트 없이 input만으로 한글 조합 처리
   private _iosComposing = false;
   private _iosAnchor: DocumentPosition | null = null;
@@ -452,6 +457,7 @@ export class InputHandler {
   private _iosLength = 0;
   private _iosPrevText = '';
   private _iosInputTimer: any = null;
+  private _iosRequiresFullRefresh = false;
   private _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -2120,6 +2126,7 @@ export class InputHandler {
   private handleUndo(): void {
     const newPos = this.history.undo(this.wasm);
     if (newPos) {
+      this.prepareTextMutationBeforeCursor(IMMEDIATE_TEXT_MUTATION_EFFECTS);
       this.clearTableResizeRuntimeCache();
       this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
@@ -2131,10 +2138,13 @@ export class InputHandler {
   private handleRedo(): void {
     const newPos = this.history.redo(this.wasm);
     if (newPos) {
+      const boundaryHandled = this.prepareTextMutationBeforeCursor(
+        this.history.consumeLastExecutionEffects(),
+      );
       this.clearTableResizeRuntimeCache();
       this.exitObjectSelectionAfterHistoryJump();
       this.cursor.moveTo(newPos);
-      this.afterEdit();
+      this.afterEdit(!boundaryHandled);
     }
   }
 
@@ -2174,6 +2184,9 @@ export class InputHandler {
           this.wasm.clearActiveField();
         }
         const newPos = this.history.execute(desc.command, this.wasm);
+        const boundaryHandled = this.prepareTextMutationBeforeCursor(
+          this.history.consumeLastExecutionEffects(),
+        );
         // 글자/문단 서식 변경은 문서 구조 불변 → 선택 영역 유지
         if (desc.command.type !== 'applyCharFormat' && desc.command.type !== 'applyParaFormat') {
           this.cursor.moveTo(newPos);
@@ -2186,7 +2199,7 @@ export class InputHandler {
           ...desc.command.getPageLocalTextEditOptions?.(),
           beforePageIndex,
           afterPageIndex: this.cursor.getRect()?.pageIndex,
-        });
+        }, boundaryHandled);
         break;
       }
       case 'snapshot': {
@@ -2244,12 +2257,13 @@ export class InputHandler {
 
   /** 위치에 텍스트를 삽입한다 (WASM 직접 호출, IME 조합용) */
   private insertTextAtRaw(pos: DocumentPosition, text: string): void {
-    _text.insertTextAtRaw.call(this, pos, text);
+    this.rawTextMutationEffects.add(_text.insertTextAtRaw.call(this, pos, text));
   }
 
   /** 위치에서 텍스트를 삭제한다 (WASM 직접 호출, IME 조합용) */
   private deleteTextAt(pos: DocumentPosition, count: number): void {
     _text.deleteTextAt.call(this, pos, count);
+    this.rawTextMutationEffects.add(IMMEDIATE_TEXT_MUTATION_EFFECTS);
   }
 
   /** textarea에 포커스를 설정한다 (iOS 호환) */
@@ -2258,8 +2272,14 @@ export class InputHandler {
   }
 
   /** 편집 후 처리: 재렌더링 + 캐럿 갱신 */
-  private afterEdit(): void {
-    this.flushDeferredPaginationIfNeeded('before-full-edit', false);
+  private afterEdit(flushDeferredPagination = true): void {
+    if (flushDeferredPagination) {
+      this.flushDeferredPaginationIfNeeded('before-full-edit', false);
+    } else if (this.deferredPaginationPending) {
+      // 경계 pre-flush 후 추가된 stable raw 입력은 즉시 재-flush하지 않고
+      // 기존 작은 문서 idle 정책으로만 마무리한다.
+      this.scheduleDeferredPaginationFlush();
+    }
     this.lastCellKey = null; // 편집 후 셀 bbox 캐시 무효화
     this.protectedCellHitCache = null;
     this.eventBus.emit('document-mutated', 'input-handler-edit');
@@ -2280,7 +2300,9 @@ export class InputHandler {
     } else {
       this.eventBus.emit('document-changed');
     }
-    this.scheduleDeferredPaginationFlush();
+    if (this.deferredPaginationPending) {
+      this.scheduleDeferredPaginationFlush();
+    }
     this.updateCaret();
   }
 
@@ -2323,6 +2345,31 @@ export class InputHandler {
     }
   }
 
+  /** deferred mutation을 cursor lookup 전에 등록하고 실제 flow 경계만 동기 flush한다. */
+  private prepareTextMutationBeforeCursor(effects: TextMutationEffects): boolean {
+    if (effects.paginationCompleted) {
+      this.cancelDeferredPaginationFlush();
+      this.deferredPaginationPending = false;
+    }
+    if (!effects.deferredPagination) return false;
+
+    this.cancelDeferredPaginationFlush();
+    this.deferredPaginationPending = true;
+    if (!effects.cellFlowChanged) return false;
+
+    // 성공 여부와 무관하게 이 호출에서 재시도하지 않는다. 실패하면 pending은 보존된다.
+    this.flushDeferredPaginationIfNeeded('cell-flow-boundary', false);
+    return true;
+  }
+
+  private resetRawTextMutationEffects(): void {
+    this.rawTextMutationEffects.clear();
+  }
+
+  private consumeRawTextMutationBeforeCursor(): boolean {
+    return this.prepareTextMutationBeforeCursor(this.rawTextMutationEffects.consume());
+  }
+
   private shouldAutoFlushDeferredPagination(): boolean {
     return this.wasm.pageCount <= DEFERRED_PAGINATION_AUTO_FLUSH_PAGE_LIMIT;
   }
@@ -2355,7 +2402,12 @@ export class InputHandler {
     beforePos: DocumentPosition,
     afterPos: DocumentPosition,
     pageLocalOptions: PageLocalTextEditOptions = {},
+    boundaryHandled = false,
   ): void {
+    if (boundaryHandled) {
+      this.afterEdit(false);
+      return;
+    }
     if (this.shouldUsePageLocalRefresh('insertText', beforePos, afterPos, pageLocalOptions)) {
       this.afterPageLocalEdit();
     } else {
@@ -2370,7 +2422,12 @@ export class InputHandler {
     beforePos: DocumentPosition,
     afterPos: DocumentPosition,
     pageLocalOptions: PageLocalTextEditOptions = {},
+    boundaryHandled = false,
   ): void {
+    if (boundaryHandled) {
+      this.afterEdit(false);
+      return;
+    }
     const policy = requested ?? fallback;
     switch (policy) {
       case 'none':
@@ -2401,6 +2458,9 @@ export class InputHandler {
     pageLocalOptions: PageLocalTextEditOptions = {},
   ): boolean {
     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return false;
+    // page-local redraw는 pagination을 지연한 stable mutation에서만 안전하다.
+    // immediate pagination은 후속 페이지 cut을 바꿀 수 있으므로 full 표시 무효화로 보낸다.
+    if (!this.deferredPaginationPending) return false;
     return isPageLocalTextEditCommand(commandType, beforePos, afterPos, pageLocalOptions);
   }
 
@@ -2956,6 +3016,26 @@ export class InputHandler {
 
   deactivate(): void {
     this.active = false;
+    this.cancelDeferredPaginationFlush();
+    this.deferredPaginationPending = false;
+    this.resetRawTextMutationEffects();
+    this.isComposing = false;
+    this.compositionAnchor = null;
+    this.compositionLength = 0;
+    this._lastCompositionText = '';
+    this._lastComposedText = '';
+    this._pendingNavAfterIME = null;
+    if (this._iosInputTimer) {
+      clearTimeout(this._iosInputTimer);
+      this._iosInputTimer = null;
+    }
+    this._iosAnchor = null;
+    this._iosBeforePageIndex = undefined;
+    this._iosComposing = false;
+    this._iosLength = 0;
+    this._iosPrevText = '';
+    this._iosRequiresFullRefresh = false;
+    this.textarea.value = '';
     this.caret.hide();
     this.fieldMarker.hide();
     this.cursor.clearSelection();
@@ -2979,6 +3059,24 @@ export class InputHandler {
       this.resizeHoverRafId = 0;
     }
     this.cancelDeferredPaginationFlush();
+    this.deferredPaginationPending = false;
+    this.resetRawTextMutationEffects();
+    this.isComposing = false;
+    this.compositionAnchor = null;
+    this.compositionLength = 0;
+    this._lastCompositionText = '';
+    this._lastComposedText = '';
+    this._pendingNavAfterIME = null;
+    if (this._iosInputTimer) {
+      clearTimeout(this._iosInputTimer);
+      this._iosInputTimer = null;
+    }
+    this._iosAnchor = null;
+    this._iosBeforePageIndex = undefined;
+    this._iosComposing = false;
+    this._iosLength = 0;
+    this._iosPrevText = '';
+    this._iosRequiresFullRefresh = false;
     document.removeEventListener('keydown', this.onF11InterceptBound, true);
     this.container.removeEventListener('mousedown', this.onClickBound);
     this.container.removeEventListener('dblclick', this.onDblClickBound);

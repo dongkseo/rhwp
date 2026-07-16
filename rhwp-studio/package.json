@@ -15,6 +15,7 @@
     "e2e:clipboard-priority": "node e2e/task-871-clipboard-priority.test.mjs",
     "e2e:drag-autoscroll": "node e2e/drag-selection-autoscroll.test.mjs",
     "e2e:renderer-contract": "node e2e/renderer-contract.test.mjs",
+    "e2e:issue-2214": "node e2e/issue-2214-page-local-repaint.test.mjs --mode=headless",
     "e2e:canvaskit-font-coverage": "node e2e/canvaskit-font-coverage.test.mjs",
     "e2e:embed": "node e2e/embed-transport.test.mjs --mode=headless",
     "e2e:baseline:headless": "node e2e/renderer-baseline.mjs --mode=headless --manifest=../scripts/renderer_baseline_manifest.json --output=../output/renderer-baseline/studio-headless",

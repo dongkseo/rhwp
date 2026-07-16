@@ -67,6 +67,14 @@ export interface TableTransposeResult {
   targetCols: number;
 }
 
+/** deferred cell text insert의 pagination 경계 결과 (#2214). */
+export interface DeferredCellTextInsertResult {
+  ok: boolean;
+  charOffset: number;
+  paginationDeferred: boolean;
+  cellFlowChanged: boolean;
+}
+
 import { fontFamilyChainForDisplay } from './font-substitution';
 import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 
@@ -816,7 +824,7 @@ export class WasmBridge {
     return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
   }
 
-  insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): string {
+  insertTextInCellDeferredPagination(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, text: string): DeferredCellTextInsertResult {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     const d = this.doc as unknown as {
       insertTextInCellDeferredPagination?: (
@@ -829,10 +837,31 @@ export class WasmBridge {
         text: string,
       ) => string;
     };
+    let raw: string;
+    let paginationDeferred = false;
     if (typeof d.insertTextInCellDeferredPagination === 'function') {
-      return d.insertTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+      raw = d.insertTextInCellDeferredPagination(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+      paginationDeferred = true;
+    } else {
+      raw = this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
     }
-    return this.doc.insertTextInCell(sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, text);
+    const parsed = JSON.parse(raw) as Partial<DeferredCellTextInsertResult>;
+    const parsedCharOffset = parsed.charOffset;
+    if (
+      parsed.ok !== true ||
+      typeof parsedCharOffset !== 'number' ||
+      !Number.isInteger(parsedCharOffset)
+    ) {
+      throw new Error('잘못된 deferred cell text insert 결과');
+    }
+    return {
+      ok: true,
+      charOffset: parsedCharOffset,
+      paginationDeferred,
+      // Stage 3 이전 deferred API는 신호가 없다. mutation 후 예외로
+      // history/cursor를 놓치지 않도록 누락 시 보수적 경계 flush로 복구한다.
+      cellFlowChanged: paginationDeferred && parsed.cellFlowChanged !== false,
+    };
   }
 
   deleteTextInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, count: number): string {

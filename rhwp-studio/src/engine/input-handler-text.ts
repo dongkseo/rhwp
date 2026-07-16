@@ -1,7 +1,17 @@
 /** input-handler text methods — extracted from InputHandler class */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { InsertTextCommand, DeleteTextCommand, MergeParagraphCommand, MergeNextParagraphCommand, MergeParagraphInCellCommand, MergeNextParagraphInCellCommand, canUseDeferredCellTextInsert } from './command';
+import {
+  InsertTextCommand,
+  DeleteTextCommand,
+  MergeParagraphCommand,
+  MergeNextParagraphCommand,
+  MergeParagraphInCellCommand,
+  MergeNextParagraphInCellCommand,
+  insertTextWithMutationEffects,
+  NO_TEXT_MUTATION_EFFECTS,
+} from './command';
+import type { TextMutationEffects } from './command';
 import type { DocumentPosition } from '@/core/types';
 import { showConfirm } from '@/ui/confirm-dialog';
 import {
@@ -326,6 +336,7 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
 }
 
 export function onCompositionStart(this: any): void {
+  this.resetRawTextMutationEffects();
   // 선택 영역이 있으면 삭제 후 조합 시작
   if (this.cursor.hasSelection()) {
     if (!this.canDeleteSelectionInFormMode?.()) {
@@ -372,6 +383,8 @@ export function onCompositionEnd(this: any): void {
   this.compositionLength = 0;
   this.textarea.value = '';
   this.caret.hideComposition();
+  this.updateCaret();
+  this.resetRawTextMutationEffects();
 
   // 더블 자음 분리 방지: compositionEnd 시점에 조합 완료된 텍스트 기억
   // 직후 유령 input 이벤트에서 동일 텍스트가 오면 무시
@@ -427,6 +440,7 @@ export function onInput(this: any, e?: InputEvent): void {
       this.textarea.value = '';
       return;
     }
+    this.resetRawTextMutationEffects();
 
     // 이전 조합 텍스트 삭제
     if (this.compositionLength > 0) {
@@ -438,22 +452,20 @@ export function onInput(this: any, e?: InputEvent): void {
       this.insertTextAtRaw(anchor, text);
       this.compositionLength = text.length;
       this._lastCompositionText = text; // 더블 자음 분리 방지용
-      if (this.cursor.isInHeaderFooter()) {
-        this.cursor.setHfCursorPosition(this.cursor.hfParaIdx, anchor.charOffset + text.length);
-      } else if (this.cursor.isInFootnote()) {
-        this.cursor.setFnCursorPosition(this.cursor.fnInnerParaIdx, anchor.charOffset + text.length);
-      } else {
-        this.cursor.moveTo({ ...anchor, charOffset: anchor.charOffset + text.length });
-      }
     } else {
       this.compositionLength = 0;
-      if (this.cursor.isInHeaderFooter()) {
-        this.cursor.setHfCursorPosition(this.cursor.hfParaIdx, anchor.charOffset);
-      } else if (this.cursor.isInFootnote()) {
-        this.cursor.setFnCursorPosition(this.cursor.fnInnerParaIdx, anchor.charOffset);
-      } else {
-        this.cursor.moveTo(anchor);
-      }
+    }
+
+    // cursor.moveTo() 내부의 exact lookup 전에 deferred mutation을 등록하고,
+    // 실제 cell-flow 경계에서만 동기 flush한다.
+    const boundaryHandled = this.consumeRawTextMutationBeforeCursor();
+    const newOffset = anchor.charOffset + text.length;
+    if (this.cursor.isInHeaderFooter()) {
+      this.cursor.setHfCursorPosition(this.cursor.hfParaIdx, newOffset);
+    } else if (this.cursor.isInFootnote()) {
+      this.cursor.setFnCursorPosition(this.cursor.fnInnerParaIdx, newOffset);
+    } else {
+      this.cursor.moveTo({ ...anchor, charOffset: newOffset });
     }
 
     const afterPos = this.cursor.getPosition();
@@ -462,7 +474,7 @@ export function onInput(this: any, e?: InputEvent): void {
       insertedText: text,
       beforePageIndex,
       afterPageIndex,
-    });
+    }, boundaryHandled);
     return;
   }
 
@@ -478,6 +490,7 @@ export function onInput(this: any, e?: InputEvent): void {
   if (this._isIOS && !this.isComposing) {
     // 앵커 설정 (첫 입력 시)
     if (!this._iosAnchor) {
+      this._iosRequiresFullRefresh = false;
       this._iosBeforePageIndex = this.cursor.getRect()?.pageIndex;
       if (this.cursor.isInHeaderFooter()) {
         this._iosAnchor = { ...this.cursor.getPosition(), charOffset: this.cursor.hfCharOffset };
@@ -492,6 +505,7 @@ export function onInput(this: any, e?: InputEvent): void {
       this.textarea.value = '';
       return;
     }
+    this.resetRawTextMutationEffects();
 
     // 이전 삽입 전부 삭제
     if (this._iosLength > 0 && this._iosAnchor) {
@@ -505,6 +519,9 @@ export function onInput(this: any, e?: InputEvent): void {
     } else {
       this._iosLength = 0;
     }
+
+    const boundaryHandled = this.consumeRawTextMutationBeforeCursor();
+    this._iosRequiresFullRefresh = this._iosRequiresFullRefresh || boundaryHandled;
 
     // 커서 이동 (렌더링 없이 문서만 갱신)
     const newOffset = this._iosAnchor.charOffset + (text?.length || 0);
@@ -524,11 +541,13 @@ export function onInput(this: any, e?: InputEvent): void {
     const beforePageIndex = this._iosBeforePageIndex;
     const afterPageIndex = this.cursor.getRect()?.pageIndex;
     this._iosInputTimer = setTimeout(() => {
+      const requiresFullRefresh = this._iosRequiresFullRefresh;
+      this._iosRequiresFullRefresh = false;
       this.afterTextInputEdit(iosAnchor, iosAfterPos, {
         insertedText: text,
         beforePageIndex,
         afterPageIndex,
-      });
+      }, requiresFullRefresh);
       // 렌더링 후 div 포커스 복원 (afterEdit가 포커스를 뺏을 수 있음)
       this.textarea.focus();
     }, 100);
@@ -601,8 +620,8 @@ export function onInput(this: any, e?: InputEvent): void {
   }
 }
 
-export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string): void {
-  if (!this.canInsertTextInFormMode?.(pos)) return;
+export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string): TextMutationEffects {
+  if (!this.canInsertTextInFormMode?.(pos)) return NO_TEXT_MUTATION_EFFECTS;
   // 머리말/꼬리말 편집 모드
   if (this.cursor.isInHeaderFooter()) {
     const isHeader = this.cursor.headerFooterMode === 'header';
@@ -610,7 +629,7 @@ export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string):
       this.cursor.hfSectionIdx, isHeader, this.cursor.hfApplyTo,
       this.cursor.hfParaIdx, pos.charOffset, text,
     );
-    return;
+    return NO_TEXT_MUTATION_EFFECTS;
   }
   // 각주 편집 모드
   if (this.cursor.isInFootnote()) {
@@ -618,21 +637,9 @@ export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string):
       this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx,
       this.cursor.fnInnerParaIdx, pos.charOffset, text,
     );
-    return;
+    return NO_TEXT_MUTATION_EFFECTS;
   }
-  if ((pos.cellPath?.length ?? 0) > 0 && pos.parentParaIndex !== undefined) {
-    this.wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, JSON.stringify(pos.cellPath), pos.charOffset, text);
-  } else if (pos.parentParaIndex !== undefined) {
-    const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellIndex: cei, cellParaIndex: cpi, charOffset } = pos;
-    if (canUseDeferredCellTextInsert(pos, text)) {
-      this.wasm.insertTextInCellDeferredPagination(sec, ppi!, ci!, cei!, cpi!, charOffset, text);
-    } else {
-      this.wasm.insertTextInCell(sec, ppi!, ci!, cei!, cpi!, charOffset, text);
-    }
-  } else {
-    const { sectionIndex: sec, paragraphIndex: para, charOffset } = pos;
-    this.wasm.insertText(sec, para, charOffset, text);
-  }
+  return insertTextWithMutationEffects(this.wasm, pos, text);
 }
 
 export function deleteTextAt(this: any, pos: DocumentPosition, count: number): void {

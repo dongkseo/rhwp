@@ -308,6 +308,7 @@ jobs:
         working-directory: rhwp-studio
         run: |
           node --check e2e/renderer-contract.test.mjs
+          node --check e2e/issue-2214-page-local-repaint.test.mjs
           node --check e2e/canvaskit-font-coverage.test.mjs
           node --check e2e/canvas-render-diff.test.mjs
           node --check e2e/pdf-render-diff-report.mjs

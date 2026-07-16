@@ -4907,6 +4907,29 @@ impl LayoutEngine {
         row_units
     }
 
+    /// [Issue #2214] 표 단위 nested-text flag에 대한 문단 로컬 기여 여부.
+    /// 편집 경로와 table-wide 계산이 같은 predicate를 사용하도록 단일화한다.
+    pub(crate) fn paragraph_contributes_to_table_nested_text_flag(paragraph: &Paragraph) -> bool {
+        !paragraph.text.trim().is_empty()
+            && paragraph
+                .controls
+                .iter()
+                .any(|control| matches!(control, Control::Table(_)))
+    }
+
+    /// [Issue #2063] 표에 "가시 텍스트 + 중첩 표"를 가진 셀이 하나라도 있는지 직접 계산한다.
+    /// predicate table scan과 test counter는 이 helper에만 둔다.
+    fn compute_table_nested_text_flag(&self, table: &crate::model::table::Table) -> bool {
+        #[cfg(test)]
+        self.table_nested_text_flag_scan_count
+            .set(self.table_nested_text_flag_scan_count.get() + 1);
+        table.cells.iter().any(|cell| {
+            cell.paragraphs
+                .iter()
+                .any(Self::paragraph_contributes_to_table_nested_text_flag)
+        })
+    }
+
     /// [Issue #2063] 표에 "가시 텍스트 + 중첩 표"를 가진 셀이 하나라도 있는지(표 단위 불변량).
     /// `cell_units_uncached` 안에서 셀마다 계산되면 O(셀²)(52,694² ≈ 28억)로 폭증하므로
     /// 표 포인터를 키로 1회만 계산해 캐시한다(`cell_units_cache` 와 동일 조판 경계에서 clear).
@@ -4915,16 +4938,61 @@ impl LayoutEngine {
         if let Some(&cached) = self.table_nested_text_flag_cache.borrow().get(&key) {
             return cached;
         }
-        let flag = table.cells.iter().any(|cell| {
-            cell.paragraphs.iter().any(|p| {
-                !p.text.trim().is_empty()
-                    && p.controls.iter().any(|c| matches!(c, Control::Table(_)))
-            })
-        });
+        let flag = self.compute_table_nested_text_flag(table);
         self.table_nested_text_flag_cache
             .borrow_mut()
             .insert(key, flag);
         flag
+    }
+
+    /// [Issue #2214] 텍스트 삽입 뒤 edited cell의 memoized units를 국소 무효화한다.
+    /// 삽입은 local contribution을 true→false로 바꾸지 않는 단조 연산이다.
+    ///
+    /// cached owner flag가 false인데 edited paragraph가 false→true가 된 경우에만
+    /// owner의 직접 cell units를 모두 제거하고, local witness로 flag를 true로 갱신한다.
+    /// 이 direct-key 제거는 predicate 재스캔이 아니며 nested/unrelated table cache는 보존한다.
+    pub(crate) fn invalidate_cell_units_after_text_insert(
+        &self,
+        edited_cell: &crate::model::table::Cell,
+        owner_table: &crate::model::table::Table,
+        local_before: bool,
+        local_after: bool,
+    ) {
+        debug_assert!(
+            !local_before || local_after,
+            "text insert cannot remove a nested-text contribution"
+        );
+
+        let edited_cell_key = edited_cell as *const crate::model::table::Cell as usize;
+        let owner_table_key = owner_table as *const crate::model::table::Table as usize;
+        let cached_owner_flag = self
+            .table_nested_text_flag_cache
+            .borrow()
+            .get(&owner_table_key)
+            .copied();
+        let local_became_true = !local_before && local_after;
+
+        if local_became_true && cached_owner_flag == Some(false) {
+            let mut cell_cache = self.cell_units_cache.borrow_mut();
+            for cell in &owner_table.cells {
+                let key = cell as *const crate::model::table::Cell as usize;
+                cell_cache.remove(&key);
+            }
+            drop(cell_cache);
+            self.table_nested_text_flag_cache
+                .borrow_mut()
+                .insert(owner_table_key, true);
+            return;
+        }
+
+        self.cell_units_cache.borrow_mut().remove(&edited_cell_key);
+        if local_became_true && cached_owner_flag.is_none() {
+            // cell_units entry가 있으면 owner flag도 먼저 warm된다는 현재 cache invariant에
+            // 따라 owner-wide eviction은 불필요하다. local witness로 future scan도 피한다.
+            self.table_nested_text_flag_cache
+                .borrow_mut()
+                .insert(owner_table_key, true);
+        }
     }
 
     /// [Task #1949] `cell_units_uncached` 의 메모이즈 래퍼. 거대 셀이 RowBreak 로
@@ -8323,5 +8391,722 @@ mod row_cut_tests {
         let cont = eng.advance_row_block_cut(&t, 0, 2, &first.end_cut, 500.0, &styles);
         assert_eq!(cont.end_cut, vec![2, 2, 10], "cont: {:?}", cont.end_cut);
         assert!(cont.fully_consumed);
+    }
+
+    /// [Issue #2214 Stage 3] 실제 deferred insert 호출부가 edited cell만 제거하는지
+    /// 고정한다. #2214 fixture의 owner table-wide nested-text flag는 입력 전후 불변이므로
+    /// flag와 same-table sibling identity를 함께 보존해야 한다.
+    #[test]
+    fn issue2214_deferred_insert_uses_scoped_cache_eviction() {
+        use crate::document_core::DocumentCore;
+
+        fn owner_table(core: &DocumentCore) -> &Table {
+            match &core.document.sections[0].paragraphs[0].controls[2] {
+                Control::Table(table) => table.as_ref(),
+                other => panic!("#2214 owner control is not a table: {other:?}"),
+            }
+        }
+
+        fn uncached_table_flag(table: &Table) -> bool {
+            table.cells.iter().any(|cell| {
+                cell.paragraphs.iter().any(|para| {
+                    !para.text.trim().is_empty()
+                        && para
+                            .controls
+                            .iter()
+                            .any(|control| matches!(control, Control::Table(_)))
+                })
+            })
+        }
+
+        let mut failures = Vec::new();
+        for (format_label, relative) in [
+            ("hwp", "samples/issue1949_giant_cell_nested_tables_perf.hwp"),
+            (
+                "hwpx",
+                "samples/issue1949_giant_cell_nested_tables_perf.hwpx",
+            ),
+        ] {
+            for (phase, preinsert_count) in [("stable", 0), ("flow-boundary", 43)] {
+                let label = format!("{format_label}-{phase}");
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+                let bytes = std::fs::read(path).expect("read #2214 fixture");
+                let mut core = DocumentCore::from_bytes(&bytes).expect("load #2214 fixture");
+                assert_eq!(core.page_count(), 115, "{label}: initial page count");
+                for inserted in 0..preinsert_count {
+                    core.insert_text_in_cell_native_deferred_pagination(
+                        0,
+                        0,
+                        2,
+                        2,
+                        5,
+                        130 + inserted,
+                        "1",
+                    )
+                    .expect("prepare flow boundary");
+                }
+
+                let (
+                    table_key,
+                    target_key,
+                    sibling_key,
+                    target_before,
+                    sibling_before,
+                    target_shape_before,
+                    owner_flag_before,
+                ) = {
+                    let table = owner_table(&core);
+                    let target = &table.cells[2];
+                    let sibling = &table.cells[1];
+                    let target_before = core.layout_engine.cell_units(target, table, &core.styles);
+                    let sibling_before =
+                        core.layout_engine.cell_units(sibling, table, &core.styles);
+                    let target_para = &target.paragraphs[5];
+                    (
+                        table as *const Table as usize,
+                        target as *const Cell as usize,
+                        sibling as *const Cell as usize,
+                        target_before,
+                        sibling_before,
+                        (
+                            !target_para.text.trim().is_empty(),
+                            target_para
+                                .controls
+                                .iter()
+                                .any(|control| matches!(control, Control::Table(_))),
+                        ),
+                        uncached_table_flag(table),
+                    )
+                };
+                assert!(
+                    core.layout_engine
+                        .table_nested_text_flag_cache
+                        .borrow()
+                        .contains_key(&table_key),
+                    "{label}: owner flag must be warmed by cell units"
+                );
+                core.layout_engine.table_nested_text_flag_scan_count.set(0);
+
+                core.insert_text_in_cell_native_deferred_pagination(
+                    0,
+                    0,
+                    2,
+                    2,
+                    5,
+                    130 + preinsert_count,
+                    "1",
+                )
+                .expect("deferred one-char insert");
+                assert_eq!(core.page_count(), 115, "{label}: deferred page count");
+
+                let table = owner_table(&core);
+                let target = &table.cells[2];
+                let sibling = &table.cells[1];
+                assert_eq!(
+                    table as *const Table as usize, table_key,
+                    "{label}: owner table pointer stability"
+                );
+                assert_eq!(
+                    target as *const Cell as usize, target_key,
+                    "{label}: target cell pointer stability"
+                );
+                assert_eq!(
+                    sibling as *const Cell as usize, sibling_key,
+                    "{label}: sibling cell pointer stability"
+                );
+                let target_para = &target.paragraphs[5];
+                let target_shape_after = (
+                    !target_para.text.trim().is_empty(),
+                    target_para
+                        .controls
+                        .iter()
+                        .any(|control| matches!(control, Control::Table(_))),
+                );
+                let owner_flag_after_uncached = uncached_table_flag(table);
+                assert_eq!(
+                    target_shape_after, target_shape_before,
+                    "{label}: target visible-text/nested-table shape must be invariant"
+                );
+                assert_eq!(
+                    owner_flag_after_uncached, owner_flag_before,
+                    "{label}: owner table-wide flag must be invariant"
+                );
+
+                let membership = {
+                    let cell_cache = core.layout_engine.cell_units_cache.borrow();
+                    let flag_cache = core.layout_engine.table_nested_text_flag_cache.borrow();
+                    (
+                        cell_cache.contains_key(&target_key),
+                        cell_cache.contains_key(&sibling_key),
+                        flag_cache.contains_key(&table_key),
+                    )
+                };
+                let target_after = core.layout_engine.cell_units(target, table, &core.styles);
+                let sibling_after = core.layout_engine.cell_units(sibling, table, &core.styles);
+                let owner_flag_after = core
+                    .layout_engine
+                    .table_has_visible_text_with_nested_table(table);
+                let table_scan_count = core.layout_engine.table_nested_text_flag_scan_count.get();
+                let target_recomputed = !std::sync::Arc::ptr_eq(&target_before, &target_after);
+                let sibling_reused = std::sync::Arc::ptr_eq(&sibling_before, &sibling_after);
+                let desired = membership == (false, true, true)
+                    && target_recomputed
+                    && sibling_reused
+                    && owner_flag_after == owner_flag_before
+                    && table_scan_count == 0;
+                eprintln!(
+                    "#2214 {label}: membership={membership:?} target_recomputed={target_recomputed} sibling_reused={sibling_reused} owner_flag={owner_flag_before}->{owner_flag_after} table_scans={table_scan_count}"
+                );
+                if !desired {
+                    failures.push(format!(
+                        "{label}: membership={membership:?} target_recomputed={target_recomputed} sibling_reused={sibling_reused} owner_flag_stable={} table_scans={table_scan_count}",
+                        owner_flag_after == owner_flag_before,
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "deferred insert must use scoped cache eviction:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// [Issue #2214 Stage 3] 실제 deferred insert가 빈 nested-table host를 non-empty로
+    /// 바꿔 owner flag가 false→true가 되는 경우, owner table의 모든 cell units를 evict하고
+    /// flag를 true로 갱신하되 nested table 자체의 cache는 보존해야 한다.
+    #[test]
+    fn issue2214_deferred_insert_flag_change_evicts_owner_cells() {
+        use crate::document_core::DocumentCore;
+
+        fn owner_table(core: &DocumentCore) -> &Table {
+            match &core.document.sections[0].paragraphs[0].controls[2] {
+                Control::Table(table) => table.as_ref(),
+                other => panic!("#2214 owner control is not a table: {other:?}"),
+            }
+        }
+
+        fn uncached_table_flag(table: &Table) -> bool {
+            table.cells.iter().any(|cell| {
+                cell.paragraphs.iter().any(|para| {
+                    !para.text.trim().is_empty()
+                        && para
+                            .controls
+                            .iter()
+                            .any(|control| matches!(control, Control::Table(_)))
+                })
+            })
+        }
+
+        let mut failures = Vec::new();
+        for (label, relative) in [
+            ("hwp", "samples/issue1949_giant_cell_nested_tables_perf.hwp"),
+            (
+                "hwpx",
+                "samples/issue1949_giant_cell_nested_tables_perf.hwpx",
+            ),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+            let bytes = std::fs::read(path).expect("read #2214 fixture");
+            let mut core = DocumentCore::from_bytes(&bytes).expect("load #2214 fixture");
+            let (host_cell, host_para, nested_control) = owner_table(&core)
+                .cells
+                .iter()
+                .enumerate()
+                .find_map(|(cell_index, cell)| {
+                    cell.paragraphs
+                        .iter()
+                        .enumerate()
+                        .find_map(|(para_index, para)| {
+                            if !para.text.trim().is_empty() {
+                                return None;
+                            }
+                            para.controls
+                                .iter()
+                                .enumerate()
+                                .find_map(|(control_index, control)| match control {
+                                    Control::Table(table) if !table.cells.is_empty() => {
+                                        Some((cell_index, para_index, control_index))
+                                    }
+                                    _ => None,
+                                })
+                        })
+                })
+                .expect("#2214 fixture must contain an empty nested-table host");
+
+            let (
+                owner_table_key,
+                owner_cell_keys,
+                owner_before,
+                nested_table_key,
+                nested_cell_key,
+                nested_before,
+            ) = {
+                let table = owner_table(&core);
+                assert!(
+                    !uncached_table_flag(table),
+                    "{label}: owner flag must start false"
+                );
+                let nested =
+                    match &table.cells[host_cell].paragraphs[host_para].controls[nested_control] {
+                        Control::Table(table) => table.as_ref(),
+                        other => panic!("nested control changed: {other:?}"),
+                    };
+                let owner_before = table
+                    .cells
+                    .iter()
+                    .map(|cell| core.layout_engine.cell_units(cell, table, &core.styles))
+                    .collect::<Vec<_>>();
+                let nested_before =
+                    core.layout_engine
+                        .cell_units(&nested.cells[0], nested, &core.styles);
+                (
+                    table as *const Table as usize,
+                    table
+                        .cells
+                        .iter()
+                        .map(|cell| cell as *const Cell as usize)
+                        .collect::<Vec<_>>(),
+                    owner_before,
+                    nested as *const Table as usize,
+                    &nested.cells[0] as *const Cell as usize,
+                    nested_before,
+                )
+            };
+            assert_eq!(
+                core.layout_engine
+                    .table_nested_text_flag_cache
+                    .borrow()
+                    .get(&owner_table_key)
+                    .copied(),
+                Some(false),
+                "{label}: cached owner flag before edit"
+            );
+            core.layout_engine.table_nested_text_flag_scan_count.set(0);
+
+            core.insert_text_in_cell_native_deferred_pagination(
+                0, 0, 2, host_cell, host_para, 0, "x",
+            )
+            .expect("deferred nested-host insert");
+            assert_eq!(core.page_count(), 115, "{label}: deferred page count");
+
+            let table = owner_table(&core);
+            assert_eq!(
+                table as *const Table as usize, owner_table_key,
+                "{label}: owner table pointer stability"
+            );
+            assert!(
+                uncached_table_flag(table),
+                "{label}: nested-host insert must flip the uncached owner flag"
+            );
+            assert!(
+                !table.cells[host_cell].paragraphs[host_para]
+                    .text
+                    .trim()
+                    .is_empty(),
+                "{label}: nested host text"
+            );
+            let nested =
+                match &table.cells[host_cell].paragraphs[host_para].controls[nested_control] {
+                    Control::Table(table) => table.as_ref(),
+                    other => panic!("nested control changed: {other:?}"),
+                };
+            assert_eq!(
+                nested as *const Table as usize, nested_table_key,
+                "{label}: nested table pointer stability"
+            );
+            assert_eq!(
+                &nested.cells[0] as *const Cell as usize, nested_cell_key,
+                "{label}: nested cell pointer stability"
+            );
+            assert_eq!(
+                table
+                    .cells
+                    .iter()
+                    .map(|cell| cell as *const Cell as usize)
+                    .collect::<Vec<_>>(),
+                owner_cell_keys,
+                "{label}: owner cell pointer stability"
+            );
+
+            let membership = {
+                let cell_cache = core.layout_engine.cell_units_cache.borrow();
+                let flag_cache = core.layout_engine.table_nested_text_flag_cache.borrow();
+                (
+                    owner_cell_keys
+                        .iter()
+                        .any(|key| cell_cache.contains_key(key)),
+                    cell_cache.contains_key(&nested_cell_key),
+                    flag_cache.get(&owner_table_key).copied(),
+                    flag_cache.contains_key(&nested_table_key),
+                )
+            };
+            let owner_after = table
+                .cells
+                .iter()
+                .map(|cell| core.layout_engine.cell_units(cell, table, &core.styles))
+                .collect::<Vec<_>>();
+            let nested_after =
+                core.layout_engine
+                    .cell_units(&nested.cells[0], nested, &core.styles);
+            let table_scan_count = core.layout_engine.table_nested_text_flag_scan_count.get();
+            let owner_recomputed = owner_before
+                .iter()
+                .zip(&owner_after)
+                .all(|(before, after)| !std::sync::Arc::ptr_eq(before, after));
+            let nested_reused = std::sync::Arc::ptr_eq(&nested_before, &nested_after);
+            let desired = membership == (false, true, Some(true), true)
+                && owner_recomputed
+                && nested_reused
+                && table_scan_count == 0;
+            eprintln!(
+                "#2214 {label}-flag-change: membership={membership:?} owner_recomputed={owner_recomputed} nested_reused={nested_reused} table_scans={table_scan_count}"
+            );
+            if !desired {
+                failures.push(format!(
+                    "{label}: membership={membership:?} owner_recomputed={owner_recomputed} nested_reused={nested_reused} table_scans={table_scan_count}"
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "deferred flag change must use owner-wide scoped eviction:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// [Issue #2214 Stage 3] owner table-wide flag가 불변이면 edited cell만 evict하고
+    /// cached owner flag와 sibling/unrelated cache를 보존한다.
+    #[test]
+    fn issue2214_scoped_eviction_retains_unrelated_cache() {
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let edited_table = table(vec![
+            cell(0, 0, vec![text_para(2, 0)]),
+            cell(0, 1, vec![text_para(4, 0)]),
+        ]);
+        let unrelated_table = table(vec![cell(0, 0, vec![text_para(3, 0)])]);
+
+        let edited_before = eng.cell_units(&edited_table.cells[0], &edited_table, &styles);
+        let sibling_before = eng.cell_units(&edited_table.cells[1], &edited_table, &styles);
+        let unrelated_before = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        let _ = eng.table_has_visible_text_with_nested_table(&edited_table);
+        let _ = eng.table_has_visible_text_with_nested_table(&unrelated_table);
+
+        assert_eq!(
+            eng.cell_units_cache.borrow().len(),
+            3,
+            "three warmed cell entries"
+        );
+        assert_eq!(
+            eng.table_nested_text_flag_cache.borrow().len(),
+            2,
+            "two warmed table-flag entries"
+        );
+
+        let edited_cell_key = &edited_table.cells[0] as *const crate::model::table::Cell as usize;
+        let sibling_cell_key = &edited_table.cells[1] as *const crate::model::table::Cell as usize;
+        let unrelated_cell_key =
+            &unrelated_table.cells[0] as *const crate::model::table::Cell as usize;
+        let owner_table_key = &edited_table as *const crate::model::table::Table as usize;
+        let unrelated_table_key = &unrelated_table as *const crate::model::table::Table as usize;
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[0],
+            &edited_table,
+            false,
+            false,
+        );
+
+        let cell_cache = eng.cell_units_cache.borrow();
+        let flag_cache = eng.table_nested_text_flag_cache.borrow();
+        let membership = (
+            cell_cache.contains_key(&edited_cell_key),
+            cell_cache.contains_key(&sibling_cell_key),
+            cell_cache.contains_key(&unrelated_cell_key),
+            flag_cache.contains_key(&owner_table_key),
+            flag_cache.contains_key(&unrelated_table_key),
+        );
+        drop(cell_cache);
+        drop(flag_cache);
+        assert_eq!(
+            membership,
+            (false, true, true, true, true),
+            "desired scoped membership: edited cell evicted; owner flag, sibling and unrelated caches retained"
+        );
+
+        let edited_after = eng.cell_units(&edited_table.cells[0], &edited_table, &styles);
+        let sibling_after = eng.cell_units(&edited_table.cells[1], &edited_table, &styles);
+        let unrelated_after = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        assert!(
+            !std::sync::Arc::ptr_eq(&edited_before, &edited_after),
+            "edited cell units must be recomputed"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&sibling_before, &sibling_after),
+            "same-table sibling units must be reused"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&unrelated_before, &unrelated_after),
+            "unrelated-table units must be reused"
+        );
+    }
+
+    /// [Issue #2214 Stage 3] cold false→true는 기존 owner cell cache가 없으므로
+    /// owner-wide key 순회 없이 local witness로 flag=true를 기록한다.
+    #[test]
+    fn issue2214_cold_local_change_records_true_without_table_scan() {
+        let eng = LayoutEngine::new(96.0);
+        let nested_table = table(vec![cell(0, 0, vec![visible_text_para(1, 0)])]);
+        let mut nested_host = text_para(1, 0);
+        nested_host.text.clear();
+        nested_host.char_count = 0;
+        nested_host
+            .controls
+            .push(Control::Table(Box::new(nested_table)));
+        let mut owner_table = rowbreak_table(vec![
+            cell(0, 0, vec![nested_host]),
+            cell(0, 1, vec![visible_text_para(2, 0)]),
+        ]);
+        let owner_table_key = &owner_table as *const Table as usize;
+
+        assert!(eng.cell_units_cache.borrow().is_empty());
+        assert!(eng.table_nested_text_flag_cache.borrow().is_empty());
+        eng.table_nested_text_flag_scan_count.set(0);
+
+        owner_table.cells[0].paragraphs[0].insert_text_at(0, "x");
+        eng.invalidate_cell_units_after_text_insert(
+            &owner_table.cells[0],
+            &owner_table,
+            false,
+            true,
+        );
+
+        assert!(eng.cell_units_cache.borrow().is_empty());
+        assert_eq!(
+            eng.table_nested_text_flag_cache
+                .borrow()
+                .get(&owner_table_key)
+                .copied(),
+            Some(true)
+        );
+        assert!(eng.table_has_visible_text_with_nested_table(&owner_table));
+        assert_eq!(eng.table_nested_text_flag_scan_count.get(), 0);
+    }
+
+    /// [Issue #2214 Stage 3] 다른 host가 이미 owner flag=true를 만든 상태에서 두 번째
+    /// empty nested host가 non-empty가 되어도 table-wide 값은 불변이다. 이 branch는 edited
+    /// cell만 evict하고 owner flag·다른 owner cells·unrelated cache를 보존해야 한다.
+    #[test]
+    fn issue2214_cached_true_local_change_evicts_edited_cell_only() {
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+
+        let mut visible_host = visible_text_para(1, 0);
+        visible_host
+            .controls
+            .push(Control::Table(Box::new(table(vec![cell(
+                0,
+                0,
+                vec![visible_text_para(1, 0)],
+            )]))));
+        let mut empty_host = text_para(1, 0);
+        empty_host.text.clear();
+        empty_host.char_count = 0;
+        empty_host
+            .controls
+            .push(Control::Table(Box::new(table(vec![cell(
+                0,
+                0,
+                vec![visible_text_para(1, 0)],
+            )]))));
+        let mut edited_table = rowbreak_table(vec![
+            cell(0, 0, vec![visible_host]),
+            cell(0, 1, vec![empty_host]),
+            cell(1, 0, vec![visible_text_para(2, 0)]),
+            cell(1, 1, vec![visible_text_para(2, 0)]),
+        ]);
+        let unrelated_table = table(vec![cell(0, 0, vec![text_para(3, 0)])]);
+
+        let owner_before = edited_table
+            .cells
+            .iter()
+            .map(|cell| eng.cell_units(cell, &edited_table, &styles))
+            .collect::<Vec<_>>();
+        let unrelated_before = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        assert!(
+            eng.table_has_visible_text_with_nested_table(&edited_table),
+            "first visible nested host must set owner flag=true"
+        );
+        let _ = eng.table_has_visible_text_with_nested_table(&unrelated_table);
+        let owner_cell_keys = edited_table
+            .cells
+            .iter()
+            .map(|cell| cell as *const crate::model::table::Cell as usize)
+            .collect::<Vec<_>>();
+        let unrelated_cell_key =
+            &unrelated_table.cells[0] as *const crate::model::table::Cell as usize;
+        let owner_table_key = &edited_table as *const crate::model::table::Table as usize;
+        let unrelated_table_key = &unrelated_table as *const crate::model::table::Table as usize;
+        eng.table_nested_text_flag_scan_count.set(0);
+
+        edited_table.cells[1].paragraphs[0].insert_text_at(0, "x");
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[1],
+            &edited_table,
+            false,
+            true,
+        );
+
+        let membership = {
+            let cell_cache = eng.cell_units_cache.borrow();
+            let flag_cache = eng.table_nested_text_flag_cache.borrow();
+            (
+                cell_cache.contains_key(&owner_cell_keys[1]),
+                owner_cell_keys
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != 1)
+                    .all(|(_, key)| cell_cache.contains_key(key)),
+                cell_cache.contains_key(&unrelated_cell_key),
+                flag_cache.get(&owner_table_key).copied(),
+                flag_cache.contains_key(&unrelated_table_key),
+            )
+        };
+        let owner_after = edited_table
+            .cells
+            .iter()
+            .map(|cell| eng.cell_units(cell, &edited_table, &styles))
+            .collect::<Vec<_>>();
+        let unrelated_after = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        let edited_recomputed = !std::sync::Arc::ptr_eq(&owner_before[1], &owner_after[1]);
+        let siblings_reused = owner_before
+            .iter()
+            .zip(&owner_after)
+            .enumerate()
+            .filter(|(index, _)| *index != 1)
+            .all(|(_, (before, after))| std::sync::Arc::ptr_eq(before, after));
+        let unrelated_reused = std::sync::Arc::ptr_eq(&unrelated_before, &unrelated_after);
+        let table_scan_count = eng.table_nested_text_flag_scan_count.get();
+        assert!(
+            membership == (false, true, true, Some(true), true)
+                && edited_recomputed
+                && siblings_reused
+                && unrelated_reused
+                && table_scan_count == 0,
+            "cached-true local change scope: membership={membership:?} edited_recomputed={edited_recomputed} siblings_reused={siblings_reused} unrelated_reused={unrelated_reused} table_scans={table_scan_count}"
+        );
+    }
+
+    /// [Issue #2214 Stage 3] owner table-wide nested-text flag가 바뀌면 같은 표의 모든
+    /// cell units가 stale할 수 있다. 이때 owner-table-wide eviction은 허용하되 unrelated
+    /// table cache는 보존해야 한다.
+    #[test]
+    fn issue2214_table_flag_change_evicts_owner_cells_only() {
+        let eng = LayoutEngine::new(96.0);
+        let styles = ResolvedStyleSet::default();
+        let nested_table = table(vec![cell(0, 0, vec![visible_text_para(1, 0)])]);
+        let mut nested_host = text_para(1, 0);
+        nested_host.text.clear();
+        nested_host.char_count = 0;
+        nested_host
+            .controls
+            .push(Control::Table(Box::new(nested_table)));
+        let mut edited_table = rowbreak_table(vec![
+            cell(0, 0, vec![nested_host]),
+            cell(0, 1, vec![visible_text_para(2, 0)]),
+            cell(1, 0, vec![visible_text_para(2, 0)]),
+            cell(1, 1, vec![visible_text_para(2, 0)]),
+        ]);
+        let unrelated_table = table(vec![cell(0, 0, vec![text_para(3, 0)])]);
+
+        let owner_before = edited_table
+            .cells
+            .iter()
+            .map(|cell| eng.cell_units(cell, &edited_table, &styles))
+            .collect::<Vec<_>>();
+        let unrelated_before = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        assert!(
+            !eng.table_has_visible_text_with_nested_table(&edited_table),
+            "empty nested host must start with a false owner flag"
+        );
+        let _ = eng.table_has_visible_text_with_nested_table(&unrelated_table);
+        eng.table_nested_text_flag_scan_count.set(0);
+
+        edited_table.cells[0].paragraphs[0].insert_text_at(0, "x");
+        assert!(
+            edited_table.cells.iter().any(|cell| {
+                cell.paragraphs.iter().any(|para| {
+                    !para.text.trim().is_empty()
+                        && para
+                            .controls
+                            .iter()
+                            .any(|control| matches!(control, Control::Table(_)))
+                })
+            }),
+            "edit must flip the uncached owner flag to true"
+        );
+
+        let owner_cell_keys = edited_table
+            .cells
+            .iter()
+            .map(|cell| cell as *const crate::model::table::Cell as usize)
+            .collect::<Vec<_>>();
+        let unrelated_cell_key =
+            &unrelated_table.cells[0] as *const crate::model::table::Cell as usize;
+        let owner_table_key = &edited_table as *const crate::model::table::Table as usize;
+        let unrelated_table_key = &unrelated_table as *const crate::model::table::Table as usize;
+        eng.invalidate_cell_units_after_text_insert(
+            &edited_table.cells[0],
+            &edited_table,
+            false,
+            true,
+        );
+
+        let membership = {
+            let cell_cache = eng.cell_units_cache.borrow();
+            let flag_cache = eng.table_nested_text_flag_cache.borrow();
+            (
+                owner_cell_keys
+                    .iter()
+                    .any(|key| cell_cache.contains_key(key)),
+                cell_cache.contains_key(&unrelated_cell_key),
+                flag_cache.get(&owner_table_key).copied(),
+                flag_cache.contains_key(&unrelated_table_key),
+            )
+        };
+        assert_eq!(
+            membership,
+            (false, true, Some(true), true),
+            "flag change must evict all owner cells, update owner flag, and retain unrelated caches"
+        );
+
+        let owner_after = edited_table
+            .cells
+            .iter()
+            .map(|cell| eng.cell_units(cell, &edited_table, &styles))
+            .collect::<Vec<_>>();
+        let unrelated_after = eng.cell_units(&unrelated_table.cells[0], &unrelated_table, &styles);
+        let table_scan_count = eng.table_nested_text_flag_scan_count.get();
+        assert!(
+            owner_before
+                .iter()
+                .zip(&owner_after)
+                .all(|(before, after)| !std::sync::Arc::ptr_eq(before, after)),
+            "all owner-table cell units must be recomputed after owner flag change"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&unrelated_before, &unrelated_after),
+            "unrelated-table units must be reused"
+        );
+        assert!(
+            eng.table_has_visible_text_with_nested_table(&edited_table),
+            "owner flag must recompute to true"
+        );
+        assert_eq!(
+            table_scan_count, 0,
+            "flag update and cache rewarm must not rescan the owner table"
+        );
     }
 }

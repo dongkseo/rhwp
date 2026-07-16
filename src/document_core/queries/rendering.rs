@@ -3583,6 +3583,89 @@ impl DocumentCore {
         self.render_normalized = out;
     }
 
+    /// [#2214/#2195] deferred 셀 편집 뒤 render 전용 정규화본의 동일 문단을 갱신한다.
+    ///
+    /// `render_normalized`는 pagination 시 원본 문단을 복제하므로 pagination을 지연하는
+    /// 편집에서는 별도 coherence가 필요하다. 상위 문단/소유 표/셀의 주소는 보존하고
+    /// 편집된 내부 문단만 교체해 unrelated cell cache를 유지한다. 새 문단에 포함된
+    /// 비-TAC 중첩 표에는 #2195 stretch를 다시 적용한다.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn refresh_render_normalized_cell_paragraph_after_edit(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        cell_para_idx: usize,
+        source_para: Paragraph,
+        local_contribution_before: bool,
+        local_contribution_after: bool,
+    ) {
+        let Some(Some((paragraphs, _))) = self.render_normalized.get_mut(section_idx) else {
+            return;
+        };
+        let Some(parent_para) = paragraphs.get_mut(parent_para_idx) else {
+            return;
+        };
+        let Some(control) = parent_para.controls.get_mut(control_idx) else {
+            return;
+        };
+
+        match control {
+            Control::Table(table) if cell_idx == 65534 => {
+                let Some(caption) = table.caption.as_mut() else {
+                    return;
+                };
+                let Some(target_para) = caption.paragraphs.get_mut(cell_para_idx) else {
+                    return;
+                };
+                *target_para = source_para;
+            }
+            Control::Table(table) => {
+                {
+                    let Some(cell) = table.cells.get_mut(cell_idx) else {
+                        return;
+                    };
+                    let Some(target_para) = cell.paragraphs.get_mut(cell_para_idx) else {
+                        return;
+                    };
+                    *target_para = source_para;
+                }
+                let cell = &table.cells[cell_idx];
+                self.layout_engine.invalidate_cell_units_after_text_insert(
+                    cell,
+                    table,
+                    local_contribution_before,
+                    local_contribution_after,
+                );
+            }
+            Control::Shape(shape) => {
+                let Some(textbox) = super::super::helpers::get_textbox_from_shape_mut(shape) else {
+                    return;
+                };
+                let Some(target_para) = textbox.paragraphs.get_mut(cell_para_idx) else {
+                    return;
+                };
+                *target_para = source_para;
+            }
+            Control::Picture(picture) => {
+                let Some(caption) = picture.caption.as_mut() else {
+                    return;
+                };
+                let Some(target_para) = caption.paragraphs.get_mut(cell_para_idx) else {
+                    return;
+                };
+                *target_para = source_para;
+            }
+            _ => return,
+        }
+
+        // 교체한 원본 문단 안의 nested table은 아직 저장 폭이므로 정규화본의 나머지와
+        // 동일하게 #2195 비-TAC stretch를 재적용한다. 이미 stretch된 sibling은 폭 비교
+        // 가드로 그대로 유지된다.
+        stretch_nested_tables_to_parent_cell(parent_para);
+    }
+
     pub(crate) fn find_page(
         &self,
         page_num: u32,
