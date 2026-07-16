@@ -48,6 +48,50 @@ impl From<HwpError> for JsValue {
 /// [Task #1161] 클립보드 API 의 cellPath JSON 인자 파싱.
 /// 빈 문자열 또는 `"[]"` 면 본문(빈 경로), 그 외에는
 /// `[{"controlIndex","cellIndex","cellParaIndex"}, ...]` 를 파싱한다.
+/// 차트 사양 JSON → `ChartSpec`.
+fn parse_chart_spec(json: &str) -> Result<crate::serializer::chart_xml::ChartSpec, JsValue> {
+    use crate::ooxml_chart::OoxmlChartType;
+    use crate::serializer::chart_xml::{ChartSeries, ChartSpec};
+
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| JsValue::from_str(&format!("차트 JSON 파싱 실패: {}", e)))?;
+
+    let chart_type = match v["type"].as_str().unwrap_or("column") {
+        "bar" => OoxmlChartType::Bar,
+        "line" => OoxmlChartType::Line,
+        "pie" => OoxmlChartType::Pie,
+        _ => OoxmlChartType::Column,
+    };
+    let categories: Vec<String> = v["categories"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let series: Vec<ChartSeries> = v["series"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|s| ChartSeries {
+                    name: s["name"].as_str().unwrap_or("계열").to_string(),
+                    values: s["values"]
+                        .as_array()
+                        .map(|vs| vs.iter().filter_map(|x| x.as_f64()).collect())
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if series.is_empty() {
+        return Err(JsValue::from_str("series 가 비었다"));
+    }
+    Ok(ChartSpec {
+        chart_type,
+        title: v["title"].as_str().map(String::from),
+        categories,
+        series,
+    })
+}
+
 fn parse_cell_path_arg(cell_path_json: &str) -> Result<Vec<(usize, usize, usize)>, JsValue> {
     if cell_path_json.is_empty() || cell_path_json == "[]" {
         Ok(Vec::new())
@@ -253,6 +297,77 @@ impl HwpDocument {
     pub fn new(data: &[u8]) -> Result<HwpDocument, JsValue> {
         DocumentCore::from_bytes(data)
             .map(|core| HwpDocument { core })
+            .map_err(|e| e.into())
+    }
+
+    /// 차트 사양(JSON) → SVG 문자열.
+    ///
+    /// 래스터화 수단이 없는 WASM 에서 미리보기를 만들기 위한 진입점이다.
+    /// 호출자가 이 SVG 를 PNG/RGBA 로 바꿔 `insertChart` 에 넘긴다
+    /// (node 라면 `@resvg/resvg-js` 같은 prebuilt 패키지면 충분하다).
+    ///
+    /// spec_json 예시:
+    /// ```json
+    /// {"type":"column","title":"실적",
+    ///  "categories":["1분기","2분기"],
+    ///  "series":[{"name":"매출","values":[184,210]}]}
+    /// ```
+    #[wasm_bindgen(js_name = renderChartSvg)]
+    pub fn render_chart_svg_js(&self, spec_json: &str, width: f64, height: f64) -> Result<String, JsValue> {
+        let spec = parse_chart_spec(spec_json)?;
+        let xml = crate::serializer::chart_xml::build_chart_xml(&spec);
+        let chart = crate::ooxml_chart::parser::parse_chart_xml(&xml)
+            .ok_or_else(|| JsValue::from_str("합성한 차트 XML 파싱 실패"))?;
+        let body = crate::ooxml_chart::renderer::render_chart_svg(&chart, 0.0, 0.0, width, height);
+        let mut svg = String::with_capacity(body.len() + 256);
+        svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+        svg.push_str(&width.to_string());
+        svg.push_str("\" height=\"");
+        svg.push_str(&height.to_string());
+        svg.push_str("\" viewBox=\"0 0 ");
+        svg.push_str(&width.to_string());
+        svg.push(' ');
+        svg.push_str(&height.to_string());
+        svg.push_str("\"><rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>");
+        svg.push_str(&body);
+        svg.push_str("</svg>");
+        Ok(svg)
+    }
+
+    /// 차트를 OLE 개체로 삽입한다.
+    ///
+    /// `rgba`: 미리보기 픽셀 (위→아래, 4바이트/픽셀). 한컴은 이 그림만 그리므로
+    /// (XML 은 rhwp 전용) 반드시 넘겨야 한다. `renderChartSvg` → 래스터화로 얻는다.
+    /// `paper_offset_*` 생략 시 (0,0) — 용지 좌상단이다.
+    #[wasm_bindgen(js_name = insertChart)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_chart(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        spec_json: &str,
+        rgba: &[u8],
+        px_width: u32,
+        px_height: u32,
+        width_hu: u32,
+        height_hu: u32,
+        paper_offset_x_hu: Option<i32>,
+        paper_offset_y_hu: Option<i32>,
+    ) -> Result<String, JsValue> {
+        let spec = parse_chart_spec(spec_json)?;
+        self.core
+            .insert_chart_native(
+                section_idx,
+                para_idx,
+                &spec,
+                rgba,
+                px_width,
+                px_height,
+                width_hu,
+                height_hu,
+                paper_offset_x_hu,
+                paper_offset_y_hu,
+            )
             .map_err(|e| e.into())
     }
 
