@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const PKG = '@dongkseo/rhwp-core';
+const TARBALL = 'https://github.com/dongkseo/rhwp/releases/download/v0.7.18-pkg/dongkseo-rhwp-core-0.7.18.tgz';
 
 let _mod = null;
 
@@ -41,10 +42,8 @@ function findPkg() {
   }
 
   throw new Error(
-    `${PKG} 가 설치되어 있지 않다. 설치하라:\n\n` +
-      `  npm i github:dongkseo/rhwp\n\n` +
-      `차트를 만들 거라면 래스터라이저도 함께 설치한다:\n\n` +
-      `  npm i @resvg/resvg-js\n\n` +
+    `${PKG} 가 설치되어 있지 않다. 설치하라 (2.4MB, 차트용 resvg 포함):\n\n` +
+      `  npm i ${TARBALL}\n\n` +
       `(설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.)`
   );
 }
