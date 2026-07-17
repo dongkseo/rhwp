@@ -290,7 +290,6 @@ jobs:
               'rhwp-shared/',
               'npm/editor/',
               'assets/fonts/',
-              'web/',
             ];
 
             function setResult(required, reason) {
