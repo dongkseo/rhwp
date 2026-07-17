@@ -1905,6 +1905,30 @@ fn split_composed_line_by_width(
                     // 줄끝 초과 공백 1개 hang — 줄바꿈 없이 현재 줄에 계상.
                     hung = true;
                 } else if over {
+                    // [#2244] 행두 금칙: 새 줄이 금칙 문자(마침표 등)로 시작하지
+                    // 않도록 직전 글자를 함께 다음 줄로 이월한다 — 한컴 2024 저장
+                    // 오라클 정합 ("적용한 | 다.111…", LINE_SEG [...,128]).
+                    // 직전 글자가 같은 run 안에 있고(스타일 경계 아님) 공백이
+                    // 아니며 줄에 2자 이상 남을 때만 1자 retraction.
+                    let carried: Option<(char, f64)> = if is_line_start_forbidden(ch)
+                        && chars_in_line > 1
+                        && current_run_text
+                            .chars()
+                            .last()
+                            .is_some_and(|p| p != ' ' && !is_line_start_forbidden(p))
+                    {
+                        current_run_text.pop().map(|prev| {
+                            let prev_str: String = std::iter::once(prev).collect();
+                            let prev_w = crate::renderer::layout::estimate_text_width_unrounded(
+                                &prev_str, &ts,
+                            );
+                            current_width -= prev_w;
+                            chars_in_line -= 1;
+                            (prev, prev_w)
+                        })
+                    } else {
+                        None
+                    };
                     flush_run(
                         &mut current_runs,
                         &mut current_run_text,
@@ -1919,6 +1943,11 @@ fn split_composed_line_by_width(
                     );
                     space_w = 0.0;
                     hung = false;
+                    if let Some((pch, pw)) = carried {
+                        current_run_text.push(pch);
+                        current_width += pw;
+                        chars_in_line += 1;
+                    }
                 }
                 current_run_text.push(ch);
                 current_width += ch_width;
