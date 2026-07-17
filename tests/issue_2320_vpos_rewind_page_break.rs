@@ -67,6 +67,23 @@ fn issue_2320_last_column_rewind_splits_to_next_page() {
     );
 }
 
+/// 페이지 중간으로 되감기는 비-0 단 문단은 경계로 오인하지 않아야 한다.
+/// 143E 신문 스크랩: 단 1 시작 문단 pi=9 의 되감김 목표가 본문 높이의 약 40%
+/// (26644HU) — 개체 어울림 흐름의 잔재이지 쪽 경계 인코딩이 아니다.
+/// (detect_near_top_rewind_breaks 의 단 상단 근방 가드 핀)
+#[test]
+fn issue_2320_mid_page_rewind_is_not_boundary() {
+    let repo_root = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(repo_root).join("samples/143E433F503322BD33.hwp");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+    let core = DocumentCore::from_bytes(&bytes).expect("parse 143E433F503322BD33.hwp");
+    assert_eq!(
+        core.page_count(),
+        1,
+        "페이지 중간 되감김을 쪽 경계로 오인하면 1쪽 문서가 2쪽이 된다"
+    );
+}
+
 /// 기존 0-리셋 단 경계 분할(단 0 시작 문단)은 불변이어야 한다.
 #[test]
 fn issue_2320_existing_column_zero_split_unchanged() {
