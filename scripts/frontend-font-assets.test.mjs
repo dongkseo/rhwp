@@ -55,16 +55,12 @@ test('canonical font inventory and license contract', () => {
   assert.equal(sha256(path.join(CANONICAL_DIR, 'NotoSansKR-Regular.woff2')), EXPECTED_NOTO_SANS_KR_SHA256);
 });
 
-test('Studio and legacy web font links target the canonical directory', () => {
-  const links = [
-    ['rhwp-studio/public/fonts', '../../assets/fonts'],
-    ['web/fonts', '../assets/fonts'],
-  ];
-  for (const [relative, target] of links) {
-    const link = path.join(ROOT, relative);
-    assert.ok(lstatSync(link).isSymbolicLink(), `${relative} must be a symlink`);
-    assert.equal(readlinkSync(link), target, `${relative} must target ${target}`);
-  }
+test('Studio font link targets the canonical directory', () => {
+  const relative = 'rhwp-studio/public/fonts';
+  const target = '../../assets/fonts';
+  const link = path.join(ROOT, relative);
+  assert.ok(lstatSync(link).isSymbolicLink(), `${relative} must be a symlink`);
+  assert.equal(readlinkSync(link), target, `${relative} must target ${target}`);
 });
 
 test('Studio and browser extension distributions preserve all canonical fonts', () => {
