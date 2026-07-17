@@ -71,6 +71,31 @@ Foundation  Typeset   Collab    Complete
 > Supported equations can be imported and edited; HML-origin documents can be saved back to HML
 > after a preservation preflight. Pictures and embedded/external resources remain blocked from lossy save.
 
+#### v0.7.19 Cycle (2026-07-17)
+
+> Patch after v0.7.18 — honoring stored geometry signals (intra-para vpos reset/rewind)
+> across render and edit paths, table pagination precision, memory / PDF determinism,
+> HML support, legacy /web removal
+
+**Rendering fidelity — stored-signal trust**
+- Promote mid-paragraph vpos resets to page boundaries — fixes multi-column bottom
+  clipping / content loss (#2320/#2311/#2319/#2322)
+- Rowspan merged-cell declared-residual convention confirmed against Hangul row rules
+  (#2291); table-dense under-splitting (#2287)
+- Master-page z-order — no longer covers body text (#2318); HWP5 strikeout via strike
+  shape whitelist (#2258)
+
+**Editor · Performance**
+- Edit-path vpos recalculation preserves stored resets and paragraph gaps — removes 60
+  spurious page-count changes (#2299)
+- Giant-cell edit cache coherence (#2214), stale selection cleanup after undo/redo (#2303)
+- Lazy BinData loading RSS 244MB→49MB (#2263), byte-reproducible export-pdf (#2269)
+
+**Formats · Frontend**
+- HML (HWPML) open + semantics-preserving save (#1157), MessageChannel embed
+  transport v1 (#2186)
+- Legacy /web dev app removed — Studio-only frontend baseline (#2313)
+
 #### v0.7.18 Cycle (2026-07-11)
 
 > Patch after v0.7.17 — large-scale rendering fidelity (floating/front objects, RowBreak
