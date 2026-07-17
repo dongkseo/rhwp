@@ -43,12 +43,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 문서 폴더 구조 (`mydocs/` 하위):
 - `orders/` - 오늘 할일 문서 (yyyymmdd.md)
+- `orders/archives/` - 전월 이전 오늘할일 보관 (매월 초 전월분 이동)
 - `plans/` - 수행 계획서, 구현 계획서
 - `plans/archives/` - 완료된 계획서 보관
 - `working/` - 단계별 완료 보고서
 - `report/` - 기본 보고서
 - `feedback/` - 피드백 저장
-- `tech/` - 기술 사항 정리 문서
+- `tech/` - 기술 사항 정리 문서41
 - `manual/` - 매뉴얼, 가이드 문서
 - `troubleshootings/` - 트러블슈팅 관련 문서
 - `pr/` - **외부 기여자 PR 검토 기록** (내부 타스크와 분리)
@@ -80,6 +81,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 폴더 | 용도 | 비고 |
 |------|------|------|
 | `orders/` | 오늘 할일 | `yyyymmdd.md`만 허용. 이슈 상세 조사는 `troubleshootings/` 또는 `tech/`로 |
+| `orders/archives/` | 전월 이전 오늘할일 보관 | 매월 초 전월분을 이동 (당월분만 루트 유지) |
 | `plans/` | 수행·구현 계획서 | `_stage{N}`, `_report`는 여기 두지 않는다 |
 | `plans/archives/` | 완료된 계획서 보관 | merge 후 정리 시 사용 |
 | `working/` | 단계별 완료 보고서 (`_stage{N}.md`) | 최종 보고서는 여기 두지 않는다 |
