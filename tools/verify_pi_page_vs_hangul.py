@@ -12,9 +12,12 @@ PI 인덱스가 1:1 정렬된다(다중 구역은 구역별 문단수 누적 오
   PI_MISMATCH: 일부 PI 가 다른 페이지 (페이지수는 같을 수도)
   PAGE_DELTA : 총 페이지수 불일치 (대개 PI_MISMATCH 동반)
   PARA_COUNT : rhwp/한글 문단수 불일치(정렬 불가) — 별도 분류
+  PROTECTED_SKIP : [#2261] 보호/배포용 HWP5 — 한글 정상 개방(PageCount 정상)이나
+                   캐럿이 본문 진입 불가(max_para==0 → hcount==1)인데 rhwp 는 본문
+                   문단 다수. per-PI 대조 불가라 PageCount 만 대조·per-PI 스킵.
   ERR        : 한글 열기/처리 실패
 
-PI_MISMATCH/PAGE_DELTA 1건↑ 종료코드 1.
+PI_MISMATCH/PAGE_DELTA 1건↑ 종료코드 1. PROTECTED_SKIP 은 사각지대 분리라 실패 미계상.
 
 알려진 한계 — 캐럿-개체 분리 (시각 정합인데 PI_MISMATCH 로 나오는 오탐, #1757):
   rhwp 는 "pi 가 처음 등장한 쪽"(표 몸체 시작 쪽), 한글은 SetPos 캐럿 쪽을 보고한다.
@@ -29,7 +32,7 @@ PI_MISMATCH/PAGE_DELTA 1건↑ 종료코드 1.
      이면 verdict 를 `PI_MISMATCH_CARET` 로 분리하고 detail 에 [empty-caret?]
      태그를 단다 (종료코드 실패로 계상하지 않음 — 시각 확정 전 후보).
   판별: 해당 pi 문단이 다쪽 자리차지/쪽 경계 TAC 표이면 한글 PDF 를 생성해 시각
-  대조 후 오탐 여부 확정. 상세: mydocs/manual/verify_pi_page_vs_hangul.md
+  대조 후 오탐 여부 확정. 상세: mydocs/manual/verification/verify_pi_page_vs_hangul.md
 
 사용:
     python tools/verify_pi_page_vs_hangul.py --batch <원본폴더> [--sample N] [--seed S] -o out.tsv
@@ -240,7 +243,7 @@ def main() -> int:
 
     hwp = fresh_hwp()
 
-    n_match = n_mism = n_delta = n_para = n_err = n_caret = 0
+    n_match = n_mism = n_delta = n_para = n_err = n_caret = n_protected = 0
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", encoding="utf-8", newline="") as fh:
         w = csv.writer(fh, delimiter="\t")
@@ -274,6 +277,20 @@ def main() -> int:
                     continue
             rcount = sum(sec_counts.values())
             if rcount != hcount:
+                # [#2261] 보호/배포용 HWP5 — 한글이 정상 개방(PageCount 정상)하나
+                # 캐럿이 본문 진입 불가(MoveDocEnd 후 GetPos para=0 → hcount==1)라
+                # per-PI 대조 불가. rhwp 는 본문 문단 다수 파싱. PageCount 만 대조하고
+                # per-PI 는 스킵해 PARA_COUNT(구조적 정렬 불가)와 분리 집계한다.
+                if hcount == 1 and rcount > 1:
+                    n_protected += 1
+                    page_tag = (
+                        "page_match" if rpages == htotal
+                        else f"page_delta={rpages - htotal:+d}"
+                    )
+                    w.writerow([rel, "PROTECTED_SKIP", rpages, htotal, abs(rpages - htotal),
+                                f"rhwp_paras={rcount} hwp_paras=1(caret-blocked) {page_tag}"])
+                    fh.flush()
+                    continue
                 n_para += 1
                 w.writerow([rel, "PARA_COUNT", rpages, htotal, abs(rcount - hcount),
                             f"rhwp_paras={rcount} hwp_paras={hcount}"])
@@ -347,7 +364,7 @@ def main() -> int:
     total = len(files)
     print(f"\n[pi-page-vs-hangul] HEAD={head} 처리={total}")
     print(f"  MATCH={n_match} PI_MISMATCH={n_mism} PI_MISMATCH_CARET={n_caret} "
-          f"PAGE_DELTA={n_delta} PARA_COUNT={n_para} ERR={n_err}")
+          f"PAGE_DELTA={n_delta} PARA_COUNT={n_para} PROTECTED_SKIP={n_protected} ERR={n_err}")
     print(f"  → {args.out}")
     # CARET(오탐 후보)는 실패로 계상하지 않는다 — 시각 대조로 확정 전까지 후보.
     return 1 if (n_mism + n_delta) > 0 else 0

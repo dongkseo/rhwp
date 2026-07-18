@@ -80,7 +80,7 @@ impl DocumentCore {
         let storage_id = self.document.next_bin_data_storage_id();
         self.document.bin_data_content.push(BinDataContent {
             id: storage_id,
-            data: ole_blob.cfb,
+            data: ole_blob.cfb.into(),
             extension: "OLE".to_string(),
         });
         // attr=0x0002: bits 0-3 = 2(Storage), bits 4-5 = 0(Default), bits 8-9 = 0(Init)

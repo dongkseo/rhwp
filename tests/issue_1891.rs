@@ -20,6 +20,11 @@ use rhwp::parser::hwpx::parse_hwpx;
 use rhwp::serializer::hwpx::serialize_hwpx;
 
 const SAMPLE: &str = "samples/issue1891_external_bindata_link.hwpx";
+// [#2070 잠정] 76076: PDF 정답 82, 86712: PDF 정답 65. 종전 82/65는 본문 래핑
+// +1줄 과대(45자 휴리스틱)와 빈 문단 0높이 과소의 **상쇄**였다. #2070 에서 빈 문단
+// 축을 한글 정합(em 줄박스, 80168=157 달성 필수)으로 고치면서 상쇄가 노출되어
+// 83/64 로 이동 — 본문 NO_LS 실폭 래핑(reflow_line_segs 정식 호출) 후속 이슈에서
+// 82/65 로 복귀시킨다. 80168/80250 은 PDF 정답 그대로.
 const HWP5_ORIGIN_SAMPLES: &[(&str, u32)] = &[
     ("samples/76076_regulatory_analysis.hwp", 82),
     ("samples/80168_regulatory_analysis.hwp", 157),
@@ -28,6 +33,7 @@ const HWP5_ORIGIN_SAMPLES: &[(&str, u32)] = &[
     ("samples/issue1891/76076_regulatory_analysis.hwpx", 82),
     ("samples/issue1891/80168_regulatory_analysis.hwpx", 157),
     ("samples/issue1891/80250_regulatory_analysis.hwpx", 17),
+    // [#2240] #2197 serializer 수정 반영 재생성 픽스처 — 원본(.hwp=65)과 등가.
     ("samples/issue1891/86712_regulatory_analysis.hwpx", 65),
 ];
 

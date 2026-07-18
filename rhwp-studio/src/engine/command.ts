@@ -16,6 +16,50 @@ export interface EditCommand {
   discard?(wasm: WasmBridge): void;
   /** page-local refresh 판정을 위한 가벼운 텍스트 편집 payload. */
   getPageLocalTextEditOptions?(): { insertedText?: string; deleteCount?: number };
+  /** 방금 실행한 mutation effect를 한 번만 반환한다. */
+  consumeTextMutationEffects?(): TextMutationEffects;
+}
+
+/** cell text mutation의 deferred/flow 경계와 immediate pagination 완료를 함께 전달한다. */
+export interface TextMutationEffects {
+  readonly deferredPagination: boolean;
+  readonly cellFlowChanged: boolean;
+  readonly paginationCompleted: boolean;
+}
+
+export const NO_TEXT_MUTATION_EFFECTS: TextMutationEffects = Object.freeze({
+  deferredPagination: false,
+  cellFlowChanged: false,
+  paginationCompleted: false,
+});
+
+export const IMMEDIATE_TEXT_MUTATION_EFFECTS: TextMutationEffects = Object.freeze({
+  deferredPagination: false,
+  cellFlowChanged: false,
+  paginationCompleted: true,
+});
+
+/** raw IME/iOS 묶음에서 effect를 OR 누적하고 한 번만 소비한다. */
+export class TextMutationEffectAccumulator {
+  private effects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+
+  add(effects: TextMutationEffects): void {
+    this.effects = {
+      deferredPagination: this.effects.deferredPagination || effects.deferredPagination,
+      cellFlowChanged: this.effects.cellFlowChanged || effects.cellFlowChanged,
+      paginationCompleted: this.effects.paginationCompleted || effects.paginationCompleted,
+    };
+  }
+
+  consume(): TextMutationEffects {
+    const effects = this.effects;
+    this.effects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
+  }
+
+  clear(): void {
+    this.effects = NO_TEXT_MUTATION_EFFECTS;
+  }
 }
 
 // ─── 편집 작업 서술자 (라우팅 통합) ────────────────────
@@ -118,15 +162,36 @@ function cellParagraphPosition(
   };
 }
 
-function doInsertText(wasm: WasmBridge, pos: DocumentPosition, text: string): void {
+export function insertTextWithMutationEffects(
+  wasm: WasmBridge,
+  pos: DocumentPosition,
+  text: string,
+): TextMutationEffects {
   if (isNestedCell(pos)) {
     wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, text);
   } else if (isCell(pos)) {
     if (canUseDeferredCellTextInsert(pos, text)) {
-      wasm.insertTextInCellDeferredPagination(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+      const result = wasm.insertTextInCellDeferredPagination(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
+      return {
+        deferredPagination: result.paginationDeferred,
+        cellFlowChanged: result.cellFlowChanged,
+        paginationCompleted: !result.paginationDeferred,
+      };
     } else {
       wasm.insertTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
     }
+  } else {
+    wasm.insertText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, text);
+  }
+  return IMMEDIATE_TEXT_MUTATION_EFFECTS;
+}
+
+/** undo/구조 명령의 full-refresh 복원은 flat cell에서도 immediate pagination을 사용한다. */
+function doInsertTextImmediate(wasm: WasmBridge, pos: DocumentPosition, text: string): void {
+  if (isNestedCell(pos)) {
+    wasm.insertTextInCellByPath(pos.sectionIndex, pos.parentParaIndex!, cellPathJson(pos), pos.charOffset, text);
+  } else if (isCell(pos)) {
+    wasm.insertTextInCell(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!, pos.charOffset, text);
   } else {
     wasm.insertText(pos.sectionIndex, pos.paragraphIndex, pos.charOffset, text);
   }
@@ -157,6 +222,7 @@ function doGetTextRange(wasm: WasmBridge, pos: DocumentPosition, count: number):
 export class InsertTextCommand implements EditCommand {
   readonly type = 'insertText';
   readonly timestamp: number;
+  private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
 
   constructor(
     private position: DocumentPosition,
@@ -167,8 +233,15 @@ export class InsertTextCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, this.text);
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    this.lastMutationEffects = insertTextWithMutationEffects(wasm, this.position, this.text);
     return { ...this.position, charOffset: this.position.charOffset + this.text.length };
+  }
+
+  consumeTextMutationEffects(): TextMutationEffects {
+    const effects = this.lastMutationEffects;
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
   }
 
   getPageLocalTextEditOptions(): { insertedText: string } {
@@ -176,6 +249,7 @@ export class InsertTextCommand implements EditCommand {
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
     doDeleteText(wasm, this.position, this.text.length);
     return { ...this.position };
   }
@@ -212,6 +286,7 @@ export class DeleteTextCommand implements EditCommand {
 
   /** undo용 삭제된 텍스트 (execute 시 보존) */
   private deletedText: string;
+  private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
 
   constructor(
     private position: DocumentPosition,
@@ -225,12 +300,20 @@ export class DeleteTextCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
     // 삭제 전 텍스트 보존
     if (!this.deletedText) {
       this.deletedText = doGetTextRange(wasm, this.position, this.count);
     }
     doDeleteText(wasm, this.position, this.count);
+    this.lastMutationEffects = IMMEDIATE_TEXT_MUTATION_EFFECTS;
     return { ...this.position };
+  }
+
+  consumeTextMutationEffects(): TextMutationEffects {
+    const effects = this.lastMutationEffects;
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    return effects;
   }
 
   getPageLocalTextEditOptions(): { deleteCount: number } {
@@ -238,7 +321,8 @@ export class DeleteTextCommand implements EditCommand {
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, this.deletedText);
+    this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+    doInsertTextImmediate(wasm, this.position, this.deletedText);
     const restoredLen = this.deletedText.length;
     return { ...this.position, charOffset: this.position.charOffset + restoredLen };
   }
@@ -288,7 +372,7 @@ export class InsertLineBreakCommand implements EditCommand {
   constructor(private position: DocumentPosition) {}
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, '\n');
+    doInsertTextImmediate(wasm, this.position, '\n');
     const newPos = { ...this.position, charOffset: this.position.charOffset + 1 };
     return newPos;
   }
@@ -310,7 +394,7 @@ export class InsertTabCommand implements EditCommand {
   constructor(private position: DocumentPosition) {}
 
   execute(wasm: WasmBridge): DocumentPosition {
-    doInsertText(wasm, this.position, '\t');
+    doInsertTextImmediate(wasm, this.position, '\t');
     const newPos = { ...this.position, charOffset: this.position.charOffset + 1 };
     return newPos;
   }
@@ -442,12 +526,12 @@ export class DeleteSelectionCommand implements EditCommand {
     if (!this.multiPara) {
       // 같은 문단 내 삭제 → 텍스트 재삽입
       const text = this.savedTexts[0] || '';
-      if (text) doInsertText(wasm, start, text);
+      if (text) doInsertTextImmediate(wasm, start, text);
     } else {
       // 다중 문단: 마지막 텍스트부터 역순으로 복원
       // 1) 첫 문단 뒷부분 텍스트 삽입
       const firstText = this.savedTexts[0] || '';
-      if (firstText) doInsertText(wasm, start, firstText);
+      if (firstText) doInsertTextImmediate(wasm, start, firstText);
 
       // 2) 중간 문단 + 마지막 문단: splitParagraph로 분리 후 텍스트 삽입
       if (isCell(start)) {
@@ -458,7 +542,7 @@ export class DeleteSelectionCommand implements EditCommand {
           if (text || i < this.savedTexts.length - 1) {
             // splitParagraph는 셀 내에서 미지원 → 텍스트만 이어붙이기
             const restorePos = { ...start, charOffset: start.charOffset + firstText.length };
-            if (text) doInsertText(wasm, restorePos, '\n' + text);
+            if (text) doInsertTextImmediate(wasm, restorePos, '\n' + text);
           }
         }
       } else {

@@ -1,6 +1,12 @@
 import { WasmBridge } from '@/core/wasm-bridge';
 import type { LayerRenderProfile } from '@/core/types';
-import type { CanvasKitLayerRenderer } from './canvaskit-renderer';
+import { layerPaintOpReplayPlane } from './canvaskit/replay-plane';
+import type { CanvasKitLayerRenderer, CanvasKitRenderDiagnostics } from './canvaskit-renderer';
+import {
+  collectFlowImagePaintOps,
+  visibleFlowImageBbox,
+  type FlowImagePaintOp,
+} from './flow-image-clip';
 import type { RenderBackend } from './render-backend';
 
 interface LayerPlaneSummary {
@@ -21,6 +27,7 @@ export interface PageRenderContext {
 
 export interface PageRenderResult {
   needsTextEditStaticLayerVerification: boolean;
+  renderedCanvas?: HTMLCanvasElement;
 }
 
 type OverlayLayerKind = 'background' | 'behind' | 'front';
@@ -37,10 +44,19 @@ interface LayerSummaryCacheEntry {
   summary: LayerPlaneSummary;
 }
 
+interface ReRenderJob {
+  fallbackTimer: ReturnType<typeof setTimeout>;
+  completed: boolean;
+}
+
+const IMAGE_RE_RENDER_FALLBACK_DELAY_MS = 1500;
+const HWP_UNITS_PER_CSS_PIXEL = 75;
+
 export class PageRenderer {
-  private reRenderTimers = new Map<number, ReturnType<typeof setTimeout>[]>();
+  private reRenderJobs = new Map<number, ReRenderJob>();
   private imageRetryCounts = new Map<number, string>();
   private layerSummaryCache = new Map<number, LayerSummaryCacheEntry>();
+  private canvaskitDiagnosticsByPage = new Map<number, CanvasKitRenderDiagnostics>();
   private flowSplitSupported: boolean | null = null;
 
   constructor(
@@ -61,13 +77,21 @@ export class PageRenderer {
   ): PageRenderResult {
     if (this.backend === 'canvaskit') {
       this.layerSummaryCache.delete(pageIdx);
-      this.renderPageCanvasKit(pageIdx, canvas, renderScale);
-      return { needsTextEditStaticLayerVerification: false };
+      const renderedCanvas = this.renderPageCanvasKit(pageIdx, canvas, renderScale);
+      return { needsTextEditStaticLayerVerification: false, renderedCanvas };
     }
 
     const layers = this.getLayerPlaneSummary(pageIdx, canvas, renderScale, context);
-    const preferStaticFlow = this.shouldUseStaticFlowReuse(context, layers);
+    const preferStaticFlow = this.shouldSplitStaticFlow(layers);
     let reuseStaticFlow = this.renderFlowCanvas(pageIdx, canvas, renderScale, preferStaticFlow);
+    const flowImages = reuseStaticFlow && layers.flowImageCount > 0
+      ? this.getFlowImagePaintOps(pageIdx)
+      : [];
+    const usesDomFlowImages =
+      reuseStaticFlow &&
+      layers.flowRawSvgCount === 0 &&
+      flowImages.length === layers.flowImageCount &&
+      flowImages.length > 0;
 
     // 다층 layer 모드.
     // 1) 본문 Canvas 는 'flow' 필터로 BehindText/InFrontOfText plane 제외
@@ -75,29 +99,44 @@ export class PageRenderer {
     this.drawMarginGuides(pageIdx, canvas, renderScale);
     let overlays: LayerPlaneSummary;
     try {
-      overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, reuseStaticFlow);
+      overlays = this.applyOverlays(
+        pageIdx,
+        canvas,
+        renderScale,
+        dpr,
+        context,
+        layers,
+        reuseStaticFlow,
+        usesDomFlowImages ? flowImages : [],
+      );
     } catch (error) {
       if (!reuseStaticFlow) throw error;
       this.flowSplitSupported = false;
       canvas.parentElement && this.removeOverlayLayer(canvas.parentElement, pageIdx, 'flow-static');
       reuseStaticFlow = false;
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow');
+      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
       this.drawMarginGuides(pageIdx, canvas, renderScale);
-      overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, false);
+      overlays = this.applyOverlays(pageIdx, canvas, renderScale, dpr, context, layers, false, []);
     }
     this.rememberLayerPlaneSummary(pageIdx, canvas, renderScale, layers);
     // rawSvg(차트/OLE)도 web_canvas draw_image 비동기 디코드 경로를 타므로
     // image 와 함께 재렌더 트리거 카운트에 합산한다(#1456).
-    this.scheduleReRender(pageIdx, canvas, renderScale, overlays.imageCount + overlays.rawSvgCount, {
-      retrySignature: overlays.signature,
-      reuseStaticFlow,
-      reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
-    });
+    this.scheduleReRender(
+      pageIdx,
+      canvas,
+      renderScale,
+      usesDomFlowImages ? overlays.rawSvgCount : overlays.imageCount + overlays.rawSvgCount,
+      {
+        retrySignature: overlays.signature,
+        reuseStaticFlow,
+        reuseStaticOverlay: context.reason === 'text-edit' && context.allowStaticOverlayReuse === true,
+      },
+    );
     return {
       needsTextEditStaticLayerVerification:
         context.reason === 'text-edit' &&
         context.allowStaticOverlayReuse === true &&
-        (reuseStaticFlow || layers.hasBehind || layers.hasFront),
+        ((reuseStaticFlow && !usesDomFlowImages) || layers.hasBehind || layers.hasFront),
     };
   }
 
@@ -105,36 +144,84 @@ export class PageRenderer {
     return this.backend;
   }
 
+  getCanvasKitRenderDiagnostics(pageIdx: number): CanvasKitRenderDiagnostics | null {
+    const diagnostics = this.canvaskitDiagnosticsByPage.get(pageIdx);
+    if (!diagnostics) return null;
+    return {
+      ...diagnostics,
+      lastUnsupportedOps: [...diagnostics.lastUnsupportedOps],
+      lastExpectedUnsupportedOps: [...diagnostics.lastExpectedUnsupportedOps],
+      lastUnexpectedUnsupportedOps: [...diagnostics.lastUnexpectedUnsupportedOps],
+      readinessBlockers: [...diagnostics.readinessBlockers],
+    };
+  }
+
+  /** DEV baseline용 renderer-global counter의 최신 snapshot을 반환한다. */
+  getCurrentCanvasKitRenderDiagnostics(): CanvasKitRenderDiagnostics | null {
+    if (!this.canvaskitRenderer) return null;
+    const diagnostics = this.canvaskitRenderer.diagnostics();
+    return {
+      ...diagnostics,
+      lastUnsupportedOps: [...diagnostics.lastUnsupportedOps],
+      lastExpectedUnsupportedOps: [...diagnostics.lastExpectedUnsupportedOps],
+      lastUnexpectedUnsupportedOps: [...diagnostics.lastUnexpectedUnsupportedOps],
+      readinessBlockers: [...diagnostics.readinessBlockers],
+    };
+  }
+
+  releasePageDiagnostics(pageIdx: number): void {
+    this.canvaskitDiagnosticsByPage.delete(pageIdx);
+  }
+
+  releaseAllPageDiagnostics(): void {
+    this.canvaskitDiagnosticsByPage.clear();
+  }
+
   private renderPageCanvasKit(
     pageIdx: number,
     canvas: HTMLCanvasElement,
     renderScale: number,
-  ): void {
+  ): HTMLCanvasElement {
+    this.canvaskitDiagnosticsByPage.delete(pageIdx);
     if (!this.canvaskitRenderer) {
       throw new Error('CanvasKit renderer가 초기화되지 않았습니다');
     }
 
     const parent = canvas.parentElement;
+    const canvasChildIndex = parent
+      ? Array.prototype.indexOf.call(parent.children, canvas)
+      : -1;
     if (parent) {
       this.removePageLayers(parent, pageIdx);
     }
 
-    const pageInfo = this.wasm.getPageInfo(pageIdx);
-    canvas.width = Math.max(1, Math.floor(pageInfo.width * renderScale));
-    canvas.height = Math.max(1, Math.floor(pageInfo.height * renderScale));
-
-    const tree = this.wasm.getPageLayerTreeObject(pageIdx, this.renderProfile);
+    let renderStarted = false;
     try {
-      this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
+      const pageInfo = this.wasm.getPageInfo(pageIdx);
+      canvas.width = Math.max(1, Math.floor(pageInfo.width * renderScale));
+      canvas.height = Math.max(1, Math.floor(pageInfo.height * renderScale));
+      const tree = this.wasm.getPageLayerTreeObject(pageIdx, this.renderProfile);
+      renderStarted = true;
+      const renderedCanvas = this.canvaskitRenderer.renderPage(tree, canvas, renderScale, pageInfo);
+      this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
+      this.cancelReRender(pageIdx);
+      this.imageRetryCounts.delete(pageIdx);
+      return renderedCanvas;
     } catch (error) {
-      this.canvaskitRenderer.recordRenderFailure(error);
+      this.canvaskitRenderer.recordRenderFailure(error, !renderStarted);
+      this.canvaskitDiagnosticsByPage.set(pageIdx, this.canvaskitRenderer.diagnostics());
       console.error(`[PageRenderer] CanvasKit 페이지 렌더링 실패 (page=${pageIdx}):`, error);
       this.cancelReRender(pageIdx);
       this.imageRetryCounts.delete(pageIdx);
-      return;
+      if (!renderStarted) throw error;
+      const replacement = parent && canvasChildIndex >= 0
+        ? parent.children.item(canvasChildIndex)
+        : null;
+      if (canvas.parentElement !== parent && replacement instanceof HTMLCanvasElement) {
+        return replacement;
+      }
+      return canvas;
     }
-    this.cancelReRender(pageIdx);
-    this.imageRetryCounts.delete(pageIdx);
   }
 
   /**
@@ -153,6 +240,7 @@ export class PageRenderer {
     context: PageRenderContext,
     layers: LayerPlaneSummary,
     reuseStaticFlow: boolean,
+    flowImages: readonly FlowImagePaintOp[],
   ): LayerPlaneSummary {
     const parent = canvas.parentElement;
     if (!parent) return emptyLayerPlaneSummary();
@@ -174,17 +262,33 @@ export class PageRenderer {
     const transform = canvas.style.transform;
 
     if (reuseStaticFlow) {
-      const flowStatic = this.createOrReuseFilteredCanvasLayer(
-        pageIdx,
-        canvas,
-        renderScale,
-        'flow-static',
-        layers,
-        allowReuse,
-      );
-      this.applyPageLayerBox(flowStatic, top, left, transform, cssWidth, cssHeight);
-      flowStatic.style.zIndex = '0';
-      parent.insertBefore(flowStatic, canvas);
+      if (flowImages.length > 0) {
+        const flowImageLayer = this.createOrReuseFlowImageLayer(
+          pageIdx,
+          canvas,
+          renderScale / safeDpr,
+          layers,
+          allowReuse,
+          flowImages,
+        );
+        this.applyPageLayerBox(flowImageLayer, top, left, transform, cssWidth, cssHeight);
+        flowImageLayer.style.zIndex = '0';
+        parent.insertBefore(flowImageLayer, canvas);
+      } else {
+        const flowStatic = this.createOrReuseFilteredCanvasLayer(
+          pageIdx,
+          canvas,
+          renderScale,
+          'flow-static',
+          layers,
+          allowReuse,
+          false,
+        );
+        this.applyPageLayerBox(flowStatic, top, left, transform, cssWidth, cssHeight);
+        flowStatic.style.zIndex = '0';
+        flowStatic.style.background = 'var(--doc-paper)';
+        parent.insertBefore(flowStatic, canvas);
+      }
       canvas.style.background = 'transparent';
       canvas.style.zIndex = layers.hasFront ? '1' : '1';
     } else {
@@ -259,6 +363,79 @@ export class PageRenderer {
     return layers;
   }
 
+  private createOrReuseFlowImageLayer(
+    pageIdx: number,
+    sourceCanvas: HTMLCanvasElement,
+    displayScale: number,
+    summary: LayerPlaneSummary,
+    allowReuse: boolean,
+    images: readonly FlowImagePaintOp[],
+  ): HTMLElement {
+    const key = this.buildStaticOverlayKey(pageIdx, sourceCanvas, displayScale, 'flow-static', summary);
+    const selector = `[data-rhwp-flow-image-page="${pageIdx}"]`;
+    const existing = sourceCanvas.parentElement?.querySelector<HTMLElement>(selector) ?? null;
+    if (allowReuse && existing?.dataset.rhwpStaticOverlayKey === key) return existing;
+
+    existing?.remove();
+    const layer = document.createElement('div');
+    layer.dataset.rhwpOverlay = `flow-images-${pageIdx}`;
+    layer.dataset.rhwpOverlayPage = String(pageIdx);
+    layer.dataset.rhwpFlowImagePage = String(pageIdx);
+    layer.dataset.rhwpStaticOverlayKey = key;
+    layer.style.pointerEvents = 'none';
+    layer.style.background = 'var(--doc-paper)';
+
+    for (const image of images) {
+      const visibleBbox = visibleFlowImageBbox(image);
+      if (!visibleBbox) continue;
+
+      // clip이 실제 그림보다 작을 때만 별도 wrapper를 둔다. 일반 그림은 기존 DOM
+      // 경로를 그대로 사용해 정적 이미지 분리의 비용 이점을 유지한다.
+      const needsClipWrapper = image.clip !== null && (
+        visibleBbox.x !== image.bbox.x ||
+        visibleBbox.y !== image.bbox.y ||
+        visibleBbox.width !== image.bbox.width ||
+        visibleBbox.height !== image.bbox.height ||
+        image.rotation !== 0
+      );
+      const clipHost = needsClipWrapper ? document.createElement('div') : layer;
+      if (needsClipWrapper) {
+        clipHost.style.position = 'absolute';
+        clipHost.style.left = `${visibleBbox.x * displayScale}px`;
+        clipHost.style.top = `${visibleBbox.y * displayScale}px`;
+        clipHost.style.width = `${visibleBbox.width * displayScale}px`;
+        clipHost.style.height = `${visibleBbox.height * displayScale}px`;
+        clipHost.style.overflow = 'hidden';
+        clipHost.style.pointerEvents = 'none';
+      }
+
+      const frame = document.createElement('div');
+      frame.style.position = 'absolute';
+      frame.style.left = `${(image.bbox.x - (needsClipWrapper ? visibleBbox.x : 0)) * displayScale}px`;
+      frame.style.top = `${(image.bbox.y - (needsClipWrapper ? visibleBbox.y : 0)) * displayScale}px`;
+      frame.style.width = `${image.bbox.width * displayScale}px`;
+      frame.style.height = `${image.bbox.height * displayScale}px`;
+      frame.style.overflow = 'hidden';
+      frame.style.pointerEvents = 'none';
+      const scaleX = image.horzFlip ? -1 : 1;
+      const scaleY = image.vertFlip ? -1 : 1;
+      frame.style.transform = `rotate(${image.rotation}deg) scale(${scaleX}, ${scaleY})`;
+      frame.style.transformOrigin = 'center';
+
+      const element = new Image();
+      element.src = `data:${image.mime};base64,${image.base64}`;
+      element.style.position = 'absolute';
+      element.style.pointerEvents = 'none';
+      const applyCrop = () => applyFlowImageCrop(element, image, displayScale);
+      element.addEventListener('load', applyCrop, { once: true });
+      applyCrop();
+      frame.appendChild(element);
+      clipHost.appendChild(frame);
+      if (needsClipWrapper) layer.appendChild(clipHost);
+    }
+    return layer;
+  }
+
   private createOrReuseFilteredCanvasLayer(
     pageIdx: number,
     sourceCanvas: HTMLCanvasElement,
@@ -266,6 +443,7 @@ export class PageRenderer {
     layerKind: StaticCanvasLayerKind,
     summary: LayerPlaneSummary,
     allowReuse: boolean,
+    renderImmediately = true,
   ): HTMLCanvasElement {
     const key = this.buildStaticOverlayKey(pageIdx, sourceCanvas, renderScale, layerKind, summary);
     const reusableLayer = this.findOverlayLayer(sourceCanvas.parentElement, pageIdx, layerKind);
@@ -279,7 +457,13 @@ export class PageRenderer {
     }
 
     reusableLayer?.remove();
-    const layer = this.createFilteredCanvasLayer(pageIdx, sourceCanvas, renderScale, layerKind);
+    const layer = this.createFilteredCanvasLayer(
+      pageIdx,
+      sourceCanvas,
+      renderScale,
+      layerKind,
+      renderImmediately,
+    );
     layer.dataset.rhwpOverlay = `${layerKind}-${pageIdx}`;
     layer.dataset.rhwpOverlayPage = String(pageIdx);
     layer.dataset.rhwpStaticOverlayKey = key;
@@ -291,6 +475,7 @@ export class PageRenderer {
     sourceCanvas: HTMLCanvasElement,
     renderScale: number,
     layerKind: StaticCanvasLayerKind,
+    renderImmediately = true,
   ): HTMLCanvasElement {
     const layer = document.createElement('canvas');
     layer.width = sourceCanvas.width;
@@ -301,7 +486,15 @@ export class PageRenderer {
     // this is explicit. A front layer with an opaque page background hides all
     // lower background/behind layers.
     layer.style.background = 'transparent';
-    this.wasm.renderPageToCanvasFiltered(pageIdx, layer, renderScale, layerKind);
+    if (renderImmediately) {
+      this.wasm.renderPageToCanvasFiltered(
+        pageIdx,
+        layer,
+        renderScale,
+        layerKind,
+        this.renderProfile,
+      );
+    }
     return layer;
   }
 
@@ -381,7 +574,7 @@ export class PageRenderer {
    * BehindText / InFrontOfText plane 은 제외 — overlay canvas 로 별도 표시.
    */
   renderPageFlow(pageIdx: number, canvas: HTMLCanvasElement, scale: number): void {
-    this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, scale, 'flow');
+    this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, scale, 'flow', this.renderProfile);
     this.drawMarginGuides(pageIdx, canvas, scale);
     this.scheduleReRender(pageIdx, canvas, scale, 0, {
       retrySignature: 'flow-only',
@@ -390,14 +583,30 @@ export class PageRenderer {
     });
   }
 
-  private shouldUseStaticFlowReuse(context: PageRenderContext, layers: LayerPlaneSummary): boolean {
+  private shouldSplitStaticFlow(layers: LayerPlaneSummary): boolean {
     return (
-      context.reason === 'text-edit' &&
-      context.allowStaticOverlayReuse === true &&
       !layers.hasBehind &&
       layers.flowStaticCount > 0 &&
       this.flowSplitSupported !== false
     );
+  }
+
+  private getFlowImagePaintOps(pageIdx: number): FlowImagePaintOp[] {
+    let json: string;
+    try {
+      json = this.wasm.getPageLayerTree(pageIdx);
+    } catch {
+      return [];
+    }
+    try {
+      const root = JSON.parse(json)?.root;
+      return collectFlowImagePaintOps(
+        root,
+        (op, layer) => op.type === 'image' && layerReplayPlane(op, layer) === 'flow',
+      );
+    } catch {
+      return [];
+    }
   }
 
   private renderFlowCanvas(
@@ -407,17 +616,23 @@ export class PageRenderer {
     preferStaticFlow: boolean,
   ): boolean {
     if (!preferStaticFlow) {
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow');
+      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
       return false;
     }
     try {
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow-dynamic');
+      this.wasm.renderPageToCanvasFiltered(
+        pageIdx,
+        canvas,
+        renderScale,
+        'flow-dynamic',
+        this.renderProfile,
+      );
       this.flowSplitSupported = true;
       return true;
     } catch (error) {
       this.flowSplitSupported = false;
       console.warn('[PageRenderer] flow-dynamic 렌더 미지원, 기존 flow 렌더로 fallback:', error);
-      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow');
+      this.wasm.renderPageToCanvasFiltered(pageIdx, canvas, renderScale, 'flow', this.renderProfile);
       return false;
     }
   }
@@ -586,9 +801,8 @@ export class PageRenderer {
    * 비동기 이미지 로드 대응: data URL 이미지가 첫 렌더링 시
    * 아직 디코딩되지 않았을 수 있으므로 점진적 재렌더링한다.
    *
-   * 작은 이미지 (헤더 라벨 등) 는 200/600ms 안에 디코드되지만, 큰 PNG/JPEG
-   * (수십 KB~수백 KB) 는 디코드가 1초 이상 걸릴 수 있어 한 번 더 시도하고
-   * (Task #1154), 그래도 누락이면 마지막에 자체 prefetch로 강제 디코드한다.
+   * decode 완료 후 한 번 다시 그린다. base64를 직접 추출할 수 없는 경우에는
+   * fallback 시점에 한 번만 다시 그려 이미지 누락 안전망을 유지한다.
    */
   private scheduleReRender(
     pageIdx: number,
@@ -608,32 +822,30 @@ export class PageRenderer {
     this.cancelReRender(pageIdx);
     this.imageRetryCounts.set(pageIdx, retryKey);
 
-    const delays = [200, 600, 1500];
-    const timers: ReturnType<typeof setTimeout>[] = [];
+    const job: ReRenderJob = {
+      fallbackTimer: 0 as unknown as ReturnType<typeof setTimeout>,
+      completed: false,
+    };
+    const finish = () => {
+      if (job.completed || this.reRenderJobs.get(pageIdx) !== job) return;
+      job.completed = true;
+      clearTimeout(job.fallbackTimer);
+      this.reRenderJobs.delete(pageIdx);
+      if (canvas.parentElement) {
+        this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
+      }
+    };
+    job.fallbackTimer = setTimeout(finish, IMAGE_RE_RENDER_FALLBACK_DELAY_MS);
+    this.reRenderJobs.set(pageIdx, job);
 
-    for (const delay of delays) {
-      const timer = setTimeout(() => {
-        if (canvas.parentElement) {
-          this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
-        }
-      }, delay);
-      timers.push(timer);
-    }
-
-    // 안전망: 1500ms 시점에서도 큰 이미지가 디코드 안 끝났을 수 있으므로,
-    // 페이지의 image base64 들을 자체 prefetch (Image.decode()) 한 후
-    // 모두 완료되면 한 번 더 렌더링한다. setTimeout 과 별개로 동작.
+    // 자체 prefetch로 실제 decode를 마친 경우에만 fallback보다 먼저 다시 그린다.
     queueMicrotask(() => {
       this.prefetchLayerImages(pageIdx)
-        .then(() => {
-          if (canvas.parentElement) {
-            this.reRenderPageCanvases(pageIdx, canvas, renderScale, policy);
-          }
+        .then((decoded) => {
+          if (decoded) finish();
         })
         .catch(() => {});
     });
-
-    this.reRenderTimers.set(pageIdx, timers);
   }
 
   private reRenderPageCanvases(
@@ -652,7 +864,13 @@ export class PageRenderer {
         flowStatic.width = flowCanvas.width;
         flowStatic.height = flowCanvas.height;
         try {
-          this.wasm.renderPageToCanvasFiltered(pageIdx, flowStatic, renderScale, 'flow-static');
+          this.wasm.renderPageToCanvasFiltered(
+            pageIdx,
+            flowStatic,
+            renderScale,
+            'flow-static',
+            this.renderProfile,
+          );
           renderedStaticFlow = true;
         } catch (error) {
           this.flowSplitSupported = false;
@@ -663,7 +881,13 @@ export class PageRenderer {
     }
 
     if (!renderedStaticFlow) {
-      this.wasm.renderPageToCanvasFiltered(pageIdx, flowCanvas, renderScale, 'flow');
+      this.wasm.renderPageToCanvasFiltered(
+        pageIdx,
+        flowCanvas,
+        renderScale,
+        'flow',
+        this.renderProfile,
+      );
       this.drawMarginGuides(pageIdx, flowCanvas, renderScale);
     }
 
@@ -676,7 +900,13 @@ export class PageRenderer {
       if (kind === 'background' || kind === 'behind' || kind === 'front') {
         layerCanvas.width = flowCanvas.width;
         layerCanvas.height = flowCanvas.height;
-        this.wasm.renderPageToCanvasFiltered(pageIdx, layerCanvas, renderScale, kind);
+        this.wasm.renderPageToCanvasFiltered(
+          pageIdx,
+          layerCanvas,
+          renderScale,
+          kind,
+          this.renderProfile,
+        );
       }
     });
   }
@@ -686,12 +916,12 @@ export class PageRenderer {
    * 자체 prefetch 하여 모든 이미지가 브라우저에 디코드 완료될 때까지 대기.
    * Task #1154 — IMAGE_CACHE 의 비동기 디코드 누락 안전망.
    */
-  private async prefetchLayerImages(pageIdx: number): Promise<void> {
+  private async prefetchLayerImages(pageIdx: number): Promise<boolean> {
     let json: string;
     try {
       json = this.wasm.getPageLayerTree(pageIdx);
     } catch {
-      return;
+      return false;
     }
     const tasks: Promise<unknown>[] = [];
     const seen = new Set<string>();
@@ -725,34 +955,40 @@ export class PageRenderer {
     while ((d = dataUrlRe.exec(json)) !== null) {
       enqueue(`data:${d[1]};base64,${d[2]}`);
     }
+    if (tasks.length === 0) return false;
     await Promise.all(tasks);
+    return true;
   }
 
   /** 특정 페이지의 지연 재렌더링을 취소한다 */
   cancelReRender(pageIdx: number): void {
-    const timers = this.reRenderTimers.get(pageIdx);
-    if (timers) {
-      for (const t of timers) clearTimeout(t);
-      this.reRenderTimers.delete(pageIdx);
+    const job = this.reRenderJobs.get(pageIdx);
+    if (job) {
+      job.completed = true;
+      clearTimeout(job.fallbackTimer);
+      this.reRenderJobs.delete(pageIdx);
     }
   }
 
   /** 모든 지연 재렌더링을 취소한다 */
   cancelAll(): void {
-    for (const timers of this.reRenderTimers.values()) {
-      for (const t of timers) clearTimeout(t);
+    for (const job of this.reRenderJobs.values()) {
+      job.completed = true;
+      clearTimeout(job.fallbackTimer);
     }
-    this.reRenderTimers.clear();
+    this.reRenderJobs.clear();
   }
 
   resetImageRetryState(): void {
     this.imageRetryCounts.clear();
     this.layerSummaryCache.clear();
+    this.canvaskitDiagnosticsByPage.clear();
   }
 
   dispose(): void {
     this.cancelAll();
     this.layerSummaryCache.clear();
+    this.canvaskitDiagnosticsByPage.clear();
     this.canvaskitRenderer?.dispose();
     this.canvaskitRenderer = null;
   }
@@ -817,19 +1053,36 @@ function collectLayerPlaneSummary(
   }
 }
 
+// #2318: 로컬 중복 구현을 제거하고 공유 분류기(replay-plane.ts)로 통일 —
+// masterPage provenance cap 을 포함한 단일 진실 원천.
 function layerReplayPlane(op: any, layer: any): 'background' | 'behindText' | 'flow' | 'inFrontOfText' {
-  if (op?.type === 'pageBackground') {
-    return 'background';
+  return layerPaintOpReplayPlane(op, layer);
+}
+
+function applyFlowImageCrop(
+  element: HTMLImageElement,
+  image: FlowImagePaintOp,
+  displayScale: number,
+): void {
+  const crop = image.crop;
+  if (!crop || element.naturalWidth <= 0 || element.naturalHeight <= 0) {
+    element.style.left = '0';
+    element.style.top = '0';
+    element.style.width = '100%';
+    element.style.height = '100%';
+    return;
   }
-  if (layer?.textWrap === 'behindText') {
-    return 'behindText';
-  }
-  if (layer?.textWrap === 'inFrontOfText') {
-    return 'inFrontOfText';
-  }
-  if (op?.type === 'image') {
-    if (op.wrap === 'behindText') return 'behindText';
-    if (op.wrap === 'inFrontOfText') return 'inFrontOfText';
-  }
-  return 'flow';
+
+  const sourceLeft = crop.left / HWP_UNITS_PER_CSS_PIXEL;
+  const sourceTop = crop.top / HWP_UNITS_PER_CSS_PIXEL;
+  const sourceWidth = (crop.right - crop.left) / HWP_UNITS_PER_CSS_PIXEL;
+  const sourceHeight = (crop.bottom - crop.top) / HWP_UNITS_PER_CSS_PIXEL;
+  if (sourceWidth <= 0 || sourceHeight <= 0) return;
+
+  const scaleX = (image.bbox.width * displayScale) / sourceWidth;
+  const scaleY = (image.bbox.height * displayScale) / sourceHeight;
+  element.style.left = `${-sourceLeft * scaleX}px`;
+  element.style.top = `${-sourceTop * scaleY}px`;
+  element.style.width = `${element.naturalWidth * scaleX}px`;
+  element.style.height = `${element.naturalHeight * scaleY}px`;
 }

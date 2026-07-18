@@ -1,6 +1,13 @@
+---
+kind: canonical
+status: active
+canonical: mydocs/tech/hwp_spec_errata.md
+last_verified: 2026-07-16
+---
+
 # HWP 5.0 스펙 문서 정오표
 
-공식 스펙 문서([hwp_spec_5.0.md](hwp_spec_5.0.md))와 실제 바이너리 구현 간 불일치 사항을 기록한다.
+프로젝트가 보존한 [한글 문서 파일 형식 5.0 개정 1.3](한글문서파일형식_5.0_revision1.3.md)와 실제 바이너리 구현 간 불일치 사항을 기록한다.
 각 항목은 역공학 검증을 통해 확인된 것이며, 본 프로젝트의 파서/렌더러는 실제 바이너리 기준으로 구현한다.
 
 > **새 기능 구현 전 반드시 본 문서를 확인할 것.** 스펙을 그대로 따르면 파일 손상이 발생할 수 있다.
@@ -732,6 +739,85 @@ HWPX에서는 같은 값이 `<hh:paraPr>` 아래 `<hh:border>`의 `connect="1|0"
 - 문단 모양 수정 명령은 위 값을 ParaShape attr1 bit 28/29에 반영해야 한다.
 - HWPX serializer는 `connect`/`ignoreMargin`을 고정 `0`으로 쓰지 말고 ParaShape attr1
   bit 28/29에서 출력해야 한다.
+
+---
+
+## 33. HWPX `breakNonLatinWord` — 열거명 설명과 한컴 실동작 반전
+
+### 현상
+
+문단 모양의 한글 줄 나눔 단위는 HWP5 `ParaShape.attr1` bit 7에 저장된다. HWP5 스펙의
+계약은 `0=어절`, `1=글자`이며, 이 값은 한컴 실동작과 일치한다.
+
+반면 HWPX/OWPML의 `breakNonLatinWord` 열거명은 직관적으로 `KEEP_WORD=어절`,
+`BREAK_WORD=글자`처럼 보이지만, 한컴 202x 계열의 실제 import/export와 rhwp 통제
+실측에서는 반대로 매핑된다.
+
+### 기준 샘플
+
+- `samples/issue1949_giant_cell_nested_tables_perf.hwp`
+- `samples/issue1949_giant_cell_nested_tables_perf.hwpx`
+- PR #2194 / issue #2185 통합 회귀
+
+### 정정
+
+- renderer 내부 계약은 HWP5 bit 7과 동일하게 `0=어절`, `1=글자`로 소비한다.
+- HWPX parser/serializer는 한컴 호환성을 기준으로 `KEEP_WORD -> bit7=1`,
+  `BREAK_WORD -> bit7=0` 매핑을 유지한다.
+- HWPX 열거명만 보고 renderer의 `korean_break_unit` 의미를 뒤집으면 첫 편집 후
+  `LINE_SEG.text_start`, 다음 문단 `vpos`, pagination이 한컴 기준과 달라진다.
+- 따라서 HWPX 명칭, HWP5 저장 bit, renderer 내부 의미를 한 계층으로 섞지 않는다.
+
+### 검증
+
+- PR #2194 focused test:
+  `cargo test --profile release-test --test issue_2185_korean_break_unit -- --nocapture`
+- HWP/HWPX 양쪽에서 실제 편집, pagination flush, 원본 형식 저장, 재로드까지 수행한다.
+- 기대값: 입력 문단 `LINE_SEG.text_start=[0, 44, 84, 122]`, 다음 문단 `vpos=17160`,
+  전체 페이지 수 115쪽 유지.
+
+## 34. CharShape attr bit 18~20 취소선 여부 — 비트만으로 판정 불가 (모양이 실판별자)
+
+### 스펙 기술 (4.2.5 글자 모양, 표 33 속성)
+
+- `bit 18~20`: "취소선 여부" — 0/비0 로 유무를 나타내는 것처럼 기술.
+- `bit 26~29`: "취소선 모양 (표 25 참조)" — 테두리선 종류.
+
+### 실제 동작 (PR #2258, yeonic 실증)
+
+한컴은 **취소선이 없는 문자에도 bit 18~20 에 1 을 기본값으로 기록**한다.
+따라서 비트만으로는 취소선 유무를 판정할 수 없고, 실판별자는 취소선
+모양(bit 26~29)이다:
+
+- 취소선 없음: 모양에 표 25 의 **3D 계열 placeholder** (실측 15 = "3D 단선",
+  13 = "두꺼운 3D" 등)가 들어온다.
+- 실제 취소선: 모양이 **선 종류 0~12** (실선~물결 2중선 13종 — HWPX
+  `SOLID`~`DOUBLE_WAVE` 와 1:1).
+
+HWPX 는 같은 현상을 `strikeout shape="3D"` placeholder 로 드러내며, PR #154
+에서 이름 화이트리스트(`is_real_strike_shape`)로 해소된 것과 동일 구조다.
+
+### 기준 샘플
+
+- `samples/issue1949_giant_cell_nested_tables_perf.hwp` — 취소선 없는
+  CharShape 다수가 bits=1 + 모양 15, 실제 취소선 4개는 모양 0(SOLID)·7(DOUBLE_SLIM)
+- 같은 문서 `.hwpx` 쌍과 자기정합 (111쪽 "843℃" 뒤 취소 문자)
+- 비공개 실무 문서 189건 집계(작성자 제공, 참고): bits!=0 만 쓰면 3개 문서
+  300 runs 오탐, 모양 화이트리스트 적용 시 4개 문서 76 runs 정탐
+
+### 정정
+
+- 취소선 판정: `bits != 0 && strike_shape <= 12` (fail-closed — 미지 모양은
+  no-strike). `strikethrough_bits > 1` 휴리스틱(구현 이력)은 실제 취소선
+  (bits=1)도 버리므로 오답.
+- 스펙의 "취소선 여부" 서술은 placeholder 기본값 관행을 누락 — 비트 단독
+  해석 금지.
+
+### 검증
+
+- `cargo test --profile release-test --test hwp5_strikeout_shape_parity`
+  (HWP5↔HWPX 자기정합, 수정 전 실패)
+- `parse_char_shape` 유닛: bits 0/1/3 × 모양 0/1/12/13/15 경계 전수
 
 ---
 

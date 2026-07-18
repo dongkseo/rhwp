@@ -15,12 +15,14 @@ pub mod chart_xml;
 pub mod control;
 pub mod doc_info;
 pub mod header;
+pub mod hml;
 pub mod hwpx;
 pub mod mini_cfb;
 pub mod record_writer;
 pub mod wmf_writer;
 
 pub use cfb_writer::serialize_hwp;
+pub use hml::serialize_hml;
 pub use hwpx::serialize_hwpx;
 
 /// 직렬화 에러 (HWP + HWPX 공용)

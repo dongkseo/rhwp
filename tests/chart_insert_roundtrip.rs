@@ -91,7 +91,7 @@ fn inserted_chart_survives_save_and_reopen() {
 fn ole_blob_carries_chart_xml() {
     let bytes = insert_into_blank();
     let doc = parse_hwp(&bytes).expect("재열기");
-    let blob = &doc.bin_data_content[0].data;
+    let blob = doc.bin_data_content[0].data.load();
 
     // 파서는 압축을 풀고 4B 프리픽스를 떼어낸 생 CFB 를 노출한다 (parser/mod.rs:669-675).
     // 실물 차트도 head=[d0,cf,11,e0,...] 로 같은 형태다.
@@ -102,7 +102,7 @@ fn ole_blob_carries_chart_xml() {
     );
 
     // XML 이 blob 안에 들어있는지 (CFB 파싱 없이 바이트 검색으로 충분)
-    let s = String::from_utf8_lossy(blob);
+    let s = String::from_utf8_lossy(&blob);
     assert!(s.contains("c:chartSpace"), "DrawingML 루트");
     assert!(s.contains("1분기"), "카테고리");
     assert!(s.contains("매출액"), "계열명");

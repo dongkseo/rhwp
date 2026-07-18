@@ -20,7 +20,12 @@ export default defineConfig({
     port: 7700,
     fs: {
       // [Task #741 후속] 외부 file path 그림 영역 영역 samples/ dir 영역 영역 fetch 가능 영역.
-      allow: [__dirname, resolve(__dirname, '..', 'pkg'), resolve(__dirname, '..', 'samples')],
+      allow: [
+        __dirname,
+        resolve(__dirname, '..', 'pkg'),
+        resolve(__dirname, '..', 'samples'),
+        resolve(__dirname, '..', 'npm', 'editor'),
+      ],
     },
   },
   plugins: [
@@ -61,7 +66,7 @@ export default defineConfig({
       manifest: {
         name: 'rhwp-studio',
         short_name: 'rhwp',
-        description: 'HWP/HWPX 뷰어·에디터 — 알(R), 모두의 한글',
+        description: 'HWP/HWPX/HML 뷰어·에디터 — 알(R), 모두의 한글',
         lang: 'ko',
         theme_color: '#2b6cb0',
         background_color: '#ffffff',
@@ -74,6 +79,8 @@ export default defineConfig({
             accept: {
               'application/x-hwp': ['.hwp'],
               'application/hwp+zip': ['.hwpx'],
+              'application/xml': ['.hml'],
+              'text/xml': ['.hml'],
             },
           },
         ],

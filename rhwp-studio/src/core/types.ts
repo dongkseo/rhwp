@@ -571,6 +571,11 @@ export interface ControlLayoutItem {
   stableIndex?: number;
   /** [Task #1280 v2] 텍스트 어울림 모드(이미지뿐 아니라 shape/line/group에도 노출). */
   wrap?: string;
+  /**
+   * [Task #2230] 그림 미지정 placeholder(bin 참조 실패 + 외부 경로 없음).
+   * 더블클릭 시 그림 지정(파일 선택) 진입 분기 근거.
+   */
+  missing?: boolean;
 }
 
 /** 개체 참조 (그림/글상자 공용) */
@@ -919,6 +924,8 @@ export interface LayerInfo {
   textWrap?: string | null;
   zOrder: number;
   stableIndex: number;
+  /** 바탕쪽 유래 여부 (#2318). true 면 replay plane 이 behindText 로 상한 고정된다. */
+  masterPage?: boolean;
 }
 
 export type LayerNode = LayerGroupNode | LayerClipNode | LayerLeafNode;
@@ -1012,11 +1019,16 @@ export interface LayerTextRunOp {
   type: 'textRun';
   bbox: LayerBounds;
   text: string;
+  displayText?: string;
+  /** Run-local baseline offset from bbox.y when placement is absent. */
   baseline?: number;
   rotation?: number;
   isVertical?: boolean;
   style?: LayerTextStyle;
+  placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
   positions?: number[];
+  displayPositions?: number[];
+  variant?: LayerTextVariantMeta;
 }
 
 export interface LayerFootnoteMarkerOp {
@@ -1123,7 +1135,69 @@ export interface LayerEquationOp {
   svgContent?: string;
   color?: string;
   fontSize?: number;
+  layoutBox?: LayerEquationLayoutBox;
 }
+
+export type LayerEquationMatrixStyle = 'plain' | 'paren' | 'bracket' | 'vert';
+export type LayerEquationDecoration =
+  | 'hat'
+  | 'check'
+  | 'tilde'
+  | 'acute'
+  | 'grave'
+  | 'dot'
+  | 'dDot'
+  | 'bar'
+  | 'vec'
+  | 'dyad'
+  | 'under'
+  | 'arch'
+  | 'underline'
+  | 'overline'
+  | 'strikeThrough';
+export type LayerEquationFontStyle =
+  | 'roman'
+  | 'italic'
+  | 'bold'
+  | 'blackboard'
+  | 'calligraphy'
+  | 'fraktur'
+  | 'sansSerif'
+  | 'monospace';
+
+export interface LayerEquationLayoutBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  baseline: number;
+  kind: LayerEquationLayoutKind;
+}
+
+export type LayerEquationLayoutKind =
+  | { type: 'row'; children: LayerEquationLayoutBox[] }
+  | { type: 'text'; text: string }
+  | { type: 'number'; text: string }
+  | { type: 'symbol'; text: string }
+  | { type: 'mathSymbol'; text: string }
+  | { type: 'function'; name: string }
+  | { type: 'fraction'; numer: LayerEquationLayoutBox; denom: LayerEquationLayoutBox }
+  | { type: 'atop'; top: LayerEquationLayoutBox; bottom: LayerEquationLayoutBox }
+  | { type: 'sqrt'; body: LayerEquationLayoutBox; index?: LayerEquationLayoutBox }
+  | { type: 'superscript'; base: LayerEquationLayoutBox; sup: LayerEquationLayoutBox }
+  | { type: 'subscript'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox }
+  | { type: 'subSup'; base: LayerEquationLayoutBox; sub: LayerEquationLayoutBox; sup: LayerEquationLayoutBox }
+  | { type: 'bigOp'; symbol: string; sub?: LayerEquationLayoutBox; sup?: LayerEquationLayoutBox }
+  | { type: 'limit'; isUpper: boolean; sub?: LayerEquationLayoutBox }
+  | { type: 'matrix'; style: LayerEquationMatrixStyle; cells: LayerEquationLayoutBox[][] }
+  | { type: 'rel'; arrow: LayerEquationLayoutBox; over: LayerEquationLayoutBox; under?: LayerEquationLayoutBox }
+  | { type: 'eqAlign'; rows: Array<{ left: LayerEquationLayoutBox; right: LayerEquationLayoutBox }> }
+  | { type: 'paren'; left: string; right: string; body: LayerEquationLayoutBox }
+  | { type: 'decoration'; decoration: LayerEquationDecoration; body: LayerEquationLayoutBox }
+  | { type: 'fontStyle'; fontStyle: LayerEquationFontStyle; body: LayerEquationLayoutBox }
+  | { type: 'space'; width: number }
+  | { type: 'newline' }
+  | { type: 'empty' };
 
 export interface LayerFormObjectOp {
   type: 'formObject';
@@ -1140,6 +1214,7 @@ export interface LayerFormObjectOp {
 export interface LayerPlaceholderOp {
   type: 'placeholder';
   bbox: LayerBounds;
+  kind?: 'ole' | 'missingPicture';
   fillColor?: string;
   strokeColor?: string;
   label?: string;
@@ -1192,12 +1267,14 @@ export interface LayerGlyphOutlineOp {
   variant?: LayerTextVariantMeta;
   payloadKind?: LayerGlyphOutlinePayloadKind;
   payloadResourceKey?: string;
+  paintStyle?: LayerTextStyle;
   placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
   paths?: LayerGlyphOutlinePath[];
   stroke?: LayerGlyphOutlineStroke;
   colorLayers?: LayerColorLayersPayload;
   bitmapGlyph?: LayerBitmapGlyphPayload;
   svgGlyph?: LayerSvgGlyphPayload;
+  diagnostics?: { strictVisualEligible?: boolean; [key: string]: unknown };
 }
 
 export interface LayerTextVariantMeta {
@@ -1370,6 +1447,7 @@ export interface LayerColorLayersPayload {
 
 export interface LayerBitmapGlyphPayload {
   imageRef?: number;
+  imageResourceId?: number | string;
   sourceRangeUtf8?: LayerTextRange;
   glyphRange?: LayerTextRange;
   placement?: LayerBounds;
@@ -1381,6 +1459,7 @@ export interface LayerBitmapGlyphPayload {
 
 export interface LayerSvgGlyphPayload {
   svgRef?: number;
+  vectorResourceId?: number | string;
   sourceRangeUtf8?: LayerTextRange;
   glyphRange?: LayerTextRange;
   viewBox?: LayerBounds;

@@ -90,6 +90,50 @@ test('문단부호 표시 설정은 rhwp-settings에 저장된다', () => {
   }
 });
 
+test('짤림보기(clipView) 설정은 rhwp-settings에 저장되고 기본값은 켜짐이다', () => {
+  const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
+  const store = new Map<string, string>();
+  const mockStorage = {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.get(key) ?? null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(key, value);
+    },
+  } as Storage;
+
+  (globalThis as { localStorage?: Storage }).localStorage = mockStorage;
+  try {
+    // 기본값: 짤림보기 켜짐(오버플로 표시)
+    assert.equal(userSettings.getViewSettings().clipView, true);
+
+    userSettings.setClipView(false);
+    assert.equal(userSettings.getViewSettings().clipView, false);
+    let stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    assert.equal(stored.view.clipView, false);
+
+    userSettings.setClipView(true);
+    assert.equal(userSettings.getViewSettings().clipView, true);
+    stored = JSON.parse(store.get('rhwp-settings') ?? '{}');
+    assert.equal(stored.view.clipView, true);
+  } finally {
+    userSettings.setClipView(true);
+    (globalThis as { localStorage?: Storage }).localStorage = originalStorage;
+  }
+});
+
 test('복구용 자동저장 설정은 rhwp-settings에 저장된다', () => {
   const originalStorage = (globalThis as { localStorage?: Storage }).localStorage;
   const store = new Map<string, string>();
