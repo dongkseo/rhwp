@@ -1,6 +1,6 @@
 ---
 name: hwp
-description: "Use this skill any time a HWP document (한글 문서) is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .hwp file (e.g., replacing text, filling templates, editing tables, applying formatting, inserting images); create a new .hwp from scratch or from other content; or extract text/tables/structure from a .hwp. Trigger especially when the user references a .hwp file by name or path — even casually (like \"내려받은 한글 파일\", \"the hwp in my downloads\") — and wants something done to it or produced from it. The deliverable must be a .hwp file or its contents. Do NOT trigger when the primary deliverable is a Word/Excel/PDF file or an HTML report; when the task is CLI-based rendering, layout debugging, or IR diffing (use the rhwp-cli skill); or when converting exam papers into HWPX (use the rhwp-exam-ingest skill)."
+description: "Use this skill any time a HWP document (한글 문서) is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .hwp file (e.g., replacing text, filling templates, editing tables, applying formatting, inserting images); create a new .hwp from scratch or from other content; extract text/tables/structure from a .hwp; or convert .hwp/.hwpx to PDF using rhwp native PDF export. Trigger especially when the user references a .hwp file by name or path — even casually (like \"내려받은 한글 파일\", \"the hwp in my downloads\") — and wants something done to it or produced from it. Do NOT trigger for general PDF work unrelated to HWP/HWPX input, Word/Excel deliverables, HTML reports, layout debugging, IR diffing (use the rhwp-cli skill), or converting exam papers into HWPX (use the rhwp-exam-ingest skill)."
 license: 저장소 라이선스(MIT)를 따른다.
 ---
 
@@ -50,6 +50,29 @@ npm i @resvg/resvg-js
 
 `scripts/hwp/loader.mjs` 가 설치된 패키지를 알아서 찾는다. 못 찾으면 설치 명령을 알려주며
 멈춘다. 설치 위치가 특이하면 `RHWP_PKG=/path/to/pkg` 로 지정한다.
+
+## HWP/HWPX → PDF
+
+PDF 산출물이 필요하면 **HWP를 LibreOffice/soffice에 먼저 맡기지 말고 rhwp native PDF export를
+우선 사용한다.** `soffice`는 HWP5 import filter가 없거나 특정 HWP5 변형을 못 읽을 수 있다. 이때
+`Error: source file could not be loaded`는 HWP 손상 증거가 아니다. 먼저 `rhwp info` 또는
+`scripts/verify_hwp.mjs`로 HWP가 rhwp에서 열리는지 확인한다.
+
+권장 실행:
+
+```bash
+node scripts/export_pdf.mjs input.hwp -o output/input.pdf
+```
+
+이 스크립트는 `rhwp export-pdf`를 감싼다. `RHWP_BIN=/path/to/rhwp` 또는 `--rhwp-bin`으로 바이너리
+경로를 지정할 수 있고, 없으면 `rhwp`, `./target/release/rhwp`, `./target/debug/rhwp`를 찾는다.
+
+### PDF 변환 fallback 계약
+
+- `SVG → PNG → PIL/reportlab image PDF`는 자동 fallback으로 쓰지 않는다.
+- 필요한 경우에도 "image-only PDF"라고 명시하고, CJK 폰트 존재와 첫 페이지 raster를 확인한 뒤에만 쓴다.
+- `resvg`는 HWP 리더가 아니다. 이미 만들어진 SVG를 그릴 뿐이며, 한글 폰트가 없으면 한글이 `□`로 굳는다.
+- `pdfinfo`로 열리는 정상 PDF처럼 보여도 image-only/tofu PDF일 수 있다. 텍스트가 있는 HWP를 PDF로 만들었는데 `pdffonts`가 비어 있으면 실패로 간주한다.
 
 ## CRITICAL: 검증 없이 저장하지 마라
 
