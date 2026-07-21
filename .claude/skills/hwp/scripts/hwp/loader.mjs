@@ -9,16 +9,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-const PKG = '@dongkseo/rhwp-core';
-const TARBALL = 'https://github.com/dongkseo/rhwp/releases/download/v0.7.19-pkg/dongkseo-rhwp-core-0.7.19.tgz';
+const PKG = '@rhwp/core';
 
 let _mod = null;
 
 /**
  * glue(js) 와 wasm 바이트의 경로를 찾는다.
  *   1. $RHWP_PKG — pkg/ 디렉터리를 직접 지정한 경우
- *   2. 설치된 @dongkseo/rhwp-core — 보통 이 경로다
- *   3. 상위 폴더의 pkg/ — rhwp 저장소 안에서 개발할 때
+ *   2. 스킬에 포함된 pkg/ 또는 rhwp 저장소의 pkg/
+ *   3. 설치된 @rhwp/core
  */
 function findPkg() {
   if (process.env.RHWP_PKG) {
@@ -27,13 +26,7 @@ function findPkg() {
     return { js: join(p, 'rhwp.js'), wasm: join(p, 'rhwp_bg.wasm') };
   }
 
-  // cwd 기준으로 찾아야 스킬 파일이 어디에 있든 소비자의 node_modules 를 본다.
-  const req = createRequire(join(process.cwd(), 'noop.js'));
-  try {
-    return { js: req.resolve(PKG), wasm: req.resolve(`${PKG}/wasm`) };
-  } catch { /* 미설치 — 아래로 */ }
-
-  // rhwp 저장소 안에서 개발 중일 때.
+  // 스킬 runtime 안의 pkg/ 또는 rhwp 저장소 안에서 개발 중인 pkg/.
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 8; i++) {
     const p = join(dir, 'pkg');
@@ -41,10 +34,18 @@ function findPkg() {
     dir = dirname(dir);
   }
 
+  // cwd 기준으로 찾아야 스킬 파일이 어디에 있든 소비자의 node_modules 를 본다.
+  const req = createRequire(join(process.cwd(), 'noop.js'));
+  try {
+    return { js: req.resolve(PKG), wasm: req.resolve(`${PKG}/wasm`) };
+  } catch { /* 미설치 — 아래로 */ }
+
   throw new Error(
-    `${PKG} 가 설치되어 있지 않다. 설치하라 (2.4MB, 차트용 resvg 포함):\n\n` +
-      `  npm i ${TARBALL}\n\n` +
-      `(설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.)`
+    'rhwp WASM pkg를 찾을 수 없다.\n\n' +
+      '- 정상 배포된 hwp 스킬은 skills/hwp/pkg/를 포함해야 한다.\n' +
+      '- 저장소에서 실행 중이면 wasm-pack build --target web --out-dir pkg 를 먼저 실행한다.\n' +
+      '- 설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.\n' +
+      `- npm fallback을 쓸 경우 ${PKG} 버전이 exportPdf/exportPagePdf를 포함해야 한다.`
   );
 }
 
