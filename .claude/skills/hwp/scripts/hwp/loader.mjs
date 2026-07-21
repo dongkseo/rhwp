@@ -16,8 +16,9 @@ let _mod = null;
 /**
  * glue(js) 와 wasm 바이트의 경로를 찾는다.
  *   1. $RHWP_PKG — pkg/ 디렉터리를 직접 지정한 경우
- *   2. 스킬에 포함된 pkg/ 또는 rhwp 저장소의 pkg/
- *   3. 설치된 @rhwp/core
+ *   2. Docker image에 baked 된 /opt/rhwp/pkg
+ *   3. rhwp 저장소의 pkg/ (로컬 개발)
+ *   4. 설치된 @rhwp/core
  */
 function findPkg() {
   if (process.env.RHWP_PKG) {
@@ -26,7 +27,12 @@ function findPkg() {
     return { js: join(p, 'rhwp.js'), wasm: join(p, 'rhwp_bg.wasm') };
   }
 
-  // 스킬 runtime 안의 pkg/ 또는 rhwp 저장소 안에서 개발 중인 pkg/.
+  const baked = '/opt/rhwp/pkg';
+  if (existsSync(join(baked, 'rhwp.js'))) {
+    return { js: join(baked, 'rhwp.js'), wasm: join(baked, 'rhwp_bg.wasm') };
+  }
+
+  // rhwp 저장소 안에서 개발 중일 때.
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 8; i++) {
     const p = join(dir, 'pkg');
@@ -42,7 +48,7 @@ function findPkg() {
 
   throw new Error(
     'rhwp WASM pkg를 찾을 수 없다.\n\n' +
-      '- 정상 배포된 hwp 스킬은 skills/hwp/pkg/를 포함해야 한다.\n' +
+      '- 정상 sandbox Docker image는 /opt/rhwp/pkg 를 포함해야 한다.\n' +
       '- 저장소에서 실행 중이면 wasm-pack build --target web --out-dir pkg 를 먼저 실행한다.\n' +
       '- 설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.\n' +
       `- npm fallback을 쓸 경우 ${PKG} 버전이 exportPdf/exportPagePdf를 포함해야 한다.`
