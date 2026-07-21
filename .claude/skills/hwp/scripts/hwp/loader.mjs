@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const PKG = '@dongkseo/rhwp-core';
-const TARBALL = 'https://github.com/dongkseo/rhwp/releases/download/v0.7.18-pkg/dongkseo-rhwp-core-0.7.18.tgz';
+const TARBALL = 'https://github.com/dongkseo/rhwp/releases/download/v0.7.19-pkg/dongkseo-rhwp-core-0.7.19.tgz';
 
 let _mod = null;
 

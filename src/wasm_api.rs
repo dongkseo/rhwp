@@ -380,6 +380,24 @@ fn format_hml_export_error(error: &crate::serializer::hml::HmlExportError) -> St
     message
 }
 
+fn pdf_export_options(text_as_paths: bool) -> crate::renderer::pdf::PdfExportOptions {
+    let mut options = crate::renderer::pdf::PdfExportOptions::default();
+    options.embed_text = !text_as_paths;
+    #[cfg(target_arch = "wasm32")]
+    {
+        options.embed_text = false;
+    }
+    options
+}
+
+fn parse_pdf_render_profile(profile: &str) -> Result<crate::paint::RenderProfile, JsValue> {
+    crate::paint::RenderProfile::parse(profile).ok_or_else(|| {
+        JsValue::from_str(
+            "invalid render profile; expected screen|print|high-quality|fast-preview",
+        )
+    })
+}
+
 #[wasm_bindgen]
 impl HwpDocument {
     /// HWP 파일 바이트를 로드하여 문서 객체를 생성한다.
@@ -562,6 +580,50 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = renderPageSvg)]
     pub fn render_page_svg(&self, page_num: u32) -> Result<String, JsValue> {
         self.render_page_svg_native(page_num).map_err(|e| e.into())
+    }
+
+    /// 전체 문서를 PDF bytes로 내보낸다.
+    #[wasm_bindgen(js_name = exportPdf)]
+    pub fn export_pdf(&self, text_as_paths: bool) -> Result<Vec<u8>, JsValue> {
+        let options = pdf_export_options(text_as_paths);
+        self.render_document_pdf_native_with_options(&options)
+            .map_err(|e| e.into())
+    }
+
+    /// 단일 페이지를 PDF bytes로 내보낸다.
+    #[wasm_bindgen(js_name = exportPagePdf)]
+    pub fn export_page_pdf(&self, page_num: u32, text_as_paths: bool) -> Result<Vec<u8>, JsValue> {
+        let options = pdf_export_options(text_as_paths);
+        self.render_pages_pdf_native_with_options(&[page_num], &options)
+            .map_err(|e| e.into())
+    }
+
+    /// render profile을 적용해 전체 문서를 PDF bytes로 내보낸다.
+    #[wasm_bindgen(js_name = exportPdfWithProfile)]
+    pub fn export_pdf_with_profile(
+        &self,
+        profile: &str,
+        text_as_paths: bool,
+    ) -> Result<Vec<u8>, JsValue> {
+        let profile = parse_pdf_render_profile(profile)?;
+        let options = pdf_export_options(text_as_paths);
+        let pages: Vec<u32> = (0..self.page_count()).collect();
+        self.render_pages_pdf_native_with_profile_and_options(&pages, profile, &options)
+            .map_err(|e| e.into())
+    }
+
+    /// render profile을 적용해 단일 페이지를 PDF bytes로 내보낸다.
+    #[wasm_bindgen(js_name = exportPagePdfWithProfile)]
+    pub fn export_page_pdf_with_profile(
+        &self,
+        page_num: u32,
+        profile: &str,
+        text_as_paths: bool,
+    ) -> Result<Vec<u8>, JsValue> {
+        let profile = parse_pdf_render_profile(profile)?;
+        let options = pdf_export_options(text_as_paths);
+        self.render_pages_pdf_native_with_profile_and_options(&[page_num], profile, &options)
+            .map_err(|e| e.into())
     }
 
     /// 특정 페이지를 HTML 문자열로 렌더링한다.

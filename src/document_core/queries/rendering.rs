@@ -646,7 +646,6 @@ impl DocumentCore {
 
     /// PDF export for one page, implemented as the current compatibility path:
     /// SVG render output -> svg2pdf.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_page_pdf_native(&self, page_num: u32) -> Result<Vec<u8>, HwpError> {
         self.render_pages_pdf_native(&[page_num])
     }
@@ -656,7 +655,6 @@ impl DocumentCore {
     /// This keeps PDF as a native/export API surface rather than a WASM render path.
     /// The implementation intentionally reuses the SVG compatibility output until a
     /// direct/vector PDF backend is introduced.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_pages_pdf_native(&self, page_nums: &[u32]) -> Result<Vec<u8>, HwpError> {
         self.render_pages_pdf_native_with_options(
             page_nums,
@@ -665,7 +663,6 @@ impl DocumentCore {
     }
 
     /// PDF export for an explicit 0-based page selection with font options.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_pages_pdf_native_with_options(
         &self,
         page_nums: &[u32],
@@ -686,7 +683,6 @@ impl DocumentCore {
     }
 
     /// PDF export using the layered SVG compatibility path for an explicit output profile.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_pages_pdf_native_with_profile_and_options(
         &self,
         page_nums: &[u32],
@@ -708,14 +704,12 @@ impl DocumentCore {
     }
 
     /// PDF export for the full document.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_document_pdf_native(&self) -> Result<Vec<u8>, HwpError> {
         let pages: Vec<u32> = (0..self.page_count()).collect();
         self.render_pages_pdf_native(&pages)
     }
 
     /// PDF export for the full document with font options.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_document_pdf_native_with_options(
         &self,
         options: &crate::renderer::pdf::PdfExportOptions,

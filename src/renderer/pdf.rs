@@ -7,7 +7,6 @@
 ///
 /// `export-pdf`는 SVG를 usvg/svg2pdf로 변환하므로 generic font family와 수식 SVG
 /// font-family를 PDF 변환 직전에 조정한다.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfExportOptions {
     /// serif generic fallback family.
@@ -29,7 +28,6 @@ pub struct PdfExportOptions {
     pub embed_text: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Default for PdfExportOptions {
     fn default() -> Self {
         Self {
@@ -38,7 +36,7 @@ impl Default for PdfExportOptions {
             fallback_mono: default_mono_family().to_string(),
             equation_font: None,
             font_paths: Vec::new(),
-            embed_text: true,
+            embed_text: cfg!(not(target_arch = "wasm32")),
         }
     }
 }
@@ -71,6 +69,21 @@ fn default_sans_family() -> &'static str {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 fn default_mono_family() -> &'static str {
     "Noto Sans Mono CJK KR"
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_serif_family() -> &'static str {
+    "serif"
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_sans_family() -> &'static str {
+    "sans-serif"
+}
+
+#[cfg(target_arch = "wasm32")]
+fn default_mono_family() -> &'static str {
+    "monospace"
 }
 
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
@@ -163,6 +176,11 @@ fn create_fontdb(options: &PdfExportOptions) -> usvg::fontdb::Database {
         }
     }
     fontdb
+}
+
+#[cfg(target_arch = "wasm32")]
+fn create_fontdb(_options: &PdfExportOptions) -> usvg::fontdb::Database {
+    usvg::fontdb::Database::new()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -276,6 +294,11 @@ fn escape_xml_attr(value: &str) -> String {
     escaped
 }
 
+#[cfg(target_arch = "wasm32")]
+fn apply_pdf_font_options(svg: &str, _options: &PdfExportOptions) -> String {
+    svg.to_string()
+}
+
 /// 단일 SVG를 PDF로 변환
 #[cfg(not(target_arch = "wasm32"))]
 pub fn svg_to_pdf(svg_content: &str) -> Result<Vec<u8>, String> {
@@ -292,13 +315,11 @@ pub fn svg_to_pdf_with_options(
 }
 
 /// 여러 SVG 페이지를 단일 다중 페이지 PDF로 생성
-#[cfg(not(target_arch = "wasm32"))]
 pub fn svgs_to_pdf(svg_pages: &[String]) -> Result<Vec<u8>, String> {
     svgs_to_pdf_with_options(svg_pages, &PdfExportOptions::default())
 }
 
 /// 여러 SVG 페이지를 옵션 기반 단일 다중 페이지 PDF로 생성
-#[cfg(not(target_arch = "wasm32"))]
 pub fn svgs_to_pdf_with_options(
     svg_pages: &[String],
     export_options: &PdfExportOptions,
