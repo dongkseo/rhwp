@@ -25,6 +25,7 @@ pub mod layout;
 pub mod page_layout;
 pub mod page_number;
 pub mod pagination;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pdf;
 pub mod pua_oldhangul;
 pub mod render_tree;

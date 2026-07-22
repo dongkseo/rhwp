@@ -60,18 +60,6 @@ export class HwpDocument {
      */
     applyStyle(sec_idx: number, para_idx: number, style_id: number): string;
     /**
-     * [Task #2230] 기존 Picture 컨트롤에 이미지를 지정한다 — 그림 미지정
-     * placeholder(missing image 컨트롤)의 편집 뷰 그림 삽입.
-     *
-     * `cell_path_json` 이 빈 문자열 또는 `"[]"` 면 본문 문단의 컨트롤,
-     * 그 외에는 셀/글상자 안 문단의 컨트롤을 대상으로 한다. 개체 틀 크기는
-     * 유지되고(한컴 placeholder 는 틀에 그림을 맞춤) BinData 등록 규칙은
-     * insertPicture 와 공유한다.
-     *
-     * 반환: `{"ok":true,"binDataId":<N>}`
-     */
-    assignPictureImage(section_idx: number, parent_para_idx: number, cell_path_json: string, control_idx: number, image_data: Uint8Array, natural_width_px: number, natural_height_px: number, extension: string): string;
-    /**
      * Batch 모드를 시작한다. 이후 Command 호출 시 paginate()를 건너뛴다.
      */
     beginBatch(): string;
@@ -333,10 +321,6 @@ export class HwpDocument {
      */
     exportControlHtml(section_idx: number, para_idx: number, cell_path_json: string, control_idx: number): string;
     /**
-     * HML 원본의 공통 IR을 HWPML 2.91 XML로 직렬화하여 반환한다.
-     */
-    exportHml(): Uint8Array;
-    /**
      * 문서를 HWP 바이너리로 내보낸다.
      *
      * Document IR을 HWP 5.0 CFB 바이너리로 직렬화하여 반환한다.
@@ -366,22 +350,6 @@ export class HwpDocument {
      * Document IR을 HWPX(ZIP+XML)로 직렬화하여 반환한다.
      */
     exportHwpx(): Uint8Array;
-    /**
-     * 단일 페이지를 PDF bytes로 내보낸다.
-     */
-    exportPagePdf(page_num: number, text_as_paths: boolean): Uint8Array;
-    /**
-     * render profile을 적용해 단일 페이지를 PDF bytes로 내보낸다.
-     */
-    exportPagePdfWithProfile(page_num: number, profile: string, text_as_paths: boolean): Uint8Array;
-    /**
-     * 전체 문서를 PDF bytes로 내보낸다.
-     */
-    exportPdf(text_as_paths: boolean): Uint8Array;
-    /**
-     * render profile을 적용해 전체 문서를 PDF bytes로 내보낸다.
-     */
-    exportPdfWithProfile(profile: string, text_as_paths: boolean): Uint8Array;
     /**
      * 선택 영역을 HTML 문자열로 변환한다 (본문).
      */
@@ -444,7 +412,6 @@ export class HwpDocument {
      * `compat` 는 API/URL 호환성과 이후 보수적인 direct replay 튜닝을 위해 남겨 둔 선택지다.
      */
     getCanvasKitReplayPlan(page_num: number, mode: string): string;
-    getCanvasKitReplayPlanWithProfile(page_num: number, mode: string, profile: string): string;
     /**
      * 문서에 저장된 캐럿 위치를 반환한다 (문서 로딩 시 캐럿 자동 배치용).
      *
@@ -727,15 +694,6 @@ export class HwpDocument {
      */
     getHeaderFooterPictureProperties(section_idx: number, outer_para_idx: number, outer_control_idx: number, inner_para_idx: number, inner_control_idx: number): string;
     /**
-     * HML 열기 메타데이터와 손실 진단을 JSON으로 반환한다.
-     * 다른 입력 포맷에서는 `null`을 반환한다.
-     */
-    getHmlOpenMetadata(): string;
-    /**
-     * HML 저장 가능 여부와 모든 차단 진단을 canonical JSON DTO로 반환한다.
-     */
-    getHmlSaveState(): string;
-    /**
      * 문단 내 줄 정보를 반환한다 (커서 수직 이동/Home/End용).
      *
      * 반환: JSON `{"lineIndex":N,"lineCount":N,"charStart":N,"charEnd":N}`
@@ -794,7 +752,6 @@ export class HwpDocument {
      * 페이지 레이어 트리를 JSON 문자열로 반환한다.
      */
     getPageLayerTree(page_num: number): string;
-    getPageLayerTreeWithProfile(page_num: number, profile: string): string;
     /**
      * 위치에 해당하는 글로벌 쪽 번호 반환
      */
@@ -902,7 +859,7 @@ export class HwpDocument {
      */
     getShowTransparentBorders(): boolean;
     /**
-     * 원본 파일 형식을 반환한다 ("hwp", "hwpx", 또는 "hml").
+     * 원본 파일 형식을 반환한다 ("hwp" 또는 "hwpx").
      */
     getSourceFormat(): string;
     /**
@@ -1217,7 +1174,6 @@ export class HwpDocument {
      *
      * Studio의 page-local 단일 입력처럼 현재 페이지를 먼저 갱신하고 idle 시점에
      * 전체 페이지네이션을 한 번만 수행하는 경로에서 사용한다.
-     * 결과 JSON은 `charOffset`과 상대 cell-flow 변화 신호 `cellFlowChanged`를 포함한다.
      */
     insertTextInCellDeferredPagination(section_idx: number, parent_para_idx: number, control_idx: number, cell_idx: number, cell_para_idx: number, char_offset: number, text: string): string;
     /**
@@ -1417,13 +1373,6 @@ export class HwpDocument {
      */
     reflowLinesegs(): number;
     /**
-     * PDF 변환에 사용할 폰트 파일 바이트를 등록한다.
-     *
-     * WASM은 호스트 파일시스템의 시스템 폰트를 직접 탐색할 수 없으므로 호출자가
-     * TTF/OTF/TTC 데이터를 전달해야 한다.
-     */
-    registerPdfFont(data: Uint8Array): void;
-    /**
      * 커서 위치의 누름틀 필드를 제거한다 (본문 문단).
      */
     removeFieldAt(section_idx: number, para_idx: number, char_offset: number): string;
@@ -1498,7 +1447,6 @@ export class HwpDocument {
      * 본문 Canvas 와 overlay 컨테이너를 분리하는 다층 layer 아키텍처에서 사용.
      */
     renderPageToCanvasFiltered(page_num: number, canvas: HTMLCanvasElement, scale: number, layer_kind: string): void;
-    renderPageToCanvasFilteredWithProfile(page_num: number, canvas: HTMLCanvasElement, scale: number, layer_kind: string, profile: string): void;
     /**
      * 특정 페이지를 기존 PageRenderTree 경로로 Canvas 2D에 직접 렌더링한다.
      */
@@ -1924,7 +1872,6 @@ export interface InitOutput {
     readonly hwpdocument_applyParaFormatInFootnote: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly hwpdocument_applyParaFormatInHf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly hwpdocument_applyStyle: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly hwpdocument_assignPictureImage: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
     readonly hwpdocument_beginBatch: (a: number) => [number, number, number, number];
     readonly hwpdocument_changeShapeZOrder: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_clearActiveField: (a: number) => void;
@@ -1972,14 +1919,9 @@ export interface InitOutput {
     readonly hwpdocument_evaluateTableFormula: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly hwpdocument_evaluateTableFormulaEx: (a: number, b: number, c: number) => [number, number, number, number];
     readonly hwpdocument_exportControlHtml: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly hwpdocument_exportHml: (a: number) => [number, number, number, number];
     readonly hwpdocument_exportHwp: (a: number) => [number, number, number, number];
     readonly hwpdocument_exportHwpVerify: (a: number) => [number, number, number, number];
     readonly hwpdocument_exportHwpx: (a: number) => [number, number, number, number];
-    readonly hwpdocument_exportPagePdf: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly hwpdocument_exportPagePdfWithProfile: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly hwpdocument_exportPdf: (a: number, b: number) => [number, number, number, number];
-    readonly hwpdocument_exportPdfWithProfile: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionHtml: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionInCellHtml: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionInCellHtmlEx: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1992,7 +1934,6 @@ export interface InitOutput {
     readonly hwpdocument_getBookmarks: (a: number) => [number, number, number, number];
     readonly hwpdocument_getBulletList: (a: number) => [number, number];
     readonly hwpdocument_getCanvasKitReplayPlan: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly hwpdocument_getCanvasKitReplayPlanWithProfile: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_getCaretPosition: (a: number) => [number, number, number, number];
     readonly hwpdocument_getCellCharPropertiesAt: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly hwpdocument_getCellInfo: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
@@ -2047,8 +1988,6 @@ export interface InitOutput {
     readonly hwpdocument_getHeaderFooterList: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getHeaderFooterParaInfo: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly hwpdocument_getHeaderFooterPictureProperties: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly hwpdocument_getHmlOpenMetadata: (a: number) => [number, number];
-    readonly hwpdocument_getHmlSaveState: (a: number) => [number, number];
     readonly hwpdocument_getLineInfo: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getLineInfoInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly hwpdocument_getLogicalLength: (a: number, b: number, c: number) => [number, number, number];
@@ -2062,7 +2001,6 @@ export interface InitOutput {
     readonly hwpdocument_getPageHide: (a: number, b: number, c: number) => [number, number, number, number];
     readonly hwpdocument_getPageInfo: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_getPageLayerTree: (a: number, b: number) => [number, number, number, number];
-    readonly hwpdocument_getPageLayerTreeWithProfile: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getPageOfPosition: (a: number, b: number, c: number) => [number, number, number, number];
     readonly hwpdocument_getPageOverlayImages: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_getPageRenderTree: (a: number, b: number) => [number, number, number, number];
@@ -2170,7 +2108,6 @@ export interface InitOutput {
     readonly hwpdocument_pasteTableCellsTransposed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_pasteTableCellsTransposedAsTable: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_reflowLinesegs: (a: number) => number;
-    readonly hwpdocument_registerPdfFont: (a: number, b: number, c: number) => [number, number];
     readonly hwpdocument_removeFieldAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly hwpdocument_removeFieldAtInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly hwpdocument_removeFieldAtInCellEx: (a: number, b: number, c: number) => [number, number];
@@ -2183,7 +2120,6 @@ export interface InitOutput {
     readonly hwpdocument_renderPageSvg: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_renderPageToCanvas: (a: number, b: number, c: any, d: number) => [number, number];
     readonly hwpdocument_renderPageToCanvasFiltered: (a: number, b: number, c: any, d: number, e: number, f: number) => [number, number];
-    readonly hwpdocument_renderPageToCanvasFilteredWithProfile: (a: number, b: number, c: any, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly hwpdocument_renderPageToCanvasLegacy: (a: number, b: number, c: any, d: number) => [number, number];
     readonly hwpdocument_replaceAll: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_replaceOne: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];

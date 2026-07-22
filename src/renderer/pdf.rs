@@ -7,6 +7,7 @@
 ///
 /// `export-pdf`는 SVG를 usvg/svg2pdf로 변환하므로 generic font family와 수식 SVG
 /// font-family를 PDF 변환 직전에 조정한다.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfExportOptions {
     /// serif generic fallback family.
@@ -19,8 +20,6 @@ pub struct PdfExportOptions {
     pub equation_font: Option<String>,
     /// 사용자 지정 폰트 탐색 디렉토리. 기본 탐색 경로보다 먼저 로드한다.
     pub font_paths: Vec<std::path::PathBuf>,
-    /// 파일시스템이 없는 WASM 호출자가 직접 등록한 폰트 바이트.
-    pub font_data: Vec<Vec<u8>>,
     /// 텍스트를 PDF 폰트로 임베드할지 여부. `false` 면 글리프를 path 로 변환한다.
     ///
     /// [Task #2264] 임베드 경로(폰트 서브셋)가 PDF 변환 메모리의 지배항이다.
@@ -30,6 +29,7 @@ pub struct PdfExportOptions {
     pub embed_text: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for PdfExportOptions {
     fn default() -> Self {
         Self {
@@ -38,8 +38,7 @@ impl Default for PdfExportOptions {
             fallback_mono: default_mono_family().to_string(),
             equation_font: None,
             font_paths: Vec::new(),
-            font_data: Vec::new(),
-            embed_text: cfg!(not(target_arch = "wasm32")),
+            embed_text: true,
         }
     }
 }
@@ -72,21 +71,6 @@ fn default_sans_family() -> &'static str {
 #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 fn default_mono_family() -> &'static str {
     "Noto Sans Mono CJK KR"
-}
-
-#[cfg(target_arch = "wasm32")]
-fn default_serif_family() -> &'static str {
-    "Noto Sans KR"
-}
-
-#[cfg(target_arch = "wasm32")]
-fn default_sans_family() -> &'static str {
-    "Noto Sans KR"
-}
-
-#[cfg(target_arch = "wasm32")]
-fn default_mono_family() -> &'static str {
-    "Noto Sans KR"
 }
 
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
@@ -133,9 +117,6 @@ fn default_mono_family() -> &'static str {
 fn create_fontdb(options: &PdfExportOptions) -> usvg::fontdb::Database {
     let mut fontdb = usvg::fontdb::Database::new();
     fontdb.load_system_fonts();
-    for data in &options.font_data {
-        fontdb.load_font_data(data.clone());
-    }
     for dir in &options.font_paths {
         if dir.exists() {
             fontdb.load_fonts_dir(dir);
@@ -184,18 +165,6 @@ fn create_fontdb(options: &PdfExportOptions) -> usvg::fontdb::Database {
     fontdb
 }
 
-#[cfg(target_arch = "wasm32")]
-fn create_fontdb(options: &PdfExportOptions) -> usvg::fontdb::Database {
-    let mut fontdb = usvg::fontdb::Database::new();
-    for data in &options.font_data {
-        fontdb.load_font_data(data.clone());
-    }
-    fontdb.set_serif_family(options.fallback_serif.as_str());
-    fontdb.set_sans_serif_family(options.fallback_sans.as_str());
-    fontdb.set_monospace_family(options.fallback_mono.as_str());
-    fontdb
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn warn_missing_family(
     fontdb: &usvg::fontdb::Database,
@@ -220,6 +189,7 @@ fn font_family_exists(fontdb: &usvg::fontdb::Database, family: &str) -> bool {
 }
 
 /// SVG에서 없는 한글 폰트명에 fallback 추가
+#[cfg(not(target_arch = "wasm32"))]
 fn add_font_fallbacks(svg: &str, options: &PdfExportOptions) -> String {
     let serif = css_family_for_attr(&options.fallback_serif);
     let sans = css_family_for_attr(&options.fallback_sans);
@@ -277,6 +247,7 @@ fn first_font_family(value: &str) -> String {
         .to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn css_family_for_attr(family: &str) -> String {
     let family = family.trim();
     if family.eq_ignore_ascii_case("serif")
@@ -289,6 +260,7 @@ fn css_family_for_attr(family: &str) -> String {
     format!("'{escaped}'")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn escape_xml_attr(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -302,12 +274,6 @@ fn escape_xml_attr(value: &str) -> String {
         }
     }
     escaped
-}
-
-
-#[cfg(target_arch = "wasm32")]
-fn apply_pdf_font_options(svg: &str, options: &PdfExportOptions) -> String {
-    add_font_fallbacks(svg, options)
 }
 
 /// 단일 SVG를 PDF로 변환
@@ -326,11 +292,13 @@ pub fn svg_to_pdf_with_options(
 }
 
 /// 여러 SVG 페이지를 단일 다중 페이지 PDF로 생성
+#[cfg(not(target_arch = "wasm32"))]
 pub fn svgs_to_pdf(svg_pages: &[String]) -> Result<Vec<u8>, String> {
     svgs_to_pdf_with_options(svg_pages, &PdfExportOptions::default())
 }
 
 /// 여러 SVG 페이지를 옵션 기반 단일 다중 페이지 PDF로 생성
+#[cfg(not(target_arch = "wasm32"))]
 pub fn svgs_to_pdf_with_options(
     svg_pages: &[String],
     export_options: &PdfExportOptions,
@@ -465,17 +433,6 @@ mod tests {
     }
 
     #[test]
-    fn registered_pdf_font_data_is_loaded() {
-        let baseline = create_fontdb(&PdfExportOptions::default()).faces().count();
-        let mut options = PdfExportOptions::default();
-        options.font_data.push(
-            include_bytes!("../../tests/fixtures/fonts/RHWPExactFaceSmoke.ttc").to_vec(),
-        );
-
-        assert!(create_fontdb(&options).faces().count() > baseline);
-    }
-
-    #[test]
     fn pdf_font_options_replace_generic_fallbacks_and_equation_font() {
         let options = PdfExportOptions {
             fallback_serif: "Noto Serif CJK KR".to_string(),
@@ -483,7 +440,6 @@ mod tests {
             fallback_mono: "Noto Sans Mono CJK KR".to_string(),
             equation_font: Some("STIX Two Math".to_string()),
             font_paths: Vec::new(),
-            font_data: Vec::new(),
             embed_text: true,
         };
         let svg = format!(

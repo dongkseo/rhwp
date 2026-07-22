@@ -220,7 +220,6 @@ fn collect_external_image_references(document: &Document) -> Vec<ExternalImageRe
 #[wasm_bindgen]
 pub struct HwpDocument {
     core: DocumentCore,
-    pdf_fonts: Vec<Vec<u8>>,
 }
 
 impl std::ops::Deref for HwpDocument {
@@ -241,10 +240,7 @@ impl std::ops::DerefMut for HwpDocument {
 /// 테스트 및 CLI 환경에서 `HwpDocument::from_bytes()` 등을 직접 호출할 수 있도록 한다.
 impl HwpDocument {
     pub fn from_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
-        DocumentCore::from_bytes(data).map(|core| HwpDocument {
-            core,
-            pdf_fonts: Vec::new(),
-        })
+        DocumentCore::from_bytes(data).map(|core| HwpDocument { core })
     }
 
     pub fn find_initial_column_def(paragraphs: &[Paragraph]) -> ColumnDef {
@@ -384,38 +380,13 @@ fn format_hml_export_error(error: &crate::serializer::hml::HmlExportError) -> St
     message
 }
 
-fn pdf_export_options(
-    text_as_paths: bool,
-    font_data: &[Vec<u8>],
-) -> crate::renderer::pdf::PdfExportOptions {
-    let mut options = crate::renderer::pdf::PdfExportOptions::default();
-    options.font_data = font_data.to_vec();
-    options.embed_text = !text_as_paths;
-    #[cfg(target_arch = "wasm32")]
-    {
-        options.embed_text = false;
-    }
-    options
-}
-
-fn parse_pdf_render_profile(profile: &str) -> Result<crate::paint::RenderProfile, JsValue> {
-    crate::paint::RenderProfile::parse(profile).ok_or_else(|| {
-        JsValue::from_str(
-            "invalid render profile; expected screen|print|high-quality|fast-preview",
-        )
-    })
-}
-
 #[wasm_bindgen]
 impl HwpDocument {
     /// HWP 파일 바이트를 로드하여 문서 객체를 생성한다.
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<HwpDocument, JsValue> {
         DocumentCore::from_bytes(data)
-            .map(|core| HwpDocument {
-                core,
-                pdf_fonts: Vec::new(),
-            })
+            .map(|core| HwpDocument { core })
             .map_err(|e| e.into())
     }
 
@@ -505,10 +476,7 @@ impl HwpDocument {
         let mut document = Document::default();
         document.sections.push(section);
         core.set_document(document);
-        HwpDocument {
-            core,
-            pdf_fonts: Vec::new(),
-        }
+        HwpDocument { core }
     }
 
     /// 내장 템플릿에서 빈 문서를 생성한다.
@@ -594,63 +562,6 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = renderPageSvg)]
     pub fn render_page_svg(&self, page_num: u32) -> Result<String, JsValue> {
         self.render_page_svg_native(page_num).map_err(|e| e.into())
-    }
-
-    /// PDF 변환에 사용할 폰트 파일 바이트를 등록한다.
-    ///
-    /// WASM은 호스트 파일시스템의 시스템 폰트를 직접 탐색할 수 없으므로 호출자가
-    /// TTF/OTF/TTC 데이터를 전달해야 한다.
-    #[wasm_bindgen(js_name = registerPdfFont)]
-    pub fn register_pdf_font(&mut self, data: &[u8]) -> Result<(), JsValue> {
-        if data.is_empty() {
-            return Err(JsValue::from_str("PDF font data is empty"));
-        }
-        self.pdf_fonts.push(data.to_vec());
-        Ok(())
-    }
-
-    /// 전체 문서를 PDF bytes로 내보낸다.
-    #[wasm_bindgen(js_name = exportPdf)]
-    pub fn export_pdf(&self, text_as_paths: bool) -> Result<Vec<u8>, JsValue> {
-        let options = pdf_export_options(text_as_paths, &self.pdf_fonts);
-        self.render_document_pdf_native_with_options(&options)
-            .map_err(|e| e.into())
-    }
-
-    /// 단일 페이지를 PDF bytes로 내보낸다.
-    #[wasm_bindgen(js_name = exportPagePdf)]
-    pub fn export_page_pdf(&self, page_num: u32, text_as_paths: bool) -> Result<Vec<u8>, JsValue> {
-        let options = pdf_export_options(text_as_paths, &self.pdf_fonts);
-        self.render_pages_pdf_native_with_options(&[page_num], &options)
-            .map_err(|e| e.into())
-    }
-
-    /// render profile을 적용해 전체 문서를 PDF bytes로 내보낸다.
-    #[wasm_bindgen(js_name = exportPdfWithProfile)]
-    pub fn export_pdf_with_profile(
-        &self,
-        profile: &str,
-        text_as_paths: bool,
-    ) -> Result<Vec<u8>, JsValue> {
-        let profile = parse_pdf_render_profile(profile)?;
-        let options = pdf_export_options(text_as_paths, &self.pdf_fonts);
-        let pages: Vec<u32> = (0..self.page_count()).collect();
-        self.render_pages_pdf_native_with_profile_and_options(&pages, profile, &options)
-            .map_err(|e| e.into())
-    }
-
-    /// render profile을 적용해 단일 페이지를 PDF bytes로 내보낸다.
-    #[wasm_bindgen(js_name = exportPagePdfWithProfile)]
-    pub fn export_page_pdf_with_profile(
-        &self,
-        page_num: u32,
-        profile: &str,
-        text_as_paths: bool,
-    ) -> Result<Vec<u8>, JsValue> {
-        let profile = parse_pdf_render_profile(profile)?;
-        let options = pdf_export_options(text_as_paths, &self.pdf_fonts);
-        self.render_pages_pdf_native_with_profile_and_options(&[page_num], profile, &options)
-            .map_err(|e| e.into())
     }
 
     /// 특정 페이지를 HTML 문자열로 렌더링한다.

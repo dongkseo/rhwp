@@ -5,49 +5,20 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-const PKG = '@rhwp/core';
+const PKG = '@dongkseo/rhwp-core';
+const TARBALL = 'https://github.com/dongkseo/rhwp/releases/download/v0.7.18-pkg/dongkseo-rhwp-core-0.7.18.tgz';
 
 let _mod = null;
-
-export function registerPdfFonts(doc, { required = false } = {}) {
-  if (typeof doc.registerPdfFont !== 'function') return;
-
-  const configured = (process.env.RHWP_FONT_FILES || '')
-    .split(delimiter)
-    .filter(Boolean);
-  const candidates = [
-    ...configured,
-    '/opt/rhwp/fonts/NotoSansKR-Regular.ttf',
-    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-    '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
-    '/System/Library/Fonts/AppleSDGothicNeo.ttc',
-    resolve('ttfs/opensource/NotoSansKR-Regular.ttf'),
-  ];
-
-  const loaded = new Set();
-  for (const path of candidates) {
-    if (!existsSync(path) || loaded.has(path)) continue;
-    doc.registerPdfFont(readFileSync(path));
-    loaded.add(path);
-  }
-  if (required && loaded.size === 0) {
-    throw new Error(
-      'PDF 변환용 CJK 폰트를 찾을 수 없다. Docker image에 fonts-noto-cjk를 설치하거나 ' +
-        'RHWP_FONT_FILES=/path/to/font.ttf 로 지정하라.'
-    );
-  }
-}
 
 /**
  * glue(js) 와 wasm 바이트의 경로를 찾는다.
  *   1. $RHWP_PKG — pkg/ 디렉터리를 직접 지정한 경우
- *   2. Docker image에 baked 된 /opt/rhwp/pkg
- *   3. rhwp 저장소의 pkg/ (로컬 개발)
- *   4. 설치된 @rhwp/core
+ *   2. 설치된 @dongkseo/rhwp-core — 보통 이 경로다
+ *   3. 상위 폴더의 pkg/ — rhwp 저장소 안에서 개발할 때
  */
 function findPkg() {
   if (process.env.RHWP_PKG) {
@@ -56,10 +27,11 @@ function findPkg() {
     return { js: join(p, 'rhwp.js'), wasm: join(p, 'rhwp_bg.wasm') };
   }
 
-  const baked = '/opt/rhwp/pkg';
-  if (existsSync(join(baked, 'rhwp.js'))) {
-    return { js: join(baked, 'rhwp.js'), wasm: join(baked, 'rhwp_bg.wasm') };
-  }
+  // cwd 기준으로 찾아야 스킬 파일이 어디에 있든 소비자의 node_modules 를 본다.
+  const req = createRequire(join(process.cwd(), 'noop.js'));
+  try {
+    return { js: req.resolve(PKG), wasm: req.resolve(`${PKG}/wasm`) };
+  } catch { /* 미설치 — 아래로 */ }
 
   // rhwp 저장소 안에서 개발 중일 때.
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -69,18 +41,10 @@ function findPkg() {
     dir = dirname(dir);
   }
 
-  // cwd 기준으로 찾아야 스킬 파일이 어디에 있든 소비자의 node_modules 를 본다.
-  const req = createRequire(join(process.cwd(), 'noop.js'));
-  try {
-    return { js: req.resolve(PKG), wasm: req.resolve(`${PKG}/wasm`) };
-  } catch { /* 미설치 — 아래로 */ }
-
   throw new Error(
-    'rhwp WASM pkg를 찾을 수 없다.\n\n' +
-      '- 정상 sandbox Docker image는 /opt/rhwp/pkg 를 포함해야 한다.\n' +
-      '- 저장소에서 실행 중이면 wasm-pack build --target web --out-dir pkg 를 먼저 실행한다.\n' +
-      '- 설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.\n' +
-      `- npm fallback을 쓸 경우 ${PKG} 버전이 exportPdf/exportPagePdf를 포함해야 한다.`
+    `${PKG} 가 설치되어 있지 않다. 설치하라 (2.4MB, 차트용 resvg 포함):\n\n` +
+      `  npm i ${TARBALL}\n\n` +
+      `(설치 위치가 특이하면 RHWP_PKG=/path/to/pkg 로 지정한다.)`
   );
 }
 
@@ -97,8 +61,7 @@ export async function loadWasm() {
 /** 기존 .hwp 파일을 연다. */
 export async function openHwp(path) {
   const { HwpDocument } = await loadWasm();
-  const doc = new HwpDocument(readFileSync(path));
-  return doc;
+  return new HwpDocument(readFileSync(path));
 }
 
 /**
