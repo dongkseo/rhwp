@@ -21,6 +21,7 @@ export function registerPdfFonts(doc, { required = false } = {}) {
     .filter(Boolean);
   const candidates = [
     ...configured,
+    '/opt/rhwp/fonts/NotoSansKR-Regular.ttf',
     '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
     '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
     '/System/Library/Fonts/AppleSDGothicNeo.ttc',

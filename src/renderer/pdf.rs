@@ -76,17 +76,17 @@ fn default_mono_family() -> &'static str {
 
 #[cfg(target_arch = "wasm32")]
 fn default_serif_family() -> &'static str {
-    "serif"
+    "Noto Sans KR"
 }
 
 #[cfg(target_arch = "wasm32")]
 fn default_sans_family() -> &'static str {
-    "sans-serif"
+    "Noto Sans KR"
 }
 
 #[cfg(target_arch = "wasm32")]
 fn default_mono_family() -> &'static str {
-    "monospace"
+    "Noto Sans KR"
 }
 
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
