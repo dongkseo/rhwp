@@ -5,13 +5,41 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const PKG = '@rhwp/core';
 
 let _mod = null;
+
+export function registerPdfFonts(doc, { required = false } = {}) {
+  if (typeof doc.registerPdfFont !== 'function') return;
+
+  const configured = (process.env.RHWP_FONT_FILES || '')
+    .split(delimiter)
+    .filter(Boolean);
+  const candidates = [
+    ...configured,
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    '/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc',
+    '/System/Library/Fonts/AppleSDGothicNeo.ttc',
+    resolve('ttfs/opensource/NotoSansKR-Regular.ttf'),
+  ];
+
+  const loaded = new Set();
+  for (const path of candidates) {
+    if (!existsSync(path) || loaded.has(path)) continue;
+    doc.registerPdfFont(readFileSync(path));
+    loaded.add(path);
+  }
+  if (required && loaded.size === 0) {
+    throw new Error(
+      'PDF 변환용 CJK 폰트를 찾을 수 없다. Docker image에 fonts-noto-cjk를 설치하거나 ' +
+        'RHWP_FONT_FILES=/path/to/font.ttf 로 지정하라.'
+    );
+  }
+}
 
 /**
  * glue(js) 와 wasm 바이트의 경로를 찾는다.
@@ -68,7 +96,8 @@ export async function loadWasm() {
 /** 기존 .hwp 파일을 연다. */
 export async function openHwp(path) {
   const { HwpDocument } = await loadWasm();
-  return new HwpDocument(readFileSync(path));
+  const doc = new HwpDocument(readFileSync(path));
+  return doc;
 }
 
 /**

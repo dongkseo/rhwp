@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
-import { openHwp } from './hwp/loader.mjs';
+import { openHwp, registerPdfFonts } from './hwp/loader.mjs';
 
 function usage() {
   console.error(`usage: node scripts/export_pdf.mjs <input.hwp|input.hwpx|input.hml> [options]
@@ -114,6 +114,7 @@ if (!output) {
 }
 
 const doc = await openHwp(input);
+registerPdfFonts(doc, { required: true });
 if (typeof doc.exportPdf !== 'function' || typeof doc.exportPagePdf !== 'function') {
   throw new Error(
     'rhwp WASM package does not expose exportPdf/exportPagePdf. ' +

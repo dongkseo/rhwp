@@ -6415,6 +6415,21 @@ export class HwpDocument {
         return ret >>> 0;
     }
     /**
+     * PDF 변환에 사용할 폰트 파일 바이트를 등록한다.
+     *
+     * WASM은 호스트 파일시스템의 시스템 폰트를 직접 탐색할 수 없으므로 호출자가
+     * TTF/OTF/TTC 데이터를 전달해야 한다.
+     * @param {Uint8Array} data
+     */
+    registerPdfFont(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.hwpdocument_registerPdfFont(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * 커서 위치의 누름틀 필드를 제거한다 (본문 문단).
      * @param {number} section_idx
      * @param {number} para_idx

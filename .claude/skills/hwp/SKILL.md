@@ -32,6 +32,9 @@ license: 저장소 라이선스(MIT)를 따른다.
 
 이 스킬은 rhwp 를 WebAssembly 로 쓴다. 정상 sandbox Docker image는 `/opt/rhwp/pkg/`에
 `rhwp.js`와 `rhwp_bg.wasm`을 포함하므로 HWP 열기·편집·PDF 변환 중 runtime npm/Rust 설치가 필요 없다.
+PDF 변환용 글리프는 WASM이 시스템 폰트를 직접 탐색할 수 없으므로 loader가 Docker의
+`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`를 바이트로 등록한다. 정상 image는
+`fonts-noto-cjk`도 포함해야 한다. 별도 환경은 `RHWP_FONT_FILES`에 TTF/OTF/TTC 경로를 지정한다.
 
 > `npm i github:dongkseo/rhwp` (저장소 clone) 는 쓰지 마라 — 691MB 를 받아 6분 걸린다.
 > 외부 npm 패키지는 fallback일 뿐이며, PDF 변환에는 `exportPdf/exportPagePdf`가 포함된 버전이어야 한다.
@@ -64,6 +67,7 @@ node scripts/export_pdf.mjs input.hwp -o output/input.pdf
 ```
 
 이 스크립트는 bundled rhwp WASM을 직접 호출한다. `rhwp` native CLI 바이너리를 찾거나 실행하지 않는다.
+PDF 폰트가 하나도 등록되지 않으면 빈 텍스트 PDF를 만들지 않고 즉시 실패한다.
 
 ### PDF 변환 fallback 계약
 

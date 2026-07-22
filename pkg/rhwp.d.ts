@@ -1417,6 +1417,13 @@ export class HwpDocument {
      */
     reflowLinesegs(): number;
     /**
+     * PDF 변환에 사용할 폰트 파일 바이트를 등록한다.
+     *
+     * WASM은 호스트 파일시스템의 시스템 폰트를 직접 탐색할 수 없으므로 호출자가
+     * TTF/OTF/TTC 데이터를 전달해야 한다.
+     */
+    registerPdfFont(data: Uint8Array): void;
+    /**
      * 커서 위치의 누름틀 필드를 제거한다 (본문 문단).
      */
     removeFieldAt(section_idx: number, para_idx: number, char_offset: number): string;
@@ -2163,6 +2170,7 @@ export interface InitOutput {
     readonly hwpdocument_pasteTableCellsTransposed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_pasteTableCellsTransposedAsTable: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_reflowLinesegs: (a: number) => number;
+    readonly hwpdocument_registerPdfFont: (a: number, b: number, c: number) => [number, number];
     readonly hwpdocument_removeFieldAt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly hwpdocument_removeFieldAtInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly hwpdocument_removeFieldAtInCellEx: (a: number, b: number, c: number) => [number, number];

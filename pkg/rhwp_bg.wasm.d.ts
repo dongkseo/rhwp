@@ -262,6 +262,7 @@ export const hwpdocument_pasteInternalInCellByPath: (a: number, b: number, c: nu
 export const hwpdocument_pasteTableCellsTransposed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const hwpdocument_pasteTableCellsTransposedAsTable: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const hwpdocument_reflowLinesegs: (a: number) => number;
+export const hwpdocument_registerPdfFont: (a: number, b: number, c: number) => [number, number];
 export const hwpdocument_removeFieldAt: (a: number, b: number, c: number, d: number) => [number, number];
 export const hwpdocument_removeFieldAtInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
 export const hwpdocument_removeFieldAtInCellEx: (a: number, b: number, c: number) => [number, number];
